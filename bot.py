@@ -46,11 +46,11 @@ db = None
 # GIGACHAT: функция отправки сообщения и получения ответа
 # -----------------------------------------------------------
 async def gigachat_request(messages):
-    async with httpx.AsyncClient(timeout=40.0, verify=False) as client:  # отключаем проверку сертификата
+    async with httpx.AsyncClient(timeout=40.0, verify=certifi.where()) as client:  # отключаем проверку сертификата
         r = await client.post(
             GIGACHAT_API_URL,
             headers={
-                "Authorization": f"Bearer {GIGACHAT_API_KEY}",
+                "Authorization": f"Bearer OTY4NTIzMDgtOTk3Yy00OWM3LWEzMzgtZjAyOTVjMDdmNjE4OjA0YWZiZmQ3LTM0YTQtNDQ5ZS1iNzRhLTQwZGU2ODkyNWExZA==",
                 "Content-Type": "application/json",
             },
             json={
