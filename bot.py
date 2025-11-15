@@ -42,7 +42,7 @@ db = None
 async def gigachat_request(messages: list):
     """Отправляет диалог в GigaChat и возвращает ответ."""
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=60.0, verify=False) as client:
         headers = {
             "Authorization": f"Bearer {GIGACHAT_API_KEY}",
             "Content-Type": "application/json"
