@@ -44,30 +44,49 @@ async def create_db_pool():
 db = None
 
 # -----------------------------------------------------------
+# GIGACHAT: функция для запроса токена
+# -----------------------------------------------------------
+
+
+async def get_gigachat_token():
+    url = os.getenv("GIGACHAT_AUTH_URL")
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": os.getenv("GIGACHAT_CLIENT_ID"),
+        "client_secret": os.getenv("GIGACHAT_CLIENT_SECRET"),
+        "scope": os.getenv("GIGACHAT_SCOPE"),
+    }
+
+    async with httpx.AsyncClient(verify=False) as client:
+        r = await client.post(url, data=data)
+        r.raise_for_status()
+        resp = r.json()
+        return resp["access_token"]
+
+
+# -----------------------------------------------------------
 # GIGACHAT: функция отправки сообщения и получения ответа
 # -----------------------------------------------------------
-def gigachat_request(messages):
-    """
-    messages: список словарей [{"role": "system/user/assistant", "content": "..."}]
-    """
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {GIGACHAT_API_KEY}",
-        "Content-Type": "application/json"
-    }
+async def gigachat_request(messages):
+    token = await get_gigachat_token()
 
-    payload = {
-        "model": "GigaChat-Pro",
-        "messages": messages,
-        "temperature": 0.3
-    }
-
-    response = requests.post(GIGACHAT_API_URL, headers=headers, json=payload, verify=False)
-    response.raise_for_status()
-    data = response.json()
-    return data["choices"][0]["message"]["content"]
-
-
+    async with httpx.AsyncClient(timeout=40.0, verify=False) as client:
+        r = await client.post(
+            os.getenv("GIGACHAT_API_URL"),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "GigaChat-Pro",
+                "messages": messages,
+                "temperature": 0.3
+            }
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data["choices"][0]["message"]["content"]
 # -----------------------------------------------------------
 # AI-КОНТЕКСТ
 # -----------------------------------------------------------
