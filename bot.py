@@ -1,6 +1,7 @@
 import os
 import asyncio
 import asyncpg
+import certifi
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -77,6 +78,7 @@ async def get_gigachat_token():
 async def gigachat_request(messages):
     token = await get_gigachat_token()
     async with httpx.AsyncClient(timeout=40.0, verify=False) as client:
+        
         r = await client.post(
             GIGACHAT_API_URL,
             headers={
