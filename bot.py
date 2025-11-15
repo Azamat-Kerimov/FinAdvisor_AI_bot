@@ -39,31 +39,25 @@ db = None
 # -----------------------------------------------------------
 # GIGACHAT: функция отправки сообщения и получения ответа
 # -----------------------------------------------------------
-async def gigachat_request(messages: list):
-    """Отправляет диалог в GigaChat и возвращает ответ."""
+async def gigachat_request(messages):
+    token = await get_gigachat_token()
 
-    async with httpx.AsyncClient(timeout=60.0, verify=False) as client:
-        headers = {
-            "Authorization": f"Bearer {GIGACHAT_API_KEY}",
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "model": "GigaChat",
-            "messages": messages,
-            "temperature": 0.9
-        }
-
+    async with httpx.AsyncClient(timeout=40.0, verify=False) as client:
         r = await client.post(
-            "https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
-            json=payload,
-            headers=headers
+            os.getenv("GIGACHAT_API_URL"),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "GigaChat-Pro",
+                "messages": messages,
+                "temperature": 0.3
+            }
         )
-
+        r.raise_for_status()
         data = r.json()
-
         return data["choices"][0]["message"]["content"]
-
 
 # -----------------------------------------------------------
 # ПОЛУЧЕНИЕ ПОЛНОГО АИ-КОНТЕКСТА ИСТОРИИ
