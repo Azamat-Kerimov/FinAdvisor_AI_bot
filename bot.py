@@ -9,6 +9,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 import httpx
 import certifi
+import requests
 
 load_dotenv()
 
@@ -62,6 +63,8 @@ async def gigachat_request(messages):
         r.raise_for_status()
         data = r.json()
         return data["choices"][0]["message"]["content"]
+
+
 
 # -----------------------------------------------------------
 # AI-КОНТЕКСТ
