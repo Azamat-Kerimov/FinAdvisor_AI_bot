@@ -1,222 +1,219 @@
-import asyncio
 import os
-import json
-from collections import defaultdict
-from dotenv import load_dotenv
+import asyncio
+import asyncpg
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from openai import OpenAI
-from db import get_connection
+from dotenv import load_dotenv
+import httpx
 
-# ================= Настройки окружения =================
 load_dotenv()
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT")
+
+GIGACHAT_API_KEY = os.getenv("GIGACHAT_API_KEY")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Полная история общения (вся, без ограничений)
-user_contexts = defaultdict(list)
+# -----------------------------
+# ИНИЦИАЛИЗАЦИЯ БАЗЫ
+# -----------------------------
+async def create_db_pool():
+    return await asyncpg.create_pool(
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME,
+        host=DB_HOST,
+        port=DB_PORT
+    )
 
-# ================= FSM для ручных действий =================
-class TransactionStates(StatesGroup):
-    waiting_for_amount = State()
-    waiting_for_description = State()
-    waiting_for_category = State()
+db = None
 
-class GoalStates(StatesGroup):
-    waiting_for_name = State()
-    waiting_for_target_amount = State()
 
-# ================= Категории =================
-CATEGORIES = ["Продукты", "Транспорт", "Развлечения", "Коммуналка", "Другое"]
+# -----------------------------------------------------------
+# GIGACHAT: функция отправки сообщения и получения ответа
+# -----------------------------------------------------------
+async def gigachat_request(messages: list):
+    """Отправляет диалог в GigaChat и возвращает ответ."""
 
-def categories_keyboard():
-    kb = InlineKeyboardMarkup(row_width=2)
-    for cat in CATEGORIES:
-        kb.add(InlineKeyboardButton(text=cat, callback_data=f"cat_{cat}"))
-    return kb
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        headers = {
+            "Authorization": f"Bearer {GIGACHAT_API_KEY}",
+            "Content-Type": "application/json"
+        }
 
-# ================= Команда /start =================
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    tg_id = message.from_user.id
-    username = message.from_user.username or "no_name"
+        payload = {
+            "model": "GigaChat",
+            "messages": messages,
+            "temperature": 0.9
+        }
 
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO users (tg_id, username) VALUES (%s, %s) "
-            "ON CONFLICT (tg_id) DO NOTHING RETURNING id",
-            (tg_id, username)
+        r = await client.post(
+            "https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
+            json=payload,
+            headers=headers
         )
-        conn.commit()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        print("Ошибка работы с БД:", repr(e))
-        await message.answer("Ошибка при регистрации пользователя!")
-        return
 
-    user_contexts[tg_id].clear()
-    await message.answer(f"Привет, {username}! Я FinAdvisor 🤖 — твой финансовый помощник. Можешь писать мне в свободной форме, например:\n\n• «добавь трату 200 на кофе»\n• «создай цель 100000 на отпуск»\n• «обнови цель отпуск, добавь 5000»")
+        data = r.json()
 
-# ================= Команда /report =================
-@dp.message(Command("report"))
-async def report(message: types.Message):
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
+        return data["choices"][0]["message"]["content"]
 
-        cursor.execute(
-            "SELECT SUM(amount) as total FROM transactions WHERE user_id = (SELECT id FROM users WHERE tg_id=%s)",
-            (message.from_user.id,)
-        )
-        total = cursor.fetchone()['total'] or 0
 
-        cursor.execute(
-            "SELECT title, current, target FROM goals WHERE user_id = (SELECT id FROM users WHERE tg_id=%s)",
-            (message.from_user.id,)
-        )
-        goals = cursor.fetchall()
+# -----------------------------------------------------------
+# ПОЛУЧЕНИЕ ПОЛНОГО АИ-КОНТЕКСТА ИСТОРИИ
+# -----------------------------------------------------------
+async def get_full_context(user_id):
+    rows = await db.fetch("""
+        SELECT role, content
+        FROM ai_context
+        WHERE user_id = $1
+        ORDER BY id ASC
+    """, user_id)
 
-        cursor.close()
-        conn.close()
+    messages = [{"role": row["role"], "content": row["content"]} for row in rows]
+    return messages
 
-        text = f"📊 Общие расходы: {total} ₽\n🎯 Цели:\n"
-        if goals:
-            for g in goals:
-                text += f"- {g['title']}: {g['current']} / {g['target']} ₽\n"
-        else:
-            text += "Цели пока не добавлены."
 
-        await message.answer(text)
-    except Exception as e:
-        print("Ошибка при формировании отчёта:", e)
-        await message.answer("⚠ Ошибка при формировании отчёта.")
+# -----------------------------------------------------------
+# СОХРАНЕНИЕ КОНТЕКСТА
+# -----------------------------------------------------------
+async def save_message(user_id, role, content):
+    await db.execute("""
+        INSERT INTO ai_context (user_id, role, content)
+        VALUES ($1, $2, $3)
+    """, user_id, role, content)
 
-# ================= AI-помощник с действиями =================
-@dp.message()
-async def ai_smart_handler(message: types.Message):
-    user_id = message.from_user.id
-    text = message.text.strip()
 
-    # сохраняем историю общения
-    user_contexts[user_id].append({"role": "user", "content": text})
+# -----------------------------------------------------------
+# АНАЛИЗ ТРАНЗАКЦИЙ ДЛЯ СОВЕТА
+# -----------------------------------------------------------
+async def analyze_user_finances(user_id):
+    """Формирует текстовый отчет по транзакциям для GigaChat."""
+    rows = await db.fetch("""
+        SELECT amount, created_at
+        FROM transactions
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 200
+    """, user_id)
 
-    # достаём финансовые данные
-    user_summary = ""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
+    if not rows:
+        return "У пользователя нет транзакций."
 
-        cursor.execute("SELECT SUM(amount) as total FROM transactions WHERE user_id = (SELECT id FROM users WHERE tg_id=%s)", (user_id,))
-        total = cursor.fetchone()['total'] or 0
+    text = "Последние транзакции пользователя:\n"
+    for r in rows:
+        text += f"- {r['amount']}₽ ({r['created_at']})\n"
 
-        cursor.execute("SELECT title, current, target FROM goals WHERE user_id = (SELECT id FROM users WHERE tg_id=%s)", (user_id,))
-        goals = cursor.fetchall()
+    # цели
+    goals = await db.fetch("""
+        SELECT target, current, created_at
+        FROM goals
+        WHERE user_id = $1
+    """, user_id)
 
-        cursor.close()
-        conn.close()
+    if goals:
+        text += "\nЦели пользователя:\n"
+        for g in goals:
+            text += f"- Цель: {g['current']} / {g['target']}₽ (создано: {g['created_at']})\n"
 
-        goal_info = "\n".join([f"- {g['title']}: {g['current']}/{g['target']} ₽" for g in goals]) or "Целей нет."
-        user_summary = f"Пользователь потратил {total} ₽. Цели:\n{goal_info}"
-    except Exception as e:
-        print("Ошибка при запросе данных из БД:", e)
-        user_summary = "Нет данных о пользователе."
+    return text
 
-    # GPT-инструкция: возвращай JSON с действием
+
+# -----------------------------------------------------------
+# ГЛАВНЫЙ АИ-ОТВЕТ
+# -----------------------------------------------------------
+async def generate_ai_reply(user_id, user_message):
+    """Объединяет контекст + историю транзакций + сообщение пользователя."""
+
+    # сохраняем user message
+    await save_message(user_id, "user", user_message)
+
+    # загружаем весь контекст
+    context = await get_full_context(user_id)
+
+    # добавляем анализ транзакций
+    finance_data = await analyze_user_finances(user_id)
+
     system_prompt = f"""
-Ты — финансовый ассистент FinAdvisor.
-Ты можешь либо ответить пользователю текстом, либо предложить действие в JSON.
+Ты — умный финансовый ассистент.
+Используй всю историю диалога, а также анализ транзакций и целей пользователя.
 
-Если пользователь просит добавить трату, создать или обновить цель, возвращай JSON строго в формате:
-{{"action": "add_transaction", "amount": 200, "description": "кофе", "category": "Продукты"}}
-{{"action": "add_goal", "title": "Отпуск", "target": 100000}}
-{{"action": "update_goal", "title": "Отпуск", "add": 5000}}
+Вот данные пользователя:
+{finance_data}
 
-Если пользователь просто задаёт вопрос — верни обычный текст.
-
-Данные пользователя:
-{user_summary}
+Давай полезный, персонализированный финансовый совет.
 """
 
-    messages = [{"role": "system", "content": system_prompt}] + user_contexts[user_id]
+    messages = [
+        {"role": "system", "content": system_prompt}
+    ]
+    messages += context
+    messages.append({"role": "user", "content": user_message})
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.4
-        )
+    # запрос к GigaChat
+    ai_answer = await gigachat_request(messages)
 
-        ai_response = response.choices[0].message.content.strip()
+    # сохраняем ответ бота
+    await save_message(user_id, "assistant", ai_answer)
 
-        # если GPT вернул JSON — выполняем действие
-        if ai_response.startswith("{"):
-            try:
-                action = json.loads(ai_response)
-                await handle_ai_action(message, action)
-            except Exception as e:
-                print("Ошибка парсинга JSON:", e)
-                await message.answer("⚠ Ошибка обработки команды.")
-        else:
-            await message.answer(ai_response)
-            user_contexts[user_id].append({"role": "assistant", "content": ai_response})
+    return ai_answer
 
-    except Exception as e:
-        print("Ошибка AI:", e)
-        await message.answer("⚠ Ошибка AI. Попробуйте позже.")
 
-# ================= Выполнение действий из AI =================
-async def handle_ai_action(message: types.Message, action: dict):
-    user_id = message.from_user.id
-    conn = get_connection()
-    cursor = conn.cursor()
+# -----------------------------------------------------------
+# РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЯ
+# -----------------------------------------------------------
+async def get_or_create_user(tg_id):
+    row = await db.fetchrow("SELECT * FROM users WHERE tg_id=$1", tg_id)
 
-    try:
-        if action["action"] == "add_transaction":
-            cursor.execute(
-                "INSERT INTO transactions (user_id, amount, category, description) VALUES ((SELECT id FROM users WHERE tg_id=%s), %s, %s, %s)",
-                (user_id, action["amount"], action.get("category", "Другое"), action.get("description", ""))
-            )
-            conn.commit()
-            await message.answer(f"✅ Добавлена трата {action['amount']} ₽ ({action.get('description', '')})")
+    if row:
+        return row["id"]
 
-        elif action["action"] == "add_goal":
-            cursor.execute(
-                "INSERT INTO goals (user_id, title, target, current) VALUES ((SELECT id FROM users WHERE tg_id=%s), %s, %s, 0)",
-                (user_id, action["title"], action["target"])
-            )
-            conn.commit()
-            await message.answer(f"🎯 Цель добавлена: {action['title']} ({action['target']} ₽)")
+    row = await db.fetchrow("""
+        INSERT INTO users (tg_id)
+        VALUES ($1)
+        RETURNING id
+    """, tg_id)
 
-        elif action["action"] == "update_goal":
-            cursor.execute(
-                "UPDATE goals SET current = current + %s WHERE user_id=(SELECT id FROM users WHERE tg_id=%s) AND title=%s",
-                (action["add"], user_id, action["title"])
-            )
-            conn.commit()
-            await message.answer(f"📈 Цель {action['title']} обновлена (+{action['add']} ₽)")
+    return row["id"]
 
-        else:
-            await message.answer("🤔 Неизвестное действие.")
-    except Exception as e:
-        print("Ошибка при выполнении действия:", e)
-        await message.answer("⚠ Не удалось выполнить действие.")
-    finally:
-        cursor.close()
-        conn.close()
 
-# ================= Запуск =================
+# -----------------------------------------------------------
+# ОБРАБОТЧИК /start
+# -----------------------------------------------------------
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    user_id = await get_or_create_user(message.from_user.id)
+
+    await message.answer("Привет! Я финансовый ассистент. Задай мне любой вопрос, и я помогу!")
+
+
+# -----------------------------------------------------------
+# ГЛАВНЫЙ ОБРАБОТЧИК ВСЕХ СООБЩЕНИЙ
+# -----------------------------------------------------------
+@dp.message()
+async def handle_msg(message: types.Message):
+    user_id = await get_or_create_user(message.from_user.id)
+
+    user_text = message.text
+
+    reply = await generate_ai_reply(user_id, user_text)
+
+    await message.answer(reply)
+
+
+# -----------------------------------------------------------
+# СТАРТ БОТА
+# -----------------------------------------------------------
 async def main():
-    print("🤖 FinAdvisor AI Bot запущен с полным контекстом и действиями.")
+    global db
+    db = await create_db_pool()
+    print("DB connected. Bot started.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
