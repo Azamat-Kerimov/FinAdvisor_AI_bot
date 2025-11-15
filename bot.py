@@ -46,24 +46,26 @@ db = None
 # -----------------------------------------------------------
 # GIGACHAT: функция отправки сообщения и получения ответа
 # -----------------------------------------------------------
-async def gigachat_request(messages):
-    async with httpx.AsyncClient(timeout=40.0, verify=certifi.where()) as client:  # отключаем проверку сертификата
-        r = await client.post(
-            GIGACHAT_API_URL,
-            headers={
-                "Authorization": f"Bearer OTY4NTIzMDgtOTk3Yy00OWM3LWEzMzgtZjAyOTVjMDdmNjE4OjA0YWZiZmQ3LTM0YTQtNDQ5ZS1iNzRhLTQwZGU2ODkyNWExZA==",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "GigaChat-Pro",
-                "messages": messages,
-                "temperature": 0.3
-            }
-        )
-        r.raise_for_status()
-        data = r.json()
-        return data["choices"][0]["message"]["content"]
+def gigachat_request(messages):
+    """
+    messages: список словарей [{"role": "system/user/assistant", "content": "..."}]
+    """
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {GIGACHAT_API_KEY}",
+        "Content-Type": "application/json"
+    }
 
+    payload = {
+        "model": "GigaChat-Pro",
+        "messages": messages,
+        "temperature": 0.3
+    }
+
+    response = requests.post(GIGACHAT_API_URL, headers=headers, json=payload, verify=False)
+    response.raise_for_status()
+    data = response.json()
+    return data["choices"][0]["message"]["content"]
 
 
 # -----------------------------------------------------------
