@@ -1,23 +1,3 @@
-#!/usr/bin/env python3
-"""
-FinAdvisor - полный бот с APScheduler, summarization toggle и export
-
-Обязательные таблицы (SQL-примеры):
-# users, transactions, goals, ai_context, ai_cache как раньше (см. предыдущие файлы)
-CREATE TABLE IF NOT EXISTS user_settings (
-    user_id INT PRIMARY KEY,
-    summarization_enabled BOOLEAN DEFAULT TRUE
-);
--- ai_cache:
-CREATE TABLE IF NOT EXISTS ai_cache (
-    id SERIAL PRIMARY KEY,
-    user_id INT,
-    input_hash TEXT,
-    answer TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-"""
-
 import os
 import re
 import csv
