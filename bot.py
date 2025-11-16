@@ -275,17 +275,19 @@ async def get_or_create_user(tg_id: int):
 # -------------------------
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("➕ Добавить транзакцию", callback_data="menu_add"),
-         InlineKeyboardButton("🎯 Мои цели", callback_data="menu_goals")],
-        [InlineKeyboardButton("📊 Статистика", callback_data="menu_stats"),
-         InlineKeyboardButton("📈 График (/chart)", callback_data="menu_chart")],
-        [InlineKeyboardButton("💬 Совет AI", callback_data="menu_ai"),
-         InlineKeyboardButton("⚙️ Настройки", callback_data="menu_settings")]
+        [InlineKeyboardButton(text="➕ Добавить транзакцию", callback_data="menu_add"),
+         InlineKeyboardButton(text="🎯 Мои цели", callback_data="menu_goals")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="menu_stats"),
+         InlineKeyboardButton(text="📈 График (/chart)", callback_data="menu_chart")],
+        [InlineKeyboardButton(text="💬 Совет AI", callback_data="menu_ai"),
+         InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings")]
     ])
 
 confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton("Подтвердить ✅", callback_data="confirm_tx"),
-     InlineKeyboardButton("Отмена ❌", callback_data="cancel_tx")]
+    [
+    InlineKeyboardButton(text="Подтвердить ✅", callback_data="confirm_tx"),
+    InlineKeyboardButton(text="Удалить ❌", callback_data="cancel_tx")
+]
 ])
 
 # -------------------------
@@ -354,8 +356,8 @@ async def cb_menu_settings(call: types.CallbackQuery):
     user_id = await get_or_create_user(call.from_user.id)
     enabled = await is_summarization_enabled(user_id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(("Отключить" if enabled else "Включить") + " суммаризацию", callback_data="toggle_summary")],
-        [InlineKeyboardButton("Назад в меню", callback_data="menu_back")]
+        [InlineKeyboardButton((text="Отключить" if enabled else text="Включить") + " суммаризацию", callback_data="toggle_summary")],
+        [InlineKeyboardButton(text="Назад в меню", callback_data="menu_back")]
     ])
     await call.message.answer(f"Суммаризация контекста: {'включена' if enabled else 'отключена'}", reply_markup=kb)
     await call.answer()
