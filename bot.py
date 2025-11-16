@@ -1,14 +1,15 @@
-# bot.py — улучшенная версия с smart-parser, подтверждением и /stats
+# bot.py — улучшенная версия с меню, inline-кнопками и AI-анализом
 import os
 import re
-import io
-import math
-import base64
 import uuid
+import base64
 import asyncio
-import asyncpg
 from datetime import datetime, timedelta
 from functools import partial
+
+import asyncpg
+import httpx
+from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -16,22 +17,19 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from dotenv import load_dotenv
-import httpx
-import matplotlib.pyplot as plt
 
 load_dotenv()
 
-# ---------------------------
+# -------------------------
 # Конфигурация
-# ---------------------------
+# -------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = int(os.getenv("DB_PORT", 5432))
 
 GIGACHAT_CLIENT_ID = os.getenv("GIGACHAT_CLIENT_ID")
 GIGACHAT_CLIENT_SECRET = os.getenv("GIGACHAT_CLIENT_SECRET")
@@ -39,54 +37,60 @@ GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE")
 GIGACHAT_AUTH_URL = os.getenv("GIGACHAT_AUTH_URL")
 GIGACHAT_API_URL = os.getenv("GIGACHAT_API_URL")
 
-# параметры
-CONTEXT_SUMMARY_THRESHOLD = 400      # если записей > этого -> делаем summarization
-CONTEXT_TRIM_COUNT = 200            # сколько удалить после суммаризации
+# параметры поведения
 GIGACHAT_MODEL = "GigaChat:1.0.26.20"
 MAX_TRANSACTIONS_FOR_ANALYSIS = 200
+CONTEXT_SUMMARY_THRESHOLD = 400
+CONTEXT_TRIM_COUNT = 200
 
-# ---------------------------
-# Инициализация бота и DB pool
-# ---------------------------
+# -------------------------
+# Инициализация
+# -------------------------
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-db = None
+db = None  # пул подключений asyncpg будет присвоен при старте
 
+# временное хранилище подтверждаемой транзакции (пока пользователь не подтвердил)
+pending_tx = {}  # {tg_id: {"amount":..., "category":..., "description":...}}
+
+# -------------------------
+# Вспомогательные функции
+# -------------------------
 async def create_db_pool():
     return await asyncpg.create_pool(
-        user=DB_USER, password=DB_PASSWORD, database=DB_NAME, host=DB_HOST, port=DB_PORT
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME,
+        host=DB_HOST,
+        port=DB_PORT,
+        min_size=1,
+        max_size=10
     )
 
-# ---------------------------
-# Временное хранилище подтверждаемой транзакции
-# {user_id: {"amount":..., "category":..., "description":...}}
-# ---------------------------
-pending_tx = {}
-
-# ---------------------------
-# GigaChat: получение токена (Basic Auth Base64, как в тесте)
-# ---------------------------
+# -------------------------
+# GigaChat: получение токена и запрос
+# -------------------------
 async def get_gigachat_token():
+    """Получаем access_token через Basic Auth (как в тесте)."""
     auth_str = f"{GIGACHAT_CLIENT_ID}:{GIGACHAT_CLIENT_SECRET}"
-    b64_auth = base64.b64encode(auth_str.encode()).decode()
+    b64 = base64.b64encode(auth_str.encode()).decode()
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json",
-        "Authorization": f"Basic {b64_auth}",
+        "Authorization": f"Basic {b64}",
         "RqUID": str(uuid.uuid4())
     }
     data = {"scope": GIGACHAT_SCOPE}
     async with httpx.AsyncClient(verify=False, timeout=20) as client:
         resp = await client.post(GIGACHAT_AUTH_URL, headers=headers, data=data)
         resp.raise_for_status()
-        return resp.json()["access_token"]
+        j = resp.json()
+        return j.get("access_token")
 
-# ---------------------------
-# GigaChat: отправка сообщений
-# ---------------------------
 async def gigachat_request(messages):
+    """Отправляем messages (list) в GigaChat и возвращаем ответ (строку)."""
     token = await get_gigachat_token()
     headers = {
         "Content-Type": "application/json",
@@ -98,296 +102,297 @@ async def gigachat_request(messages):
         resp = await client.post(GIGACHAT_API_URL, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        # безопасно извлекаем ответ
+        try:
+            return data["choices"][0]["message"]["content"]
+        except Exception:
+            return str(data)
 
-# ---------------------------
+# -------------------------
 # AI-контекст (Postgres)
-# ---------------------------
+# -------------------------
 async def save_message(user_id, role, content):
+    """Сохраняем роль ("user"/"assistant"/"system") и текст в ai_context."""
     await db.execute(
-        "INSERT INTO ai_context (user_id, role, content) VALUES ($1, $2, $3)",
+        "INSERT INTO ai_context (user_id, role, content, created_at) VALUES ($1, $2, $3, NOW())",
         user_id, role, content
     )
-
-async def get_context_count(user_id):
-    r = await db.fetchrow("SELECT count(*)::int AS c FROM ai_context WHERE user_id=$1", user_id)
-    return r["c"] if r else 0
 
 async def get_full_context(user_id):
     rows = await db.fetch("SELECT role, content FROM ai_context WHERE user_id=$1 ORDER BY id ASC", user_id)
     return [{"role": r["role"], "content": r["content"]} for r in rows]
 
-# если контекст слишком длинный — суммаризируем старые сообщения, вставляем summary и удаляем старые
+async def get_context_count(user_id):
+    r = await db.fetchrow("SELECT count(*)::int AS c FROM ai_context WHERE user_id=$1", user_id)
+    return r["c"] if r else 0
+
+# Простая суммаризация старых сообщений (при превышении порога)
 async def ensure_compact_context(user_id):
     cnt = await get_context_count(user_id)
     if cnt <= CONTEXT_SUMMARY_THRESHOLD:
         return
-    # берем старые сообщения, которые будем суммировать
-    rows = await db.fetch("SELECT id, role, content FROM ai_context WHERE user_id=$1 ORDER BY id ASC LIMIT $2", user_id, cnt - CONTEXT_TRIM_COUNT)
+    # берем самые старые записи, которые уйдут в summary
+    cutoff = cnt - CONTEXT_TRIM_COUNT
+    rows = await db.fetch("SELECT id, role, content FROM ai_context WHERE user_id=$1 ORDER BY id ASC LIMIT $2", user_id, cutoff)
     if not rows:
         return
-    text = ""
-    for r in rows:
-        text += f"{r['role']}: {r['content']}\n"
-    # отправляем запрос на суммаризацию (помним: это платно — используем аккуратно)
-    system = {"role":"system","content":"Сделай краткое summary предыдущей истории (несколько предложений). Будь максимально сжатым и сохрани ключевые факты и финансовые выводы."}
-    messages = [system, {"role":"user","content":text}]
+    text = "\n".join([f"{r['role']}: {r['content']}" for r in rows])
+    system = {"role": "system", "content": "Сделай сжатое, ключевое summary следующих записей: максимум 2-3 предложения, сохрани факты о доходах/расходах/целях."}
+    messages = [system, {"role": "user", "content": text}]
     try:
         summary = await gigachat_request(messages)
-        # вставляем system-summary в контекст
+        # сохраняем summary как system-сообщение
         await save_message(user_id, "system", f"SUMMARY: {summary}")
-        # удаляем старые сообщения
+        # удалить старые
         ids = [r["id"] for r in rows]
         await db.execute("DELETE FROM ai_context WHERE id = ANY($1::int[])", ids)
     except Exception as e:
-        # если что-то пошло не так — не удаляем ничего
         print("Summarize failed:", e)
+        # не удаляем ничего в случае ошибки
 
-# ---------------------------
-# Анализ транзакций
-# ---------------------------
-async def analyze_user_finances(user_id):
+# -------------------------
+# Анализ транзакций / цели
+# -------------------------
+async def analyze_user_finances_text(user_id):
     rows = await db.fetch(
         "SELECT amount, category, description, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2",
         user_id, MAX_TRANSACTIONS_FOR_ANALYSIS
     )
     if not rows:
         return "У пользователя нет транзакций."
-    text = "Последние транзакции (последние записи):\n"
+    text = "Последние транзакции:\n"
     for r in rows:
-        ts = r["created_at"].strftime("%Y-%m-%d")
-        text += f"- {r['amount']}₽ | {r['category'] or '—'} | {r['description'] or ''} | {ts}\n"
-    # цели
-    goals = await db.fetch("SELECT id, target, current, title, created_at FROM goals WHERE user_id=$1", user_id)
+        ts = r["created_at"].strftime("%Y-%m-%d") if r["created_at"] else ""
+        text += f"- {r['amount']}₽ | {r.get('category') or '—'} | {r.get('description') or ''} | {ts}\n"
+    goals = await db.fetch("SELECT title, target, current, created_at FROM goals WHERE user_id=$1", user_id)
     if goals:
         text += "\nЦели:\n"
         for g in goals:
-            pr = (g["current"] / g["target"] * 100) if g["target"] else 0
-            text += f"- {g['title'] if 'title' in g else 'Цель'}: {g['current']}/{g['target']}₽ ({pr:.1f}%)\n"
+            pr = (g["current"]/g["target"]*100) if g["target"] else 0
+            text += f"- {g.get('title','Цель')}: {g['current']}/{g['target']} ₽ ({pr:.1f}%)\n"
     return text
 
-# ---------------------------
-# Smart-парсер транзакции
-# поддерживает: "+1500", "-200", "1500 еда", "1.5k salary", "1 500 000", "2млн", "150k", ","
-# ---------------------------
-UNIT_MAP = {
-    "k": 1_000, "к": 1_000,
-    "m": 1_000_000, "м": 1_000_000, "млн": 1_000_000
-}
-
+# -------------------------
+# Smart-парсер суммы и строки
+# -------------------------
+UNIT_MAP = {"k": 1_000, "к": 1_000, "m": 1_000_000, "м": 1_000_000, "млн": 1_000_000}
 def parse_amount_token(s: str):
-    s = s.strip().lower().replace(" ", "").replace("\u2009","")
-    # find sign
+    s0 = s.strip().lower().replace(" ", "").replace("\u2009", "")
     sign = 1
-    if s.startswith("+"):
-        sign = 1; s = s[1:]
-    elif s.startswith("-"):
-        sign = -1; s = s[1:]
-    # replace comma with dot
-    s = s.replace(",", ".")
-    # units suffix
-    m = re.match(r"^([\d\.]+)([a-zа-яё%]*)$", s)
+    if s0.startswith("+"):
+        s0 = s0[1:]; sign = 1
+    elif s0.startswith("-"):
+        s0 = s0[1:]; sign = -1
+    s0 = s0.replace(",", ".")
+    m = re.match(r"^([\d\.]+)([a-zа-яё%]*)$", s0, re.IGNORECASE)
     if not m:
-        raise ValueError("не удалось распознать сумму")
+        raise ValueError("invalid amount")
     num = float(m.group(1))
     unit = m.group(2)
-    multiplier = 1
+    mult = 1
     if unit:
-        # handle '150k', '1.5млн', 'к'
         for k,v in UNIT_MAP.items():
             if unit.startswith(k):
-                multiplier = v
+                mult = v
                 break
-    amount = num * multiplier * sign
-    return int(round(amount))
+    return int(round(num * mult * sign))
 
 def smart_parse_free_text(text: str):
     """
-    возвращает (amount:int, category:str or None, description:str or None)
+    Возвращает (amount:int, category:str or None, description:str or None) или None.
     """
-    text = text.strip()
-    # try to find amount token anywhere: look for number with optional signs and units
-    amount_token_match = re.search(r"([+-]?\s*\d[\d\s\.,]*(?:[kkmмлн]|к|м|млн|k|m|K|M)?)", text, re.IGNORECASE)
-    if not amount_token_match:
+    if not text:
         return None
-    token = amount_token_match.group(1)
+    # ищем токен с числом и возможно суффиксом
+    m = re.search(r"([+-]?\s*\d[\d\s\.,]*(?:k|K|m|M|к|К|м|М|млн)?)", text, re.IGNORECASE)
+    if not m:
+        return None
+    token = m.group(1)
     try:
         amount = parse_amount_token(token)
     except Exception:
         return None
-    # remove token from text
-    left = (text[:amount_token_match.start()] + text[amount_token_match.end():]).strip()
+    # остаток текста без токена
+    left = (text[:m.start()] + " " + text[m.end():]).strip()
     if not left:
         return (amount, None, None)
-    # guess category as first word
     parts = left.split()
     category = parts[0]
     description = left
     return (amount, category, description)
 
-# ---------------------------
-# Пользовательские функции
-# ---------------------------
-async def get_or_create_user(tg_id):
-    row = await db.fetchrow("SELECT id FROM users WHERE tg_id=$1", tg_id)
+# -------------------------
+# Пользователь / helpers
+# -------------------------
+async def get_or_create_user(tg_id: int):
+    row = await db.fetchrow("SELECT id FROM users WHERE tg_id = $1", tg_id)
     if row:
         return row["id"]
     row = await db.fetchrow("INSERT INTO users (tg_id, created_at) VALUES ($1, NOW()) RETURNING id", tg_id)
     return row["id"]
 
-# ---------------------------
+# -------------------------
+# Клавиатуры / меню
+# -------------------------
+def main_menu_kb():
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton("➕ Добавить транзакцию", callback_data="menu_add"),
+         InlineKeyboardButton("🎯 Мои цели", callback_data="menu_goals")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="menu_stats"),
+         InlineKeyboardButton("💬 Совет AI", callback_data="menu_ai")],
+        [InlineKeyboardButton("❓ Помощь", callback_data="menu_help")]
+    ])
+    return kb
+
+confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton("Подтвердить ✅", callback_data="confirm_tx"),
+     InlineKeyboardButton("Отмена ❌", callback_data="cancel_tx")]
+])
+
+# -------------------------
 # Команды
-# ---------------------------
+# -------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     uid = await get_or_create_user(message.from_user.id)
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton("Добавить транзакцию", callback_data="ui_add"),
-             InlineKeyboardButton("Мои цели", callback_data="ui_goals")],
-            [InlineKeyboardButton("Статистика /stats", callback_data="ui_stats"),
-             InlineKeyboardButton("Помощь /help", callback_data="ui_help")]
-        ]
+    text = (
+        "Привет! Я твой Финансовый помощник 🤖💸\n\n"
+        "— Добавляй транзакции быстро: `-2500 кофе`, `+150000 зарплата`, `1.5k grocery`.\n"
+        "— Создавай цели и отслеживай прогресс.\n"
+        "— Получай советы от AI на основе ваших трат и целей.\n\n"
+        "Выбери действие в меню 👇"
     )
-    await message.answer(
-        "Привет — я финансовый ассистент.\n"
-        "Могу считать бюджет, давать советы и следить за целями. Нажми кнопку или напиши сообщение.\n"
-        "Примеры ввода транзакции: `-2500 кофе`, `+150000 зарплата`, `1.5k groceries`",
-        reply_markup=kb
-    )
+    await message.answer(text, reply_markup=main_menu_kb())
+
+@dp.message(Command("menu"))
+async def cmd_menu(message: types.Message):
+    await message.answer("Главное меню:", reply_markup=main_menu_kb())
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
-    await message.answer(
-        "Команды:\n"
-        "/start — приветствие\n"
-        "/add — добавить транзакцию\n"
+    text = (
+        "Команды и подсказки:\n"
+        "/start — приветствие и меню\n"
+        "/menu — открыть главное меню\n"
+        "/add — добавить транзакцию (пошагово)\n"
         "/goal — добавить цель\n"
-        "/stats — сводка расходов\n"
-        "/balance — баланс по целям"
+        "/stats — статистика за 30 дней\n"
+        "/balance — прогресс по целям\n\n"
+        "Быстрая запись транзакции: просто напишите строку, например:\n"
+        "`-2500 кофе`, `+150k зарплата`, `1 500 000`"
     )
+    await message.answer(text, reply_markup=main_menu_kb())
 
-# ---------------------------
-# Inline UI callbacks
-# ---------------------------
-@dp.callback_query(lambda c: c.data == "ui_add")
-async def cb_ui_add(callback: types.CallbackQuery):
-    await callback.message.answer("Напиши транзакцию в одной строке, например: `-2500 кофе` или отправь /add")
-    await callback.answer()
+# -------------------------
+# Callback handlers (menu)
+# -------------------------
+@dp.callback_query(lambda c: c.data == "menu_add")
+async def cb_menu_add(call: types.CallbackQuery):
+    await call.message.answer("Отправь транзакцию в одной строке, например: `-2500 кофе` или нажми /add")
+    await call.answer()
 
-@dp.callback_query(lambda c: c.data == "ui_stats")
-async def cb_ui_stats(callback: types.CallbackQuery):
-    await callback.message.answer("Выполняю /stats...")
-    await callback.answer()
-    # reuse /stats handler
-    await cmd_stats(callback.message)
-
-@dp.callback_query(lambda c: c.data == "ui_goals")
-async def cb_ui_goals(callback: types.CallbackQuery):
-    await callback.message.answer("Вот ваши цели:")
-    await callback.answer()
-    # list goals
-    rows = await db.fetch("SELECT id, title, target, current, created_at FROM goals WHERE user_id=(SELECT id FROM users WHERE tg_id=$1)", callback.from_user.id)
+@dp.callback_query(lambda c: c.data == "menu_goals")
+async def cb_menu_goals(call: types.CallbackQuery):
+    user_id = await get_or_create_user(call.from_user.id)
+    rows = await db.fetch("SELECT id, title, target, current FROM goals WHERE user_id=$1", user_id)
     if not rows:
-        await callback.message.answer("Целей не найдено.")
+        await call.message.answer("Целей не найдено. Чтобы создать — нажмите /goal")
+        await call.answer()
         return
-    msg = "Ваши цели:\n"
+    text = "Ваши цели:\n"
     for r in rows:
         pr = (r["current"]/r["target"]*100) if r["target"] else 0
-        msg += f"- {r.get('title','Цель')} — {r['current']}/{r['target']} ₽ ({pr:.1f}%)\n"
-    await callback.message.answer(msg)
+        text += f"- {r.get('title','Цель')}: {r['current']}/{r['target']} ₽ ({pr:.1f}%)\n"
+    await call.message.answer(text)
+    await call.answer()
 
-@dp.callback_query(lambda c: c.data == "ui_help")
-async def cb_ui_help(callback: types.CallbackQuery):
-    await callback.message.answer("Смотрите /help для команд.")
-    await callback.answer()
+@dp.callback_query(lambda c: c.data == "menu_stats")
+async def cb_menu_stats(call: types.CallbackQuery):
+    await call.message.answer("Запрашиваю статистику...")
+    await call.answer()
+    # reuse stats handler
+    await cmd_stats(call.message)
 
-# ---------------------------
-# /add FSM (fallback also accepts smart free text)
-# ---------------------------
-class AddTxStates(StatesGroup):
+@dp.callback_query(lambda c: c.data == "menu_ai")
+async def cb_menu_ai(call: types.CallbackQuery):
+    await call.message.answer("Напишите вопрос ассистенту (например: 'Как оптимизировать расходы?'):")
+    await call.answer()
+
+@dp.callback_query(lambda c: c.data == "menu_help")
+async def cb_menu_help(call: types.CallbackQuery):
+    await call.message.answer("/help — список команд")
+    await call.answer()
+
+# -------------------------
+# /add - FSM + быстрый ввод
+# -------------------------
+class AddStates(StatesGroup):
     amount = State()
     category = State()
     description = State()
 
 @dp.message(Command("add"))
 async def cmd_add_start(message: types.Message, state: FSMContext):
-    await state.set_state(AddTxStates.amount)
-    await message.answer("Введите сумму (например: 2500 или -2500 или 1.5k):")
+    await state.set_state(AddStates.amount)
+    await message.answer("Введите сумму (пример: 2500, -2500, 1.5k):")
 
-@dp.message(AddTxStates.amount)
-async def cmd_add_amount(message: types.Message, state: FSMContext):
+@dp.message(AddStates.amount)
+async def add_amount_handler(message: types.Message, state: FSMContext):
     txt = message.text.strip()
-    # try parse free text too
+    # попытка smart parse одной строкой
     parsed = smart_parse_free_text(txt)
     if parsed:
         amount, category, description = parsed
         pending_tx[message.from_user.id] = {"amount": amount, "category": category, "description": description}
-        # build confirm keyboard
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton("Подтвердить ✅", callback_data="confirm_tx"),
-             InlineKeyboardButton("Отмена ❌", callback_data="cancel_tx")]
-        ])
         cat_text = category or "—"
-        desc = description or ""
-        await message.answer(f"Найдено:\nСумма: {amount}₽\nКатегория: {cat_text}\nОписание: {desc}\nПодтвердить?", reply_markup=kb)
+        desc_text = description or ""
+        await message.answer(f"Найдено:\nСумма: {amount}₽\nКатегория: {cat_text}\nОписание: {desc_text}\nПодтвердить?", reply_markup=confirm_kb)
         await state.clear()
         return
-
-    # if not parsed ask for explicit amount
+    # иначе ожидаем ввод суммы
     try:
         amount = parse_amount_token(txt)
     except Exception:
-        await message.answer("Не могу распознать сумму. Попробуй ещё раз (пример: 1500, -2000, 1.5k):")
+        await message.answer("Не могу распознать сумму. Попробуйте ещё раз (пример: 1500, -2000, 1.5k):")
         return
     await state.update_data(amount=amount)
-    await state.set_state(AddTxStates.category)
+    await state.set_state(AddStates.category)
     await message.answer("Введите категорию (например: еда, транспорт):")
 
-@dp.message(AddTxStates.category)
-async def cmd_add_category(message: types.Message, state: FSMContext):
+@dp.message(AddStates.category)
+async def add_category_handler(message: types.Message, state: FSMContext):
     await state.update_data(category=message.text.strip())
-    await state.set_state(AddTxStates.description)
-    await message.answer("Введите описание (или '—'):")
+    await state.set_state(AddStates.description)
+    await message.answer("Введите описание (или введите '-' чтобы пропустить):")
 
-@dp.message(AddTxStates.description)
-async def cmd_add_description(message: types.Message, state: FSMContext):
+@dp.message(AddStates.description)
+async def add_description_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
     amount = data.get("amount")
     category = data.get("category") or None
-    description = message.text if message.text != '—' else None
+    description = message.text.strip() if message.text.strip() != "-" else None
     user_id = await get_or_create_user(message.from_user.id)
-
-    # Save tx
-    await db.execute(
-        "INSERT INTO transactions (user_id, amount, category, description, created_at) VALUES ($1, $2, $3, $4, NOW())",
-        user_id, amount, category, description
-    )
+    await db.execute("INSERT INTO transactions (user_id, amount, category, description, created_at) VALUES ($1,$2,$3,$4,NOW())",
+                     user_id, amount, category, description)
     await save_message(user_id, "system", f"Добавлена транзакция: {amount}₽ | {category} | {description}")
-    await message.answer("Транзакция добавлена ✅\nХотите краткий анализ? (да/нет)")
-
+    await message.answer("Транзакция добавлена ✅\nХотите краткий анализ? Отправьте 'да' или нажмите /stats")
     await state.clear()
 
-# ---------------------------
-# Inline confirm/cancel handlers
-# ---------------------------
+# Inline confirm/cancel for pending_tx
 @dp.callback_query(lambda c: c.data == "confirm_tx")
 async def cb_confirm_tx(call: types.CallbackQuery):
-    user = call.from_user
-    data = pending_tx.pop(user.id, None)
+    data = pending_tx.pop(call.from_user.id, None)
     if not data:
         await call.answer("Нет ожидающей транзакции.", show_alert=True)
         return
-    user_id = await get_or_create_user(user.id)
-    await db.execute(
-        "INSERT INTO transactions (user_id, amount, category, description, created_at) VALUES ($1, $2, $3, $4, NOW())",
-        user_id, data["amount"], data.get("category"), data.get("description")
-    )
+    user_id = await get_or_create_user(call.from_user.id)
+    await db.execute("INSERT INTO transactions (user_id, amount, category, description, created_at) VALUES ($1,$2,$3,$4,NOW())",
+                     user_id, data["amount"], data.get("category"), data.get("description"))
     await save_message(user_id, "system", f"Добавлена транзакция: {data['amount']}₽ | {data.get('category')} | {data.get('description')}")
     await call.message.edit_text("Транзакция подтверждена и добавлена ✅")
-    # provide quick analysis
-    summary = await analyze_user_finances(user_id)
-    await call.message.answer("Краткий анализ:\n" + (summary if len(summary) < 1500 else summary[:1400] + "..."))
+    # краткий анализ
+    summary = await analyze_user_finances_text(user_id)
+    await call.message.answer("Краткий анализ:\n" + (summary[:1500] + "..." if len(summary) > 1500 else summary))
     await call.answer()
 
 @dp.callback_query(lambda c: c.data == "cancel_tx")
@@ -396,9 +401,9 @@ async def cb_cancel_tx(call: types.CallbackQuery):
     await call.message.edit_text("Операция отменена.")
     await call.answer()
 
-# ---------------------------
+# -------------------------
 # /goal FSM
-# ---------------------------
+# -------------------------
 class GoalStates(StatesGroup):
     target = State()
     title = State()
@@ -424,20 +429,20 @@ async def cmd_goal_title(message: types.Message, state: FSMContext):
     data = await state.get_data()
     title = message.text.strip()
     user_id = await get_or_create_user(message.from_user.id)
-    await db.execute("INSERT INTO goals (user_id, target, current, title, created_at) VALUES ($1, $2, 0, $3, NOW())", user_id, data["target"], title)
+    await db.execute("INSERT INTO goals (user_id, target, current, title, created_at) VALUES ($1,$2,0,$3,NOW())",
+                     user_id, data["target"], title)
     await save_message(user_id, "system", f"Создана цель: {title} на {data['target']}₽")
     await message.answer(f"Цель '{title}' добавлена ✅")
     await state.clear()
 
-# ---------------------------
-# /stats - сводка расходов / баланс
-# ---------------------------
+# -------------------------
+# /stats и /balance
+# -------------------------
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
     user_id = await get_or_create_user(message.from_user.id)
-    # суммарно за 30 дней
     since = datetime.utcnow() - timedelta(days=30)
-    rows = await db.fetch("SELECT amount, category FROM transactions WHERE user_id=$1 AND created_at >= $2", user_id, since)
+    rows = await db.fetch("SELECT amount, category, created_at FROM transactions WHERE user_id=$1 AND created_at >= $2", user_id, since)
     if not rows:
         await message.answer("Нет транзакций за последние 30 дней.")
         return
@@ -446,13 +451,12 @@ async def cmd_stats(message: types.Message):
     for r in rows:
         cat = r["category"] or "—"
         by_cat[cat] = by_cat.get(cat, 0) + r["amount"]
-    msg = f"Статистика (30 дней):\nВсего: {total}₽\n"
+    text = f"Статистика за 30 дней:\nВсего: {total}₽\n"
     top = sorted(by_cat.items(), key=lambda x: -abs(x[1]))[:8]
     for cat, val in top:
-        msg += f"- {cat}: {val}₽\n"
-    await message.answer(msg)
+        text += f"- {cat}: {val}₽\n"
+    await message.answer(text)
 
-# /balance - прогресс по целям
 @dp.message(Command("balance"))
 async def cmd_balance(message: types.Message):
     user_id = await get_or_create_user(message.from_user.id)
@@ -460,53 +464,61 @@ async def cmd_balance(message: types.Message):
     if not goals:
         await message.answer("Целей пока нет.")
         return
-    out = "Цели:\n"
+    out = "Прогресс по целям:\n"
     for g in goals:
-        pr = (g["current"] / g["target"] * 100) if g["target"] else 0
+        pr = (g["current"]/g["target"]*100) if g["target"] else 0
         out += f"- {g.get('title','Цель')}: {g['current']}/{g['target']} ₽ ({pr:.1f}%)\n"
     await message.answer(out)
 
-# ---------------------------
-# Catch-all: AI обработчик всех текстовых сообщений
-# ---------------------------
+# -------------------------
+# Catch-all: AI обработчик
+# -------------------------
 @dp.message()
 async def handle_all(message: types.Message):
-    # ignore commands (they are handled above)
+    # игнорируем команды
     if message.text and message.text.startswith("/"):
         return
 
-    user_id = await get_or_create_user(message.from_user.id)
+    # если пользователь написал "да" после добавления — показать stats
+    if message.text and message.text.strip().lower() in ("да", "yes", "ok"):
+        await cmd_stats(message)
+        return
 
-    # когда контекст растёт — делаем summarization (асинхронно, не блокируя)
+    # try parse quick transaction (user typed e.g. "-2500 кофе")
+    parsed = smart_parse_free_text(message.text)
+    if parsed:
+        amount, category, description = parsed
+        pending_tx[message.from_user.id] = {"amount": amount, "category": category, "description": description}
+        await message.answer(f"Найдено: {amount}₽ | {category or '—'} | {description or ''}\nПодтвердить?", reply_markup=confirm_kb)
+        return
+
+    user_id = await get_or_create_user(message.from_user.id)
+    # запустить background summarization, если нужно
     asyncio.create_task(ensure_compact_context(user_id))
 
-    # prepare context + finance data
-    context = await get_full_context(user_id)
-    finance = await analyze_user_finances(user_id)
+    # подготовка данных для AI
+    finance_text = await analyze_user_finances_text(user_id)
     system_prompt = (
         "Ты — умный финансовый ассистент. Используй историю диалога и данные транзакций/целей.\n"
-        f"Данные пользователя:\n{finance}\n\n"
-        "Ответь кратко (3-6 предложений) и дай 3 практических шага."
+        f"Данные пользователя:\n{finance_text}\n\n"
+        "Ответь кратко (3-6 предложений) и предложи 3 практических шага."
     )
-    messages = [{"role":"system","content":system_prompt}] + context + [{"role":"user","content":message.text}]
+    context = await get_full_context(user_id)
+    messages = [{"role": "system", "content": system_prompt}] + context + [{"role": "user", "content": message.text}]
 
-    # отправляем запрос в GigaChat (в отдельном потоке)
     try:
         reply = await gigachat_request(messages)
     except Exception as e:
         print("GigaChat error:", e)
-        await message.answer("Ошибка AI-сервиса. Попробуй позже.")
+        await message.answer("Ошибка AI-сервиса. Попробуйте позже.")
         return
 
-    # сохраняем диалог в контекст и отвечаем
     await save_message(user_id, "assistant", reply)
-    # структурируем: разделим на короткий вывод и рекомендации (если есть)
-    # отправляем ответ
     await message.answer(reply)
 
-# ---------------------------
+# -------------------------
 # Startup
-# ---------------------------
+# -------------------------
 async def main():
     global db
     db = await create_db_pool()
