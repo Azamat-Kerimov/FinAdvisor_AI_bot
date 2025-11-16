@@ -29,6 +29,7 @@ load_dotenv()
 # -------------------------
 # Конфигурация из .env
 # -------------------------
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 DB_NAME = os.getenv("DB_NAME")
