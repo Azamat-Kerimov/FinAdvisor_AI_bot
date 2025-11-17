@@ -696,7 +696,64 @@ async def on_startup():
     global db
     db = await create_db_pool()
     print("DB connected.")
-   
+    # create tables if not exist (minimal)
+    await db.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        tg_id BIGINT UNIQUE,
+        created_at TIMESTAMP,
+        summarization_enabled BOOLEAN DEFAULT TRUE
+    );
+    """)
+    await db.execute("""
+    CREATE TABLE IF NOT EXISTS transactions (
+        id SERIAL PRIMARY KEY,
+        user_id INT REFERENCES users(id),
+        amount NUMERIC,
+        category TEXT,
+        description TEXT,
+        created_at TIMESTAMP
+    );
+    """)
+    await db.execute("""
+    CREATE TABLE IF NOT EXISTS goals (
+        id SERIAL PRIMARY KEY,
+        user_id INT REFERENCES users(id),
+        target NUMERIC,
+        current NUMERIC DEFAULT 0,
+        title TEXT,
+        created_at TIMESTAMP
+    );
+    """)
+    await db.execute("""
+    CREATE TABLE IF NOT EXISTS assets (
+        id SERIAL PRIMARY KEY,
+        user_id INT REFERENCES users(id),
+        name TEXT,
+        amount NUMERIC,
+        type TEXT,
+        created_at TIMESTAMP
+    );
+    """)
+    await db.execute("""
+    CREATE TABLE IF NOT EXISTS ai_context (
+        id SERIAL PRIMARY KEY,
+        user_id INT,
+        role TEXT,
+        content TEXT,
+        created_at TIMESTAMP
+    );
+    """)
+    # ai_cache optional
+    await db.execute("""
+    CREATE TABLE IF NOT EXISTS ai_cache (
+        id SERIAL PRIMARY KEY,
+        user_id INT,
+        input_hash TEXT,
+        answer TEXT,
+        created_at TIMESTAMP
+    );
+    """)
     # start scheduler
     tz = ZoneInfo("Europe/London")
     scheduler.add_job(weekly_report_job, "cron", day_of_week="mon", hour=9, minute=0, timezone=tz)
