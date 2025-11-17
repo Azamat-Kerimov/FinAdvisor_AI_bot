@@ -362,11 +362,11 @@ class AssetStates(StatesGroup):
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="➕ Добавить расход", callback_data="add_expense"),
-            InlineKeyboardButton(text="🎯 Цели", callback_data="menu_goals")
+            InlineKeyboardButton(text="🎯 Цели", callback_data="menu_goals"),
+            InlineKeyboardButton(text="➕ Транзакция", callback_data="add_expense")
         ],
         [
-            InlineKeyboardButton(text="💼 Активы", callback_data="menu_assets"),
+            InlineKeyboardButton(text="💼 Активы и долги", callback_data="menu_assets"),
             InlineKeyboardButton(text="📊 Графики", callback_data="menu_charts")
         ],
         [
