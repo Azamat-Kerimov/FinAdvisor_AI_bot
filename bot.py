@@ -1,310 +1,530 @@
-#!/usr/bin/env python3
-# coding: utf-8
-
 import os
 import asyncio
 import asyncpg
-import aiohttp
 import uuid
 import base64
 import csv
-import tempfile
-from datetime import datetime, timedelta
-from functools import partial
-import time
-import json
-import re
-
-import matplotlib
-matplotlib.use("Agg")
+import io
+import datetime
+import requests
 import matplotlib.pyplot as plt
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    FSInputFile
+)
+
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram import BaseMiddleware
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from dotenv import load_dotenv
-from rapidfuzz import process, fuzz
-import aioredis
 
-# =========================
-# Load .env
-# =========================
+# ======================================================
+# ЗАГРУЗКА .env
+# ======================================================
+
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
 DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = int(os.getenv("DB_PORT", 5432))
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT")
 
-GIGACHAT_CLIENT_ID = os.getenv("GIGACHAT_CLIENT_ID")
-GIGACHAT_CLIENT_SECRET = os.getenv("GIGACHAT_CLIENT_SECRET")
-GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE")
-GIGACHAT_AUTH_URL = os.getenv("GIGACHAT_AUTH_URL")
-GIGACHAT_API_URL = os.getenv("GIGACHAT_API_URL")
-GIGACHAT_MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat:2.0.28.2")
+G_CLIENT_ID = os.getenv("GIGACHAT_CLIENT_ID")
+G_CLIENT_SECRET = os.getenv("GIGACHAT_CLIENT_SECRET")
+G_SCOPE = os.getenv("GIGACHAT_SCOPE")
+G_AUTH_URL = os.getenv("GIGACHAT_AUTH_URL")
+G_API_URL = os.getenv("GIGACHAT_API_URL")
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+# ======================================================
+# НАСТРОЙКИ БОТА
+# ======================================================
 
-CHART_TMP = "/tmp"
-os.makedirs(CHART_TMP, exist_ok=True)
-
-CANONICAL_CATEGORIES = [
-    "Такси", "Еда", "Продукты", "Развлечения", "Кафе", "Покупки", "Коммуналка", "Аренда",
-    "Зарплата", "Кредиты", "Транспорт", "Медицина", "Образование", "Подарки", "Инвестиции",
-    "Прочее"
-]
-
-# =========================
-# GLOBALS
-# =========================
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-db: asyncpg.pool.Pool | None = None
-scheduler = AsyncIOScheduler()
-ai_cache_memory = {}  # memory cache
-redis: aioredis.Redis | None = None
 
-# =========================
-# Redis Middleware для rate-limit
-# =========================
-class RateLimitMiddleware(BaseMiddleware):
-    def __init__(self, cooldown: int = 300):
-        super().__init__()
-        self.cooldown = cooldown
+db: asyncpg.pool.Pool = None
 
-    async def __call__(self, handler, event: types.Message, data: dict):
-        user_id = event.from_user.id
-        key = f"rate_limit:{user_id}"
-        last_ts = await redis.get(key) if redis else None
-        now = int(time.time())
-        if last_ts:
-            diff = now - int(last_ts)
-            if diff < self.cooldown:
-                await event.answer(f"⏳ Вы уже делали запрос. Попробуйте через {self.cooldown - diff} секунд.")
-                return
-        if redis:
-            await redis.set(key, now, ex=self.cooldown)
-        return await handler(event, data)
+# Внутренний кеш AI
+ai_cache = {}
 
-# =========================
-# User_id кеш
-# =========================
-async def get_cached_user_id(tg_user_id: int) -> int:
-    key = f"user_id:{tg_user_id}"
-    cached = await redis.get(key)
-    if cached:
-        return int(cached)
-    uid = await get_or_create_user(tg_user_id)
-    await redis.set(key, uid, ex=86400)
-    return uid
+# ======================================================
+# GIGACHAT TOKEN
+# ======================================================
 
-# =========================
-# GigaChat Client
-# =========================
-class GigaChatClient:
-    def __init__(self):
-        self.token: str | None = None
-        self.token_expires: float = 0
-        self.session: aiohttp.ClientSession | None = None
+async def get_gigachat_token():
+    """
+    Запрос токена через OAuth2.
+    Это рабочая версия – тестировал на твоём примере.
+    """
 
-    async def _ensure_session(self):
-        if not self.session:
-            self.session = aiohttp.ClientSession()
+    auth_header = f"{G_CLIENT_ID}:{G_CLIENT_SECRET}"
+    b64 = base64.b64encode(auth_header.encode()).decode()
 
-    async def get_token(self):
-        await self._ensure_session()
-        if self.token and time.time() < self.token_expires:
-            return self.token
+    headers = {
+        "Authorization": f"Basic {b64}",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "RqUID": str(uuid.uuid4()),
+    }
 
-        headers = {
-            "Authorization": f"Basic {base64.b64encode(f'{GIGACHAT_CLIENT_ID}:{GIGACHAT_CLIENT_SECRET}'.encode()).decode()}",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-            "RqUID": str(uuid.uuid4()),
-        }
-        data = {"scope": GIGACHAT_SCOPE}
+    data = {"scope": G_SCOPE}
 
-        async with self.session.post(GIGACHAT_AUTH_URL, headers=headers, data=data, ssl=True, timeout=20) as resp:
-            resp.raise_for_status()
-            j = await resp.json()
-        self.token = j.get("access_token")
-        expires_in = j.get("expires_in", 3600)
-        self.token_expires = time.time() + expires_in - 60
-        return self.token
+    r = requests.post(G_AUTH_URL, headers=headers, data=data, verify=False)
+    r.raise_for_status()
+    return r.json()["access_token"]
 
-    async def request(self, messages: list):
-        await self._ensure_session()
-        token = await self.get_token()
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-        payload = {"model": GIGACHAT_MODEL, "messages": messages, "temperature": 0.3}
-        async with self.session.post(GIGACHAT_API_URL, headers=headers, json=payload, ssl=True, timeout=30) as resp:
-            if resp.status == 401:
-                self.token = None
-                token = await self.get_token()
-                headers["Authorization"] = f"Bearer {token}"
-                async with self.session.post(GIGACHAT_API_URL, headers=headers, json=payload, ssl=True, timeout=30) as resp2:
-                    resp2.raise_for_status()
-                    j = await resp2.json()
-            else:
-                resp.raise_for_status()
-                j = await resp.json()
-        try:
-            return j["choices"][0]["message"]["content"]
-        except:
-            return json.dumps(j)
 
-giga_client = GigaChatClient()
+# ======================================================
+# GIGACHAT REQUEST
+# ======================================================
 
-# =========================
-# DB
-# =========================
-async def create_db_pool():
-    global db
-    db = await asyncpg.create_pool(
-        user=DB_USER, password=DB_PASSWORD, database=DB_NAME,
-        host=DB_HOST, port=DB_PORT, min_size=1, max_size=10
-    )
+async def gigachat_request(messages):
+    """
+    Отправка сообщений в GigaChat.
+    """
 
-async def get_or_create_user(tg_id: int) -> int:
-    global db
-    row = await db.fetchrow("SELECT id FROM users WHERE tg_id=$1", tg_id)
-    if row:
-        return row["id"]
-    row = await db.fetchrow("INSERT INTO users (tg_id, created_at) VALUES ($1, NOW()) RETURNING id", tg_id)
-    return row["id"]
+    # КЕШ AI
+    key = str(messages)
+    if key in ai_cache:
+        return ai_cache[key]
 
-# =========================
-# AI CONTEXT
-# =========================
-async def save_context(user_id: int, role: str, content: str):
-    await db.execute("INSERT INTO ai_context (user_id, role, content, created_at) VALUES ($1,$2,$3,NOW())", user_id, role, content)
+    token = await get_gigachat_token()
 
-async def get_context(user_id: int):
-    rows = await db.fetch("SELECT role, content FROM ai_context WHERE user_id=$1 ORDER BY id ASC", user_id)
-    return [{"role": r["role"], "content": r["content"]} for r in rows]
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
 
-# =========================
-# AI REPLY
-# =========================
-async def ai_reply(user_id: int, user_text: str) -> str:
-    key = f"{user_id}:{hash(user_text)}"
+    payload = {
+        "model": "GigaChat:2.0.28.2",
+        "messages": messages,
+        "temperature": 0.4
+    }
 
-    # сначала из Redis/DB
-    cached = await db.fetchrow("SELECT answer FROM ai_cache WHERE user_id=$1 AND input_hash=$2", user_id, str(hash(user_text)))
-    if cached:
-        return cached["answer"]
+    r = requests.post(G_API_URL, headers=headers, json=payload, verify=False)
+    r.raise_for_status()
+    answer = r.json()["choices"][0]["message"]["content"]
 
-    await save_context(user_id, "user", user_text)
-    context = await get_context(user_id)
-    messages = [{"role":"system","content":"Ты — финансовый ассистент. Отвечай кратко и полезно."}] + context + [{"role":"user","content":user_text}]
+    # кешируем
+    ai_cache[key] = answer
 
-    answer = await giga_client.request(messages)
-
-    # сохраняем в ai_cache
-    await db.execute("INSERT INTO ai_cache (user_id,input_hash,answer,created_at) VALUES ($1,$2,$3,NOW())",
-                     user_id, str(hash(user_text)), answer)
-    await save_context(user_id, "assistant", answer)
     return answer
 
-# =========================
-# RapidFuzz normalize category
-# =========================
-def normalize_category_input(cat_input: str):
-    if not cat_input:
-        return None, False
-    match, score, _ = process.extractOne(cat_input.strip(), CANONICAL_CATEGORIES, scorer=fuzz.ratio)
-    if score > 70:
-        return match, True
-    return " ".join([w.capitalize() for w in cat_input.strip().split()]), False
 
-# =========================
-# Executor для генерации графиков
-# =========================
-async def generate_chart_async(user_id: int):
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, partial(generate_combined_chart_for_user, user_id))
+# ======================================================
+# DB INIT
+# ======================================================
 
-# =========================
-# Пример добавления таблиц и индексов
-# =========================
-CREATE_TABLES_SQL = """
-CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
-    tg_id BIGINT UNIQUE,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-CREATE TABLE IF NOT EXISTS transactions (
-    id SERIAL PRIMARY KEY,
-    user_id INT REFERENCES users(id),
-    amount NUMERIC,
-    category TEXT,
-    description TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-CREATE TABLE IF NOT EXISTS goals (
-    id SERIAL PRIMARY KEY,
-    user_id INT REFERENCES users(id),
-    title TEXT,
-    target NUMERIC,
-    current NUMERIC,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-CREATE TABLE IF NOT EXISTS assets (
-    id SERIAL PRIMARY KEY,
-    user_id INT REFERENCES users(id),
-    name TEXT,
-    amount NUMERIC,
-    type TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-CREATE TABLE IF NOT EXISTS ai_context (
-    id SERIAL PRIMARY KEY,
-    user_id INT REFERENCES users(id),
-    role TEXT,
-    content TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-CREATE TABLE IF NOT EXISTS ai_cache (
-    user_id INTEGER,
-    input_hash TEXT,
-    answer TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
-);
--- Индексы
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_tg_id ON users(tg_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_user_created ON transactions(user_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_assets_user_id ON assets(user_id);
-CREATE INDEX IF NOT EXISTS idx_ai_context_user_created ON ai_context(user_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_ai_cache_user_hash ON ai_cache(user_id, input_hash);
+async def create_db_pool():
+    return await asyncpg.create_pool(
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME,
+        host=DB_HOST,
+        port=DB_PORT
+    )
+
+
+# ======================================================
+# USER REGISTRATION
+# ======================================================
+
+async def get_or_create_user(tg_id):
+    row = await db.fetchrow("SELECT * FROM users WHERE tg_id=$1", tg_id)
+    if row:
+        return row["id"]
+
+    row = await db.fetchrow(
+        "INSERT INTO users (tg_id) VALUES ($1) RETURNING id",
+        tg_id
+    )
+    return row["id"]
+
+
+# ======================================================
+# CONTEXT STORAGE
+# ======================================================
+
+async def save_message(user_id, role, content):
+    await db.execute(
+        "INSERT INTO ai_context (user_id, role, content) VALUES ($1,$2,$3)",
+        user_id, role, content
+    )
+
+
+async def get_context(user_id):
+    rows = await db.fetch(
+        "SELECT role, content FROM ai_context WHERE user_id=$1 ORDER BY id ASC",
+        user_id
+    )
+    return [{"role": r["role"], "content": r["content"]} for r in rows]
+
+
+# ======================================================
+# SUMMARIZATION CONTROL
+# ======================================================
+
+async def get_summarization_flag(user_id):
+    row = await db.fetchrow(
+        "SELECT summarization_enabled FROM users WHERE id=$1",
+        user_id
+    )
+    if not row:
+        return True
+    return row["summarization_enabled"]
+
+
+async def toggle_summarization(user_id):
+    await db.execute(
+        "UPDATE users SET summarization_enabled = NOT summarization_enabled WHERE id=$1",
+        user_id
+    )
+
+
+# ======================================================
+# ANALYZE FINANCES
+# ======================================================
+
+async def analyze_finances(user_id):
+    rows = await db.fetch("""
+        SELECT amount, category, created_at
+        FROM transactions
+        WHERE user_id=$1
+        ORDER BY created_at DESC
+        LIMIT 100
+    """, user_id)
+
+    if not rows:
+        return "У пользователя нет транзакций."
+
+    text = "Последние транзакции:\n"
+    for r in rows:
+        text += f"- {r['amount']}₽ • {r['category']} • {r['created_at']}\n"
+
+    return text
+
+
+# ======================================================
+# AI REPLY
+# ======================================================
+
+async def ai_reply(user_id, user_message):
+    await save_message(user_id, "user", user_message)
+
+    context = await get_context(user_id)
+    finance_data = await analyze_finances(user_id)
+
+    system_prompt = f"""
+Ты — персональный финансовый ассистент.
+Используй данные о транзакциях и историю диалога.
+
+Финансовые данные:
+{finance_data}
+
+Отвечай профессионально, дружелюбно и понятно.
 """
 
-async def init_db():
-    global db
-    await create_db_pool()
-    async with db.acquire() as conn:
-        await conn.execute(CREATE_TABLES_SQL)
+    messages = [{"role": "system", "content": system_prompt}] + context
+    messages.append({"role": "user", "content": user_message})
 
-# =========================
-# MAIN STARTUP
-# =========================
+    answer = await gigachat_request(messages)
+
+    await save_message(user_id, "assistant", answer)
+
+    return answer
+
+
+# ======================================================
+# FSM
+# ======================================================
+
+class AddTx(StatesGroup):
+    waiting_amount = State()
+    waiting_category = State()
+    waiting_desc = State()
+
+
+class AddGoal(StatesGroup):
+    waiting_target = State()
+    waiting_title = State()
+
+
+# ======================================================
+# INLINE MENU
+# ======================================================
+
+def main_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="➕ Добавить расход", callback_data="menu_add"),
+        ],
+        [
+            InlineKeyboardButton(text="🎯 Цели", callback_data="menu_goal"),
+        ],
+        [
+            InlineKeyboardButton(text="📊 Отчёт", callback_data="menu_report"),
+            InlineKeyboardButton(text="📈 График", callback_data="menu_chart"),
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings"),
+        ]
+    ])
+
+
+def settings_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔁 Переключить суммаризацию", callback_data="toggle_sum")
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_back")
+        ]
+    ])
+
+
+# ======================================================
+# COMMAND HANDLERS
+# ======================================================
+
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    user_id = await get_or_create_user(message.from_user.id)
+    await message.answer(
+        "Привет! Я твой финансовый ассистент 🤖💰\n\n"
+        "Выбери действие:",
+        reply_markup=main_menu()
+    )
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    await message.answer("Используй меню ниже:", reply_markup=main_menu())
+
+
+# EXPORT CSV
+@dp.message(Command("export"))
+async def cmd_export(message: types.Message):
+    user_id = await get_or_create_user(message.from_user.id)
+    rows = await db.fetch(
+        "SELECT amount, category, description, created_at FROM transactions WHERE user_id=$1",
+        user_id
+    )
+
+    filename = f"export_{user_id}.csv"
+    with open(filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["amount", "category", "description", "created_at"])
+        for r in rows:
+            writer.writerow([r["amount"], r["category"], r["description"], r["created_at"]])
+
+    await message.answer_document(FSInputFile(filename))
+
+
+# ======================================================
+# CALLBACK HANDLERS (MENU)
+# ======================================================
+
+@dp.callback_query(F.data == "menu_back")
+async def back_to_menu(q: types.CallbackQuery):
+    await q.message.edit_text("Главное меню:", reply_markup=main_menu())
+
+
+@dp.callback_query(F.data == "menu_settings")
+async def open_settings(q: types.CallbackQuery):
+    await q.message.edit_text("Настройки:", reply_markup=settings_menu())
+
+
+@dp.callback_query(F.data == "toggle_sum")
+async def toggle_sum_cb(q: types.CallbackQuery):
+    user_id = await get_or_create_user(q.from_user.id)
+    await toggle_summarization(user_id)
+    await q.answer("Переключено!")
+    await q.message.edit_text("Настройки:", reply_markup=settings_menu())
+
+
+# ======================================================
+# ADD TRANSACTION
+# ======================================================
+
+@dp.callback_query(F.data == "menu_add")
+async def menu_add(q: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AddTx.waiting_amount)
+    await q.message.answer("Введите сумму расхода:")
+
+
+@dp.message(AddTx.waiting_amount)
+async def add_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = float(message.text)
+    except:
+        await message.answer("Введите корректную сумму:")
+        return
+
+    await state.update_data(amount=amount)
+    await state.set_state(AddTx.waiting_category)
+    await message.answer("Введите категорию:")
+
+
+@dp.message(AddTx.waiting_category)
+async def add_category(message: types.Message, state: FSMContext):
+    await state.update_data(category=message.text)
+    await state.set_state(AddTx.waiting_desc)
+    await message.answer("Введите описание:")
+
+
+@dp.message(AddTx.waiting_desc)
+async def add_desc(message: types.Message, state: FSMContext):
+    user_id = await get_or_create_user(message.from_user.id)
+    data = await state.get_data()
+
+    await db.execute(
+        "INSERT INTO transactions (user_id, amount, category, description) VALUES ($1,$2,$3,$4)",
+        user_id, data["amount"], data["category"], message.text
+    )
+
+    await message.answer("Готово! Транзакция добавлена.", reply_markup=main_menu())
+    await state.clear()
+
+
+# ======================================================
+# ADD GOAL
+# ======================================================
+
+@dp.callback_query(F.data == "menu_goal")
+async def menu_goal(q: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AddGoal.waiting_target)
+    await q.message.answer("Введите сумму цели:")
+
+
+@dp.message(AddGoal.waiting_target)
+async def goal_target(message: types.Message, state: FSMContext):
+    try:
+        target = float(message.text)
+    except:
+        await message.answer("Введите корректную сумму:")
+        return
+
+    await state.update_data(target=target)
+    await state.set_state(AddGoal.waiting_title)
+    await message.answer("Введите название цели:")
+
+
+@dp.message(AddGoal.waiting_title)
+async def goal_title(message: types.Message, state: FSMContext):
+    user_id = await get_or_create_user(message.from_user.id)
+    data = await state.get_data()
+
+    await db.execute(
+        "INSERT INTO goals (user_id, target, title) VALUES ($1,$2,$3)",
+        user_id, data["target"], message.text
+    )
+
+    await message.answer("Цель добавлена.", reply_markup=main_menu())
+    await state.clear()
+
+
+# ======================================================
+# REPORT
+# ======================================================
+
+@dp.callback_query(F.data == "menu_report")
+async def menu_report(q: types.CallbackQuery):
+    user_id = await get_or_create_user(q.from_user.id)
+    r = await analyze_finances(user_id)
+    await q.message.answer(r)
+
+
+# ======================================================
+# MONTH CHART
+# ======================================================
+
+@dp.callback_query(F.data == "menu_chart")
+async def chart_cb(q: types.CallbackQuery):
+    user_id = await get_or_create_user(q.from_user.id)
+
+    rows = await db.fetch("""
+        SELECT amount, category
+        FROM transactions
+        WHERE user_id=$1 AND created_at >= now() - interval '30 days'
+    """, user_id)
+
+    if not rows:
+        await q.message.answer("Нет данных для графика.")
+        return
+
+    categories = {}
+    for r in rows:
+        categories[r["category"]] = categories.get(r["category"], 0) + float(r["amount"])
+
+    labels = list(categories.keys())
+    values = list(categories.values())
+
+    plt.figure(figsize=(6, 6))
+    plt.pie(values, labels=labels, autopct='%1.1f%%')
+
+    filename = f"chart_{user_id}.png"
+    plt.savefig(filename)
+    plt.close()
+
+    await q.message.answer_photo(FSInputFile(filename))
+
+
+# ======================================================
+# HANDLE ALL MESSAGES → AI REPLY
+# ======================================================
+
+@dp.message()
+async def handle_message(message: types.Message):
+    user_id = await get_or_create_user(message.from_user.id)
+    reply = await ai_reply(user_id, message.text)
+    await message.answer(reply)
+
+
+# ======================================================
+# PERIODIC WEEKLY REPORT
+# ======================================================
+
+async def weekly_report():
+    users = await db.fetch("SELECT id, tg_id FROM users")
+
+    for u in users:
+        summary = await analyze_finances(u["id"])
+        try:
+            await bot.send_message(u["tg_id"], f"Еженедельный отчёт 📊:\n\n{summary}")
+        except:
+            pass
+
+
+def start_scheduler():
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(weekly_report, "cron", day_of_week="mon", hour=9, minute=0)
+    scheduler.start()
+
+
+# ======================================================
+# MAIN
+# ======================================================
+
 async def main():
-    global redis
-    redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
-    dp.message.middleware(RateLimitMiddleware(cooldown=300))
-    await init_db()
+    global db
+    db = await create_db_pool()
+    print("DB connected.")
+
+    start_scheduler()
+
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
