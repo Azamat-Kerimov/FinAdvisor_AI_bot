@@ -1,7 +1,0 @@
-aiogram==3.4.0
-asyncpg
-httpx
-python-dotenv
-matplotlib
-apscheduler
-requests
