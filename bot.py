@@ -50,7 +50,7 @@ async def on_startup():
     pool = await create_db_pool()
     dp['db'] = pool
     # register handlers from modules (we pass dependencies)
-    await tx_mod.register_tx_handlers(dp, get_or_create_user, pool, save_message)
+    tx_mod.register_tx_handlers(dp, get_or_create_user, pool, save_message)
     await assets_mod.register_handlers(dp, get_or_create_user, pool)
     await reports_mod.register_handlers(dp, get_or_create_user, pool)
     await ai_mod.register_handlers(dp, get_or_create_user, pool, save_message, get_context, analyze_finances)
@@ -59,4 +59,5 @@ async def on_startup():
 if __name__ == "__main__":
     asyncio.run(on_startup())
     asyncio.run(dp.start_polling(bot))
+
 
