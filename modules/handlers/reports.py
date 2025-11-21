@@ -1,39 +1,96 @@
-(venv) root@vm2511041557:~/FinAdvisor_AI_bot# git pull
-sudo systemctl restart finadvisorbot
-sudo journalctl -u finadvisorbot -f
-remote: Enumerating objects: 9, done.
-remote: Counting objects: 100% (9/9), done.
-remote: Compressing objects: 100% (5/5), done.
-remote: Total 5 (delta 4), reused 0 (delta 0), pack-reused 0 (from 0)
-Unpacking objects: 100% (5/5), 1.91 KiB | 115.00 KiB/s, done.
-From https://github.com/Azamat-Kerimov/FinAdvisor_AI_bot
-   250afea..5d0c4d3  main       -> origin/main
-Updating 250afea..5d0c4d3
-Fast-forward
- modules/handlers/assets.py | 93 ++++++++++++++++++++++++++++++++++++----------------
- 1 file changed, 65 insertions(+), 28 deletions(-)
-Nov 21 12:59:56 vm2511041557 systemd[1]: finadvisorbot.service: Consumed 3.762s CPU time.
-Nov 21 12:59:56 vm2511041557 systemd[1]: finadvisorbot.service: Scheduled restart job, restart counter is at 44.
-Nov 21 12:59:56 vm2511041557 systemd[1]: Stopped FinAdvisor Telegram Bot.
-Nov 21 12:59:56 vm2511041557 systemd[1]: finadvisorbot.service: Consumed 3.762s CPU time.
-Nov 21 12:59:56 vm2511041557 systemd[1]: Started FinAdvisor Telegram Bot.
-Nov 21 12:59:57 vm2511041557 systemd[1]: Stopping FinAdvisor Telegram Bot...
-Nov 21 12:59:57 vm2511041557 systemd[1]: finadvisorbot.service: Deactivated successfully.
-Nov 21 12:59:57 vm2511041557 systemd[1]: Stopped FinAdvisor Telegram Bot.
-Nov 21 12:59:57 vm2511041557 systemd[1]: finadvisorbot.service: Consumed 1.036s CPU time.
-Nov 21 12:59:57 vm2511041557 systemd[1]: Started FinAdvisor Telegram Bot.
-Nov 21 13:00:01 vm2511041557 python3[139788]: Traceback (most recent call last):
-Nov 21 13:00:01 vm2511041557 python3[139788]:   File "/root/FinAdvisor_AI_bot/bot.py", line 15, in <module>
-Nov 21 13:00:01 vm2511041557 python3[139788]:     from modules.handlers import tx as tx_mod
-Nov 21 13:00:01 vm2511041557 python3[139788]:   File "/root/FinAdvisor_AI_bot/modules/handlers/__init__.py", line 4, in <module>
-Nov 21 13:00:01 vm2511041557 python3[139788]:     from .reports import register_report_handlers
-Nov 21 13:00:01 vm2511041557 python3[139788]: ImportError: cannot import name 'register_report_handlers' from 'modules.handlers.reports' (/root/FinAdvisor_AI_bot/modules/handlers/reports.py)
-Nov 21 13:00:01 vm2511041557 systemd[1]: finadvisorbot.service: Main process exited, code=exited, status=1/FAILURE
-Nov 21 13:00:01 vm2511041557 systemd[1]: finadvisorbot.service: Failed with result 'exit-code'.
-Nov 21 13:00:01 vm2511041557 systemd[1]: finadvisorbot.service: Consumed 4.135s CPU time.
-Nov 21 13:00:02 vm2511041557 systemd[1]: finadvisorbot.service: Scheduled restart job, restart counter is at 1.
-Nov 21 13:00:02 vm2511041557 systemd[1]: Stopped FinAdvisor Telegram Bot.
-Nov 21 13:00:02 vm2511041557 systemd[1]: finadvisorbot.service: Consumed 4.135s CPU time.
-Nov 21 13:00:02 vm2511041557 systemd[1]: Started FinAdvisor Telegram Bot.
-^C
-(venv) root@vm2511041557:~/FinAdvisor_AI_bot#
+# modules/handlers/reports.py
+import io
+from aiogram import types
+from aiogram.filters import Command
+from aiogram.types import FSInputFile
+
+from modules.utils import normalize_category
+from modules.charts import make_expense_chart, make_goals_progress_chart
+
+
+def register_report_handlers(dp, get_or_create_user, db_pool, save_message):
+
+    @dp.message(Command("report"))
+    async def cmd_report(message: types.Message):
+        user_id = await get_or_create_user(message.from_user.id)
+
+        # последние транзакции
+        rows = await db_pool.fetch(
+            "SELECT amount, category, description, created_at FROM transactions "
+            "WHERE user_id=$1 ORDER BY created_at DESC LIMIT 10",
+            user_id
+        )
+
+        # активы и долги
+        assets = await db_pool.fetch(
+            "SELECT title, amount, type FROM assets WHERE user_id=$1 ORDER BY id",
+            user_id
+        )
+        liabilities = await db_pool.fetch(
+            "SELECT title, amount, type FROM liabilities WHERE user_id=$1 ORDER BY id",
+            user_id
+        )
+
+        # ===== таблица транзакций =====
+        if not rows:
+            tx_table = "Транзакций пока нет."
+        else:
+            header = "🧾 <b>Последние транзакции</b>\n\n"
+            table = "<pre>Сумма    Категория      Дата\n"
+            table += "-----------------------------------\n"
+
+            for tx in rows:
+                cat = normalize_category(tx["category"]) if tx["category"] else "-"
+                date = tx["created_at"].strftime("%Y-%m-%d %H:%M")
+                table += f"{tx['amount']:>6}   {cat:<12}   {date}\n"
+
+            table += "</pre>"
+            tx_table = header + table
+
+        # ===== активы =====
+        if assets:
+            assets_text = "\n\n<b>💼 Активы</b>\n"
+            total_assets = sum(a["amount"] for a in assets)
+            for a in assets:
+                assets_text += f"• {a['title']} — {a['amount']} ({a['type']})\n"
+            assets_text += f"\n<b>Всего активов:</b> {total_assets}"
+        else:
+            assets_text = "\n\n<b>💼 Активы:</b> нет"
+
+        # ===== долги =====
+        if liabilities:
+            liabilities_text = "\n\n<b>💳 Долги</b>\n"
+            total_liabilities = sum(l["amount"] for l in liabilities)
+            for l in liabilities:
+                liabilities_text += f"• {l['title']} — {l['amount']} ({l['type']})\n"
+            liabilities_text += f"\n<b>Всего долгов:</b> {total_liabilities}"
+        else:
+            liabilities_text = "\n\n<b>💳 Долги:</b> нет"
+
+        net = (sum(a["amount"] for a in assets) if assets else 0) - \
+              (sum(l["amount"] for l in liabilities) if liabilities else 0)
+        net_text = f"\n\n<b>💰 Чистый капитал:</b> {net}"
+
+        await message.answer(
+            f"{tx_table}{assets_text}{liabilities_text}{net_text}",
+            parse_mode="HTML"
+        )
+
+    # график расходов
+    @dp.message(Command("chart"))
+    async def cmd_chart(message: types.Message):
+        user_id = await get_or_create_user(message.from_user.id)
+
+        # график расходов
+        buf1 = await make_expense_chart(db_pool, user_id)
+        file1 = FSInputFile(buf1, filename="expenses.png")
+
+        # график целей
+        buf2 = await make_goals_progress_chart(db_pool, user_id)
+        file2 = FSInputFile(buf2, filename="goals.png")
+
+        await message.answer("Ваши графики ↓")
+        await message.answer_photo(file1)
+        await message.answer_photo(file2)
+
+
