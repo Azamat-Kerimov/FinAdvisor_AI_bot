@@ -17,6 +17,7 @@ import uuid
 import hashlib
 import tempfile
 from datetime import datetime, timedelta
+import requests
 
 import asyncpg
 import httpx
@@ -79,40 +80,70 @@ async def create_db_pool():
         user=DB_USER, password=DB_PASSWORD, database=DB_NAME, host=DB_HOST, port=DB_PORT, min_size=1, max_size=8
     )
 
-# -------------------------
-# GIGACHAT: token + request (async)
-# -------------------------
-async def get_gigachat_token():
-    # Basic auth header: base64(client_id:client_secret)
-    auth = f"{GIGACHAT_CLIENT_ID}:{GIGACHAT_CLIENT_SECRET}"
-    b64 = base64.b64encode(auth.encode()).decode()
+# --------------------------------------------
+# Получение токена GigaChat (рабочее!)
+# --------------------------------------------
+def get_gigachat_token():
+    AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+    CLIENT_ID = os.getenv("GIGACHAT_CLIENT_ID")
+    CLIENT_SECRET = os.getenv("GIGACHAT_CLIENT_SECRET")
+    SCOPE = os.getenv("GIGACHAT_SCOPE")
+
+    auth_header = f"{CLIENT_ID}:{CLIENT_SECRET}"
+    b64_auth = base64.b64encode(auth_header.encode()).decode()
+
     headers = {
-        "Authorization": f"Basic {b64}",
-        "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": f"Basic {b64_auth}",
         "RqUID": str(uuid.uuid4())
     }
-    data = {"scope": GIGACHAT_SCOPE}
-    async with httpx.AsyncClient(verify=False, timeout=20.0) as client:
-        r = await client.post(GIGACHAT_AUTH_URL, headers=headers, data=data)
-        r.raise_for_status()
-        j = r.json()
-        return j.get("access_token")
 
-async def gigachat_request(messages, model=GIGACHAT_MODEL):
-    token = await get_gigachat_token()
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-    payload = {"model": model, "messages": messages, "temperature": 0.3}
-    async with httpx.AsyncClient(verify=False, timeout=40.0) as client:
-        r = await client.post(GIGACHAT_API_URL, headers=headers, json=payload)
+    payload = {"scope": SCOPE}
+
+    resp = requests.post(AUTH_URL, headers=headers, data=payload, verify=False)
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
+# --------------------------------------------
+# Рабочая функция GigaChat API
+# --------------------------------------------
+async def gigachat_request(messages):
+    try:
+        # фильтруем пустые сообщения
+        clean_messages = []
+        for m in messages:
+            if m.get("content"):
+                clean_messages.append({
+                    "role": m["role"],
+                    "content": m["content"]
+                })
+
+        token = get_gigachat_token()
+
+        API_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+
+        payload = {
+            "model": "GigaChat:2.0.28.2",
+            "messages": clean_messages
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {token}"
+        }
+
+        r = requests.post(API_URL, json=payload, headers=headers, verify=False)
         r.raise_for_status()
-        j = r.json()
-        # compatible with returned structure
-        return j["choices"][0]["message"]["content"]
+        data = r.json()
+
+        return data["choices"][0]["message"]["content"]
+
+    except Exception as e:
+        print("GIGACHAT ERROR:", e)
+        return "AI ошибка: " + str(e)
 
 # -------------------------
 # AI cache helpers (uses ai_cache table)
@@ -758,4 +789,5 @@ if __name__ == "__main__":
         asyncio.run(dp.start_polling(bot))
     except (KeyboardInterrupt, SystemExit):
         print("Shutting down")
+
 
