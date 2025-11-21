@@ -1,13 +1,6 @@
-from .tx import register_tx_handlers
-from .goals import register_goal_handlers
-from .assets import register_asset_handlers
-from .reports import register_report_handlers
-from .ai_handlers import register_ai_handlers
-
-__all__ = [
-    "register_tx_handlers",
-    "register_goal_handlers",
-    "register_asset_handlers",
-    "register_report_handlers",
-    "register_ai_handlers",
-]
+# Импортируем все обработчики из отдельных файлов
+from .tx import *
+from .goals import *
+from .assets import *
+from .reports import *
+from .ai_handlers import *
