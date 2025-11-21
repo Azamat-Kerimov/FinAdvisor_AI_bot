@@ -14,7 +14,7 @@ class AssetStates(StatesGroup):
     amount = State()
     type = State()
 
-def register_asset_handlers(dp, get_or_create_user, pool, save_message):
+def register_asset_handlers(dp, get_or_create_user, db_pool, save_message):
 
     # вывести список активов
     @dp.message(Command("assets"))
@@ -87,4 +87,5 @@ def register_asset_handlers(dp, get_or_create_user, pool, save_message):
         await state.clear()
         await call.message.answer("Действие отменено.")
         await call.answer()
+
 
