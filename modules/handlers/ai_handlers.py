@@ -1,77 +1,86 @@
-# modules/handlers/ai_handlers.py
 from aiogram import types
-from aiogram.filters import Command
 
+from modules.db import save_message, get_context, analyze_finances
 from modules.ai import gigachat_request
-from modules.utils import normalize_category
 
+async def ai_reply(user_id, user_message):
+    await save_message(user_id, "user", user_message)
 
-def register_ai_handlers(dp, get_or_create_user, db_pool, save_message):
+    context = await get_context(user_id)
+    finance_data = await analyze_finances(user_id)
 
-    # ИИ консультация
-    @dp.message(Command("consult"))
-    async def cmd_consult(message: types.Message):
-        user_id = await get_or_create_user(message.from_user.id)
+    system_prompt = f"""
+[translate:Ты — персональный финансовый ассистент.]
+[translate:Используй данные о транзакциях и историю диалога.]
 
-        async with db_pool.acquire() as connection:
-            # История транзакций
-            tx = await connection.fetch(
-                "SELECT amount, category, description FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 200",
-                user_id
-            )
-            # Активы/долги
-            assets = await connection.fetch(
-                "SELECT title, amount, type FROM assets WHERE user_id=$1",
-                user_id
-            )
-            liabilities = await connection.fetch(
-                "SELECT title, amount, type FROM liabilities WHERE user_id=$1",
-                user_id
-            )
+[translate:Финансовые данные:]
+{finance_data}
 
-        prompt = f"""
-Ты — финансовый консультант.
-Составь краткий пошаговый план из 5-7 пунктов.
-Дай рекомендации, используя данные:
-
-Транзакции:
-{[dict(x) for x in tx]}
-
-Активы:
-{[dict(a) for a in assets]}
-
-Долги:
-{[dict(l) for l in liabilities]}
+[translate:Отвечай профессионально, дружелюбно и понятно.]
 """
 
-        ai_answer = await gigachat_request(prompt)  # Исправлено с ask_gigachat на gigachat_request
-        await save_message(user_id, "assistant", ai_answer)
+    messages = [{"role": "system", "content": system_prompt}] + context
+    messages.append({"role": "user", "content": user_message})
 
-        await message.answer("🧠 <b>Консультация</b>\n\n" + ai_answer, parse_mode="HTML")
+    answer = await gigachat_request(messages)
 
-    # ————————————————————————
-    # Автоатрибуция
-    # ————————————————————————
+    await save_message(user_id, "assistant", answer)
 
-    async def auto_categorize(user_id: int, text: str):
-        prompt = f"""
-Ты — система категоризации транзакций.
-Пользователь ввёл текст: "{text}"
+    return answer
 
-Верни JSON: {{"amount": ..., "category": "...", "description": "..."}}
-Категория — одно слово, с большой буквы.
-"""
-        raw = await gigachat_request(prompt)
+from aiogram.filters import Command
+from aiogram import F, types
+from aiogram.dispatcher.filters import Text
+from aiogram.fsm.context import FSMContext
 
-        try:
-            import json
-            data = json.loads(raw)
-        except:
-            return None
+from handlers import main_menu, get_or_create_user, toggle_summarization
 
-        if data.get("category"):
-            data["category"] = normalize_category(data["category"])
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    user_id = await get_or_create_user(message.from_user.id)
+    await message.answer(
+        "[translate:Привет! Я твой финансовый ассистент 🤖💰]\n\n"
+        "[translate:Выбери действие:]",
+        reply_markup=main_menu()
+    )
 
-        return data
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    await message.answer("[translate:Используй меню ниже:]", reply_markup=main_menu())
 
-    return auto_categorize
+@dp.message(Command("export"))
+async def cmd_export(message: types.Message):
+    user_id = await get_or_create_user(message.from_user.id)
+    rows = await db.fetch(
+        "SELECT amount, category, description, created_at FROM transactions WHERE user_id=$1",
+        user_id
+    )
+
+    filename = f"export_{user_id}.csv"
+    import csv
+    from aiogram.types import FSInputFile
+
+    with open(filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["amount", "category", "description", "created_at"])
+        for r in rows:
+            writer.writerow([r["amount"], r["category"], r["description"], r["created_at"]])
+
+    await message.answer_document(FSInputFile(filename))
+
+from aiogram import F
+
+@dp.callback_query(F.data == "menu_back")
+async def back_to_menu(q: types.CallbackQuery):
+    await q.message.edit_text("[translate:Главное меню:]", reply_markup=main_menu())
+
+@dp.callback_query(F.data == "menu_settings")
+async def open_settings(q: types.CallbackQuery):
+    await q.message.edit_text("[translate:Настройки:]", reply_markup=settings_menu())
+
+@dp.callback_query(F.data == "toggle_sum")
+async def toggle_sum_cb(q: types.CallbackQuery):
+    user_id = await get_or_create_user(q.from_user.id)
+    await toggle_summarization(user_id)
+    await q.answer("[translate:Переключено!]")
+    await q.message.edit_text("[translate:Настройки:]", reply_markup=settings_menu())
