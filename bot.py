@@ -38,20 +38,16 @@ G_API_URL = os.getenv("GIGACHAT_API_URL")
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Импортируем создания пула и обработчики из модулей
-from modules.db import create_db_pool
-from modules.handlers import *
-
-db: asyncpg.pool.Pool = None
-
-ai_cache = {}  # Внутренний кеш AI
+db: asyncpg.pool.Pool = None  # Глобальная переменная пула
 
 async def main():
     global db
-    db = await create_db_pool()
+    from modules.db import create_db_pool
+    db = await create_db_pool()  # Инициализация пула БД в async функции
     print("DB connected.")
 
-    # Импортируя старт_scheduler из модуля utils
+    from modules.handlers import *  # Импорт обработчиков после инициализации db
+
     from modules.utils import start_scheduler
     start_scheduler()
 
@@ -59,4 +55,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
