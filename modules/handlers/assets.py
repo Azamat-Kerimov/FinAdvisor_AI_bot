@@ -1,4 +1,3 @@
-# modules/handlers/assets.py
 from aiogram import types
 from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
@@ -16,16 +15,15 @@ class AssetStates(StatesGroup):
 
 def register_asset_handlers(dp, get_or_create_user, db_pool, save_message):
 
-    async with db_pool.acquire() as connection:
-        
     # вывести список активов
     @dp.message(Command("assets"))
     async def cmd_assets(message: types.Message):
         user_id = await get_or_create_user(message.from_user.id)
-        rows = await connection.fetch(
-            "SELECT id, title, amount, type FROM assets WHERE user_id=$1 ORDER BY id",
-            user_id
-        )
+        async with db_pool.acquire() as connection:
+            rows = await connection.fetch(
+                "SELECT id, title, amount, type FROM assets WHERE user_id=$1 ORDER BY id",
+                user_id
+            )
 
         if not rows:
             await message.answer("У вас пока нет активов. Используйте /addasset для добавления.")
@@ -68,11 +66,12 @@ def register_asset_handlers(dp, get_or_create_user, db_pool, save_message):
         data = await state.get_data()
         user_id = await get_or_create_user(message.from_user.id)
 
-        await connection.execute(
-            "INSERT INTO assets (user_id, title, amount, type, created_at) "
-            "VALUES ($1,$2,$3,$4,NOW())",
-            user_id, data["title"], data["amount"], asset_type
-        )
+        async with db_pool.acquire() as connection:
+            await connection.execute(
+                "INSERT INTO assets (user_id, title, amount, type, created_at) "
+                "VALUES ($1,$2,$3,$4,NOW())",
+                user_id, data["title"], data["amount"], asset_type
+            )
 
         await save_message(
             user_id,
@@ -89,6 +88,3 @@ def register_asset_handlers(dp, get_or_create_user, db_pool, save_message):
         await state.clear()
         await call.message.answer("Действие отменено.")
         await call.answer()
-
-
-
