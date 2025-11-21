@@ -13,21 +13,21 @@ def register_ai_handlers(dp, get_or_create_user, db_pool, save_message):
     async def cmd_consult(message: types.Message):
         user_id = await get_or_create_user(message.from_user.id)
 
-        # История транзакций
-        tx = await db_pool.fetch(
-            "SELECT amount, category, description FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 200",
-            user_id
-        )
-
-        # Активы/долги
-        assets = await db_pool.fetch(
-            "SELECT title, amount, type FROM assets WHERE user_id=$1",
-            user_id
-        )
-        liabilities = await db_pool.fetch(
-            "SELECT title, amount, type FROM liabilities WHERE user_id=$1",
-            user_id
-        )
+        async with db_pool.acquire() as connection:
+            # История транзакций
+            tx = await connection.fetch(
+                "SELECT amount, category, description FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 200",
+                user_id
+            )
+            # Активы/долги
+            assets = await connection.fetch(
+                "SELECT title, amount, type FROM assets WHERE user_id=$1",
+                user_id
+            )
+            liabilities = await connection.fetch(
+                "SELECT title, amount, type FROM liabilities WHERE user_id=$1",
+                user_id
+            )
 
         prompt = f"""
 Ты — финансовый консультант.
@@ -44,7 +44,7 @@ def register_ai_handlers(dp, get_or_create_user, db_pool, save_message):
 {[dict(l) for l in liabilities]}
 """
 
-        ai_answer = await ask_gigachat(prompt)
+        ai_answer = await gigachat_request(prompt)  # Исправлено с ask_gigachat на gigachat_request
         await save_message(user_id, "assistant", ai_answer)
 
         await message.answer("🧠 <b>Консультация</b>\n\n" + ai_answer, parse_mode="HTML")
@@ -61,7 +61,7 @@ def register_ai_handlers(dp, get_or_create_user, db_pool, save_message):
 Верни JSON: {{"amount": ..., "category": "...", "description": "..."}}
 Категория — одно слово, с большой буквы.
 """
-        raw = await ask_gigachat(prompt)
+        raw = await gigachat_request(prompt)
 
         try:
             import json
@@ -75,4 +75,3 @@ def register_ai_handlers(dp, get_or_create_user, db_pool, save_message):
         return data
 
     return auto_categorize
-
