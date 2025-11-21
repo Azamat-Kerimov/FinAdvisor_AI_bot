@@ -2,7 +2,7 @@
 from aiogram import types
 from aiogram.filters import Command
 
-from modules.ai import ask_gigachat
+from modules.ai import gigachat_request
 from modules.utils import normalize_category
 
 
@@ -75,3 +75,4 @@ def register_ai_handlers(dp, get_or_create_user, db_pool, save_message):
         return data
 
     return auto_categorize
+
