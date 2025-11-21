@@ -6,6 +6,7 @@ import asyncio
 # Предполагается, что bot создан в bot.py и импортируется
 from bot import bot
 from modules.db import create_db_pool
+from modules.db import db
 
 async def weekly_report():
     from modules.db import db
@@ -24,5 +25,6 @@ def start_scheduler():
     scheduler.start()
 
 # Вы также можете добавить в utils.py функции для работы с базой, если нужно.
+
 
 
