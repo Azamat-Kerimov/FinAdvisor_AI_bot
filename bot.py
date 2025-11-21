@@ -40,7 +40,7 @@ dp = Dispatcher(storage=MemoryStorage())
 
 # Импортируем создания пула и обработчики из модулей
 from modules.db import create_db_pool
-from handlers import *
+from modules.handlers import *
 
 db: asyncpg.pool.Pool = None
 
@@ -59,3 +59,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
