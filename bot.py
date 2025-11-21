@@ -55,12 +55,13 @@ async def on_startup():
     assets_mod.register_asset_handlers(dp, get_or_create_user, pool, save_message)
     reports_mod.register_report_handlers(dp, get_or_create_user, pool, save_message)
     ai_mod.register_ai_handlers(dp, get_or_create_user, pool, save_message)
-    goals.register_goals_handlers(dp, get_or_create_user, pool, save_message)
+    goals_mod.register_goal_handlers(dp, get_or_create_user, pool, save_message)
     print("Bot started, handlers registered.")
 
 if __name__ == "__main__":
     asyncio.run(on_startup())
     asyncio.run(dp.start_polling(bot))
+
 
 
 
