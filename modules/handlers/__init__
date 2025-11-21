@@ -1,5 +1,3 @@
-# combine all handlers for easy import
-
 from .tx import register_tx_handlers
 from .goals import register_goal_handlers
 from .assets import register_asset_handlers
