@@ -52,13 +52,14 @@ async def on_startup():
     # register handlers from modules (we pass dependencies)
     tx_mod.register_tx_handlers(dp, get_or_create_user, pool, save_message)
     assets_mod.register_asset_handlers(dp, get_or_create_user, pool, save_message)
-    await reports_mod.register_handlers(dp, get_or_create_user, pool)
+    await reports_mod.register_report_handlers(dp, get_or_create_user, pool)
     await ai_mod.register_handlers(dp, get_or_create_user, pool, save_message, get_context, analyze_finances)
     print("Bot started, handlers registered.")
 
 if __name__ == "__main__":
     asyncio.run(on_startup())
     asyncio.run(dp.start_polling(bot))
+
 
 
 
