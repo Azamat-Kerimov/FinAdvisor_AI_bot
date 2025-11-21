@@ -1,77 +1,36 @@
-from aiogram import types
-from aiogram.filters import Command
-from aiogram.fsm.state import State, StatesGroup
+from aiogram import F, types
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.state import StatesGroup, State
 
-from modules.utils import normalize_category
+from modules.db import db
+from handlers import main_menu, AddGoal
 
-cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="Отмена", callback_data="cancel_fsm")]
-])
+@dp.callback_query(F.data == "menu_goal")
+async def menu_goal(q: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AddGoal.waiting_target)
+    await q.message.answer("Введите сумму цели:")
 
-class GoalStates(StatesGroup):
-    title = State()
-    amount = State()
+@dp.message(AddGoal.waiting_target)
+async def goal_target(message: types.Message, state: FSMContext):
+    try:
+        target = float(message.text)
+    except:
+        await message.answer("Введите корректную сумму:")
+        return
 
-def register_goal_handlers(dp, get_or_create_user, db_pool, save_message):
+    await state.update_data(target=target)
+    await state.set_state(AddGoal.waiting_title)
+    await message.answer("Введите название цели:")
 
-    @dp.message(Command("goals"))
-    async def cmd_goals(message: types.Message):
-        user_id = await get_or_create_user(message.from_user.id)
-        async with db_pool.acquire() as connection:
-            rows = await connection.fetch(
-                "SELECT id, title, amount, progress FROM goals WHERE user_id=$1 ORDER BY id",
-                user_id
-            )
+@dp.message(AddGoal.waiting_title)
+async def goal_title(message: types.Message, state: FSMContext):
+    user_id = await get_or_create_user(message.from_user.id)
+    data = await state.get_data()
 
-        if not rows:
-            await message.answer("У вас ещё нет целей. Добавьте новую через /addgoal")
-            return
+    await db.execute(
+        "INSERT INTO goals (user_id, target, title) VALUES ($1,$2,$3)",
+        user_id, data["target"], message.text
+    )
 
-        text = "🎯 Ваши цели:\n\n"
-        for g in rows:
-            text += f"• {g['title']} — {g['progress']} / {g['amount']}\n"
-
-        await message.answer(text)
-
-    @dp.message(Command("addgoal"))
-    async def add_goal(message: types.Message, state: FSMContext):
-        await state.set_state(GoalStates.title)
-        await message.answer("Введите название цели:", reply_markup=cancel_kb)
-
-    @dp.message(GoalStates.title)
-    async def handle_title(message: types.Message, state: FSMContext):
-        await state.update_data(title=message.text.strip())
-        await state.set_state(GoalStates.amount)
-        await message.answer("Введите сумму цели:", reply_markup=cancel_kb)
-
-    @dp.message(GoalStates.amount)
-    async def handle_amount(message: types.Message, state: FSMContext):
-        try:
-            amount = float(message.text.strip())
-        except:
-            await message.answer("Введите число. Попробуйте ещё раз.")
-            return
-
-        data = await state.get_data()
-        title = data["title"]
-
-        user_id = await get_or_create_user(message.from_user.id)
-
-        async with db_pool.acquire() as connection:
-            await connection.execute(
-                "INSERT INTO goals (user_id, title, amount, progress, created_at) VALUES ($1,$2,$3,0,NOW())",
-                user_id, title, amount
-            )
-
-        await save_message(user_id, "system", f"Добавлена цель: {title} на сумму {amount}")
-
-        await message.answer("Цель успешно добавлена 🎯")
-        await state.clear()
-
-    @dp.callback_query(lambda c: c.data == "cancel_fsm")
-    async def cb_cancel(call: types.CallbackQuery, state: FSMContext):
-        await state.clear()
-        await call.message.answer("Действие отменено.")
-        await call.answer()
+    await message.answer("Цель добавлена.", reply_markup=main_menu())
+    await state.clear()
