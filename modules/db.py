@@ -15,18 +15,19 @@ _pool = None
 
 async def create_db_pool():
     global _pool
-    if _pool:
-        return _pool
-    _pool = await asyncpg.create_pool(
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME,
-        host=DB_HOST,
-        port=DB_PORT,
-        min_size=1,
-        max_size=8
-    )
+    if _pool is None:
+        _pool = await asyncpg.create_pool(
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME,
+            host=DB_HOST,
+            port=DB_PORT,
+            min_size=1,
+            max_size=8
+        )
     return _pool
 
 async def get_pool():
+    if _pool is None:
+        raise RuntimeError("Database pool is not initialized")
     return _pool
