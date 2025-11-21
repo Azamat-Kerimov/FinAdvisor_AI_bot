@@ -16,11 +16,13 @@ class AssetStates(StatesGroup):
 
 def register_asset_handlers(dp, get_or_create_user, db_pool, save_message):
 
+    async with db_pool.acquire() as connection:
+        
     # вывести список активов
     @dp.message(Command("assets"))
     async def cmd_assets(message: types.Message):
         user_id = await get_or_create_user(message.from_user.id)
-        rows = await db_pool.fetch(
+        rows = await connection.fetch(
             "SELECT id, title, amount, type FROM assets WHERE user_id=$1 ORDER BY id",
             user_id
         )
@@ -66,7 +68,7 @@ def register_asset_handlers(dp, get_or_create_user, db_pool, save_message):
         data = await state.get_data()
         user_id = await get_or_create_user(message.from_user.id)
 
-        await db_pool.execute(
+        await connection.execute(
             "INSERT INTO assets (user_id, title, amount, type, created_at) "
             "VALUES ($1,$2,$3,$4,NOW())",
             user_id, data["title"], data["amount"], asset_type
@@ -87,5 +89,6 @@ def register_asset_handlers(dp, get_or_create_user, db_pool, save_message):
         await state.clear()
         await call.message.answer("Действие отменено.")
         await call.answer()
+
 
 
