@@ -1,4 +1,3 @@
-# modules/handlers/reports.py
 import io
 from aiogram import types
 from aiogram.filters import Command
@@ -14,24 +13,21 @@ def register_report_handlers(dp, get_or_create_user, db_pool, save_message):
     async def cmd_report(message: types.Message):
         user_id = await get_or_create_user(message.from_user.id)
 
-        # последние транзакции
-        rows = await db_pool.fetch(
-            "SELECT amount, category, description, created_at FROM transactions "
-            "WHERE user_id=$1 ORDER BY created_at DESC LIMIT 10",
-            user_id
-        )
+        async with db_pool.acquire() as connection:
+            rows = await connection.fetch(
+                "SELECT amount, category, description, created_at FROM transactions "
+                "WHERE user_id=$1 ORDER BY created_at DESC LIMIT 10",
+                user_id
+            )
+            assets = await connection.fetch(
+                "SELECT title, amount, type FROM assets WHERE user_id=$1 ORDER BY id",
+                user_id
+            )
+            liabilities = await connection.fetch(
+                "SELECT title, amount, type FROM liabilities WHERE user_id=$1 ORDER BY id",
+                user_id
+            )
 
-        # активы и долги
-        assets = await db_pool.fetch(
-            "SELECT title, amount, type FROM assets WHERE user_id=$1 ORDER BY id",
-            user_id
-        )
-        liabilities = await db_pool.fetch(
-            "SELECT title, amount, type FROM liabilities WHERE user_id=$1 ORDER BY id",
-            user_id
-        )
-
-        # ===== таблица транзакций =====
         if not rows:
             tx_table = "Транзакций пока нет."
         else:
@@ -47,7 +43,6 @@ def register_report_handlers(dp, get_or_create_user, db_pool, save_message):
             table += "</pre>"
             tx_table = header + table
 
-        # ===== активы =====
         if assets:
             assets_text = "\n\n<b>💼 Активы</b>\n"
             total_assets = sum(a["amount"] for a in assets)
@@ -57,7 +52,6 @@ def register_report_handlers(dp, get_or_create_user, db_pool, save_message):
         else:
             assets_text = "\n\n<b>💼 Активы:</b> нет"
 
-        # ===== долги =====
         if liabilities:
             liabilities_text = "\n\n<b>💳 Долги</b>\n"
             total_liabilities = sum(l["amount"] for l in liabilities)
@@ -76,21 +70,16 @@ def register_report_handlers(dp, get_or_create_user, db_pool, save_message):
             parse_mode="HTML"
         )
 
-    # график расходов
     @dp.message(Command("chart"))
     async def cmd_chart(message: types.Message):
         user_id = await get_or_create_user(message.from_user.id)
 
-        # график расходов
         buf1 = await make_expense_chart(db_pool, user_id)
         file1 = FSInputFile(buf1, filename="expenses.png")
 
-        # график целей
         buf2 = await make_goals_progress_chart(db_pool, user_id)
         file2 = FSInputFile(buf2, filename="goals.png")
 
         await message.answer("Ваши графики ↓")
         await message.answer_photo(file1)
         await message.answer_photo(file2)
-
-
