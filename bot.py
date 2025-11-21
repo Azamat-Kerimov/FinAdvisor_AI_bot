@@ -23,23 +23,26 @@ bot = Bot(BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 async def get_or_create_user(tg_id):
-    # simple helper using db pool (re-implement here)
-    row = await dp['db'].fetchrow("SELECT id FROM users WHERE tg_id=$1", tg_id)
-    if row:
+    async with dp['db'].acquire() as connection:
+        row = await connection.fetchrow("SELECT id FROM users WHERE tg_id=$1", tg_id)
+        if row:
+            return row["id"]
+        row = await connection.fetchrow("INSERT INTO users (tg_id, created_at) VALUES ($1, NOW()) RETURNING id", tg_id)
         return row["id"]
-    row = await dp['db'].fetchrow("INSERT INTO users (tg_id, created_at) VALUES ($1, NOW()) RETURNING id", tg_id)
-    return row["id"]
 
 async def save_message(user_id, role, content):
-    await dp['db'].execute("INSERT INTO ai_context (user_id, role, content, created_at) VALUES ($1,$2,$3,NOW())",
-                           user_id, role, content)
+    async with dp['db'].acquire() as connection:
+        await connection.execute("INSERT INTO ai_context (user_id, role, content, created_at) VALUES ($1,$2,$3,NOW())",
+                                 user_id, role, content)
 
 async def get_context(user_id):
-    rows = await dp['db'].fetch("SELECT role, content FROM ai_context WHERE user_id=$1 ORDER BY id ASC", user_id)
+    async with dp['db'].acquire() as connection:
+        rows = await connection.fetch("SELECT role, content FROM ai_context WHERE user_id=$1 ORDER BY id ASC", user_id)
     return [{"role": r["role"], "content": r["content"]} for r in rows]
 
 async def analyze_finances(user_id):
-    rows = await dp['db'].fetch("SELECT amount, category, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100", user_id)
+    async with dp['db'].acquire() as connection:
+        rows = await connection.fetch("SELECT amount, category, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100", user_id)
     if not rows:
         return "У пользователя нет транзакций."
     text = "Последние транзакции:\n"
@@ -61,19 +64,3 @@ async def on_startup():
 if __name__ == "__main__":
     asyncio.run(on_startup())
     asyncio.run(dp.start_polling(bot))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
