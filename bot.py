@@ -80,22 +80,22 @@ async def create_db_pool():
         user=DB_USER, password=DB_PASSWORD, database=DB_NAME, host=DB_HOST, port=DB_PORT, min_size=1, max_size=8
     )
 
-# --------------------------------------------
-# Получение токена GigaChat (рабочее!)
-# --------------------------------------------
-def get_gigachat_token():
+# -------------------------------
+# 100% рабочее получение токена
+# -------------------------------
+def gigachat_get_token():
     AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
     CLIENT_ID = os.getenv("GIGACHAT_CLIENT_ID")
     CLIENT_SECRET = os.getenv("GIGACHAT_CLIENT_SECRET")
     SCOPE = os.getenv("GIGACHAT_SCOPE")
 
-    auth_header = f"{CLIENT_ID}:{CLIENT_SECRET}"
-    b64_auth = base64.b64encode(auth_header.encode()).decode()
+    raw = f"{CLIENT_ID}:{CLIENT_SECRET}"
+    b64 = base64.b64encode(raw.encode()).decode()
 
     headers = {
         "Accept": "application/json",
+        "Authorization": f"Basic {b64}",
         "Content-Type": "application/x-www-form-urlencoded",
-        "Authorization": f"Basic {b64_auth}",
         "RqUID": str(uuid.uuid4())
     }
 
@@ -104,47 +104,49 @@ def get_gigachat_token():
     resp = requests.post(AUTH_URL, headers=headers, data=payload, verify=False)
     resp.raise_for_status()
     return resp.json()["access_token"]
+# -------------------------------
+# 100% рабочий Chat Completions
+# -------------------------------
+def gigachat_request_sync(messages):
+    """
+    messages: список [{"role": "...", "content": "..."}]
+    """
+
+    # удаляем пустые сообщения (частая причина 422)
+    clean = []
+    for m in messages:
+        if m.get("content") and m["content"].strip():
+            clean.append(m)
+
+    token = gigachat_get_token()
+
+    API_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+
+    payload = {
+        "model": "GigaChat:2.0.28.2",
+        "messages": clean
+    }
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
+
+    resp = requests.post(API_URL, headers=headers, json=payload, verify=False)
+    resp.raise_for_status()
+    data = resp.json()
+
+    return data["choices"][0]["message"]["content"]
 
 
-# --------------------------------------------
-# Рабочая функция GigaChat API
-# --------------------------------------------
+# -------------------------------
+# Асинхронная обёртка для aiogram
+# -------------------------------
 async def gigachat_request(messages):
-    try:
-        # фильтруем пустые сообщения
-        clean_messages = []
-        for m in messages:
-            if m.get("content"):
-                clean_messages.append({
-                    "role": m["role"],
-                    "content": m["content"]
-                })
-
-        token = get_gigachat_token()
-
-        API_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-
-        payload = {
-            "model": "GigaChat:2.0.28.2",
-            "messages": clean_messages
-        }
-
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Authorization": f"Bearer {token}"
-        }
-
-        r = requests.post(API_URL, json=payload, headers=headers, verify=False)
-        r.raise_for_status()
-        data = r.json()
-
-        return data["choices"][0]["message"]["content"]
-
-    except Exception as e:
-        print("GIGACHAT ERROR:", e)
-        return "AI ошибка: " + str(e)
-
+    from asyncio import to_thread
+    return await to_thread(gigachat_request_sync, messages)
+    
 # -------------------------
 # AI cache helpers (uses ai_cache table)
 # -------------------------
@@ -789,5 +791,6 @@ if __name__ == "__main__":
         asyncio.run(dp.start_polling(bot))
     except (KeyboardInterrupt, SystemExit):
         print("Shutting down")
+
 
 
