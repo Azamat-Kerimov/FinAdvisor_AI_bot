@@ -617,7 +617,9 @@ async def catch_all(message: types.Message):
         await message.answer(ans)
     except Exception as e:
         print("GigaChat error:", e)
-        await message.answer("Извините, AI недоступен. Повторите позже.")
+        return f"AI ошибка: {e}"
+
+    
 
 # -------------------------
 # /consult command (short step-by-step plan)
@@ -756,3 +758,4 @@ if __name__ == "__main__":
         asyncio.run(dp.start_polling(bot))
     except (KeyboardInterrupt, SystemExit):
         print("Shutting down")
+
