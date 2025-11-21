@@ -3,6 +3,7 @@ import base64
 import uuid
 import requests
 import os
+from modules.db import db
 
 G_CLIENT_ID = os.getenv("GIGACHAT_CLIENT_ID")
 G_CLIENT_SECRET = os.getenv("GIGACHAT_CLIENT_SECRET")
@@ -62,5 +63,6 @@ async def gigachat_request(messages):
     ai_cache[key] = answer
 
     return answer
+
 
 
