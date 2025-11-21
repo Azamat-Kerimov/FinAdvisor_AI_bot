@@ -61,4 +61,17 @@ def register_goal_handlers(dp, get_or_create_user, db_pool, save_message):
 
         async with db_pool.acquire() as connection:
             await connection.execute(
-                "INSERT INTO goals (user_id, title, amount, progress, created_at) VALUES ($
+                "INSERT INTO goals (user_id, title, amount, progress, created_at) VALUES ($1,$2,$3,0,NOW())",
+                user_id, title, amount
+            )
+
+        await save_message(user_id, "system", f"Добавлена цель: {title} на сумму {amount}")
+
+        await message.answer("Цель успешно добавлена 🎯")
+        await state.clear()
+
+    @dp.callback_query(lambda c: c.data == "cancel_fsm")
+    async def cb_cancel(call: types.CallbackQuery, state: FSMContext):
+        await state.clear()
+        await call.message.answer("Действие отменено.")
+        await call.answer()
