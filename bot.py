@@ -50,7 +50,7 @@ async def analyze_finances(user_id):
 async def on_startup():
     pool = await create_db_pool()
     dp['db'] = pool
-    # register handlers from modules (we pass dependencies)
+    # Регистрируйте хендлеры, передавая pool
     tx_mod.register_tx_handlers(dp, get_or_create_user, pool, save_message)
     assets_mod.register_asset_handlers(dp, get_or_create_user, pool, save_message)
     reports_mod.register_report_handlers(dp, get_or_create_user, pool, save_message)
@@ -61,6 +61,7 @@ async def on_startup():
 if __name__ == "__main__":
     asyncio.run(on_startup())
     asyncio.run(dp.start_polling(bot))
+
 
 
 
