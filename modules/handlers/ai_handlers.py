@@ -1,4 +1,5 @@
 from aiogram import types
+from modules.db import db
 
 from modules.db import save_message, get_context, analyze_finances
 from modules.ai import gigachat_request
@@ -84,3 +85,4 @@ async def toggle_sum_cb(q: types.CallbackQuery):
     await toggle_summarization(user_id)
     await q.answer("[translate:Переключено!]")
     await q.message.edit_text("[translate:Настройки:]", reply_markup=settings_menu())
+
