@@ -3,14 +3,16 @@
 
 """
 FinAdvisor - bot.py
+Улучшенная / исправленная версия:
 - ai-context в PostgreSQL (таблица ai_context)
 - ai-cache (таблица ai_cache)
-- assets (assets), liabilities (liabilities)
-- transactions, goals, users - используются
-- интеграция с GigaChat (как в твоем рабочем тесте)
+- assets, liabilities
+- transactions, goals, users
+- интеграция с GigaChat (OAuth + chat completions)
 - APScheduler - еженедельный отчёт
 - FSM с кнопкой Отмена
 - команда /consult и кнопка "💡 Консультация"
+- Исправлена регистрация FSM-хендлеров для aiogram 3.x (StateFilter)
 """
 
 import os
@@ -20,6 +22,7 @@ import hashlib
 import json
 import tempfile
 import uuid
+import base64
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -39,6 +42,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFil
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.filters import StateFilter
 
 load_dotenv()
 
@@ -53,7 +57,7 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", 5432))
 
-# GigaChat OAuth details (as in your test)
+# GigaChat OAuth details (as in your working test)
 GIGACHAT_CLIENT_ID = os.getenv("GIGACHAT_CLIENT_ID")
 GIGACHAT_CLIENT_SECRET = os.getenv("GIGACHAT_CLIENT_SECRET")
 GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE")
@@ -116,7 +120,6 @@ async def create_db_pool():
 
 # ----------------------------
 # GigaChat helpers (OAuth + request)
-# We'll use httpx.AsyncClient with verify=False if needed (your environment had self-signed cert)
 # ----------------------------
 async def get_gigachat_token():
     """
@@ -125,7 +128,7 @@ async def get_gigachat_token():
     """
     # Build basic auth header as in your working test
     auth_str = f"{GIGACHAT_CLIENT_ID}:{GIGACHAT_CLIENT_SECRET}"
-    b64 = base64_auth = __import__("base64").b64encode(auth_str.encode()).decode()
+    b64 = base64.b64encode(auth_str.encode()).decode()
     headers = {
         "Authorization": f"Basic {b64}",
         "Content-Type": "application/x-www-form-urlencoded",
@@ -133,7 +136,6 @@ async def get_gigachat_token():
         "RqUID": str(uuid.uuid4())
     }
     data = {"scope": GIGACHAT_SCOPE}
-    # Use httpx.AsyncClient
     async with httpx.AsyncClient(verify=False, timeout=20.0) as client:
         r = await client.post(GIGACHAT_AUTH_URL, headers=headers, data=data)
         r.raise_for_status()
@@ -189,29 +191,23 @@ async def get_full_context(user_id: int):
     rows = await db.fetch("SELECT role, content FROM ai_context WHERE user_id=$1 ORDER BY id ASC", user_id)
     return [{"role": r["role"], "content": r["content"]} for r in rows]
 
-# auto-summarization: we keep it always enabled (no toggle)
-# implement a simple trimming/summarization if context grows too big
+# auto-summarization: always enabled (no toggle)
 CONTEXT_SUMMARY_THRESHOLD = 800
 CONTEXT_TRIM_TO = 300
 
 async def maybe_summarize_context(user_id: int):
-    # count rows
     r = await db.fetchrow("SELECT count(*)::int as c FROM ai_context WHERE user_id=$1", user_id)
     if not r:
         return
     cnt = r["c"]
     if cnt <= CONTEXT_SUMMARY_THRESHOLD:
         return
-    # fetch earliest rows to summarize
     rows = await db.fetch("SELECT id, role, content FROM ai_context WHERE user_id=$1 ORDER BY id ASC LIMIT $2", user_id, cnt - CONTEXT_TRIM_TO)
     text = "\n".join([f"{rr['role']}: {rr['content']}" for rr in rows])
-    # produce summary via GigaChat (catch errors)
     system = {"role":"system","content":"Сделай короткую (2-3 предложения) консолидированную сводку ключевых финансовых моментов и рекомендаций."}
     try:
         summary = await gigachat_request([system, {"role":"user","content":text}])
-        # save summary as system message
         await save_message(user_id, "system", f"SUMMARY: {summary}")
-        # delete old rows by ids
         ids = [r["id"] for r in rows]
         await db.execute("DELETE FROM ai_context WHERE id = ANY($1::int[])", ids)
     except Exception as e:
@@ -230,13 +226,11 @@ async def analyze_user_finances_text(user_id: int) -> str:
     for r in rows:
         ts = r["created_at"].strftime("%Y-%m-%d") if r["created_at"] else ""
         s += f"- {r['amount']}₽ | {r.get('category') or '-'} | {r.get('description') or ''} | {ts}\n"
-    # goals
     goals = await db.fetch("SELECT title, target, current, created_at FROM goals WHERE user_id=$1", user_id)
     if goals:
         s += "\nЦели:\n"
         for g in goals:
             s += f"- {g.get('title','Цель')}: {g['current']}/{g['target']} ₽\n"
-    # assets/liabilities summary
     assets = await db.fetch("SELECT title, amount, type FROM assets WHERE user_id=$1", user_id)
     if assets:
         total_assets = sum([a["amount"] for a in assets])
@@ -249,7 +243,6 @@ async def analyze_user_finances_text(user_id: int) -> str:
         s += f"\nДолги (итого {total_liabs}₽):\n"
         for l in liabs:
             s += f"- {l['title']} ({l['type']}): {l['amount']}₽\n"
-    # net worth
     total_assets = sum([a["amount"] for a in assets]) if assets else 0
     total_liabs = sum([l["amount"] for l in liabs]) if liabs else 0
     s += f"\nЧистый капитал: {total_assets - total_liabs}₽\n"
@@ -259,18 +252,13 @@ async def analyze_user_finances_text(user_id: int) -> str:
 # AI answer generation for general messages (assistant mode)
 # ----------------------------
 async def generate_ai_reply(user_id: int, user_message: str) -> str:
-    # save user message to context
     await save_message(user_id, "user", user_message)
-    # maybe summarize in background
     asyncio.create_task(maybe_summarize_context(user_id))
-    # build finance snapshot
     finance_snapshot = await analyze_user_finances_text(user_id)
-    # check cache
     cached = await get_cached_ai_reply(user_id, user_message, finance_snapshot)
     if cached:
         await save_message(user_id, "assistant", cached)
         return cached
-    # compose messages
     context = await get_full_context(user_id)
     system_prompt = (
         "Ты — профессиональный финансовый помощник. Используй историю диалога, транзакции, цели, "
@@ -281,9 +269,7 @@ async def generate_ai_reply(user_id: int, user_message: str) -> str:
         ai_answer = await gigachat_request(messages)
     except Exception as e:
         print("gigachat error:", e)
-        # fallback
         return "Извините, AI временно недоступен. Попробуйте позже."
-    # save
     await save_message(user_id, "assistant", ai_answer)
     await save_ai_cache(user_id, user_message, finance_snapshot, ai_answer)
     return ai_answer
@@ -293,9 +279,7 @@ async def generate_ai_reply(user_id: int, user_message: str) -> str:
 # Short actionable step-by-step recommendations
 # ----------------------------
 async def generate_consultation(user_id: int) -> str:
-    # Build finance snapshot (concise)
     finance_snapshot = await analyze_user_finances_text(user_id)
-    # save system prompt
     system_prompt = (
         "Ты — финансовый консультант. На основе данных пользователя (транзакции, цели, активы, долги) "
         "составь краткий практический план из 4 шагов: что сделать в ближайший месяц, что в ближайшие 6 месяцев, "
@@ -310,7 +294,6 @@ async def generate_consultation(user_id: int) -> str:
     except Exception as e:
         print("consult gigachat error:", e)
         return "Извините, AI временно недоступен."
-    # save to context/cache
     await save_message(user_id, "assistant", f"Consultation generated")
     await save_ai_cache(user_id, "CONSULT_REQUEST", finance_snapshot, answer)
     return answer
@@ -389,7 +372,6 @@ async def create_networth_bar(user_id: int):
 # ----------------------------
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message):
-    # register user
     u = await db.fetchrow("SELECT id FROM users WHERE tg_id=$1", m.from_user.id)
     if not u:
         await db.execute("INSERT INTO users (tg_id, username, created_at) VALUES ($1,$2,NOW())", m.from_user.id, m.from_user.username)
@@ -439,8 +421,8 @@ async def cmd_consult(m: types.Message):
     ans = await generate_consultation(user_id)
     await m.answer(ans)
 
-# TX FSM
-@dp.message(F.text & F.chat.type == "private", state=TXStates.amount)
+# TX FSM handlers use StateFilter instead of state=... kwarg
+@dp.message(StateFilter(TXStates.amount), F.text & F.chat.type == "private")
 async def tx_amount(m: types.Message, state: FSMContext):
     if m.text and m.text.lower() == "отмена":
         await state.clear()
@@ -455,7 +437,7 @@ async def tx_amount(m: types.Message, state: FSMContext):
     await state.set_state(TXStates.category)
     await m.answer("Введите категорию (например: продукты, транспорт).", reply_markup=cancel_kb)
 
-@dp.message(F.text & F.chat.type == "private", state=TXStates.category)
+@dp.message(StateFilter(TXStates.category), F.text & F.chat.type == "private")
 async def tx_category(m: types.Message, state: FSMContext):
     if m.text and m.text.lower() == "отмена":
         await state.clear()
@@ -465,7 +447,7 @@ async def tx_category(m: types.Message, state: FSMContext):
     await state.set_state(TXStates.description)
     await m.answer("Введите описание (или '-' для пропуска).", reply_markup=cancel_kb)
 
-@dp.message(F.text & F.chat.type == "private", state=TXStates.description)
+@dp.message(StateFilter(TXStates.description), F.text & F.chat.type == "private")
 async def tx_description(m: types.Message, state: FSMContext):
     if m.text and m.text.lower() == "отмена":
         await state.clear()
@@ -492,7 +474,6 @@ async def cb_cancel_fsm(c: types.CallbackQuery, state: FSMContext):
 # Confirm / cancel pending tx (from quick parse)
 @dp.callback_query(F.data == "confirm_tx")
 async def cb_confirm_tx(c: types.CallbackQuery):
-    # here we can implement pending dict if needed; kept minimal: ask user to re-enter via /add
     await c.answer("Используй меню для добавления транзакции (быстрая запись поддерживается в текстовом вводе).")
 
 @dp.callback_query(F.data == "cancel_tx")
@@ -506,7 +487,7 @@ async def cmd_goal(m: types.Message, state: FSMContext):
     await state.set_state(GOALStates.target)
     await m.answer("Введите сумму цели (например: 100000).", reply_markup=cancel_kb)
 
-@dp.message(F.text & F.chat.type == "private", state=GOALStates.target)
+@dp.message(StateFilter(GOALStates.target), F.text & F.chat.type == "private")
 async def goal_target(m: types.Message, state: FSMContext):
     if m.text and m.text.lower() == "отмена":
         await state.clear()
@@ -521,7 +502,7 @@ async def goal_target(m: types.Message, state: FSMContext):
     await state.set_state(GOALStates.title)
     await m.answer("Введите название цели.", reply_markup=cancel_kb)
 
-@dp.message(F.text & F.chat.type == "private", state=GOALStates.title)
+@dp.message(StateFilter(GOALStates.title), F.text & F.chat.type == "private")
 async def goal_title(m: types.Message, state: FSMContext):
     data = await state.get_data()
     target = data.get("target")
@@ -545,7 +526,7 @@ async def cb_cap_add_asset(c: types.CallbackQuery, state: FSMContext):
     await c.message.answer("Введите сумму актива (например: 150000):", reply_markup=cancel_kb)
     await c.answer()
 
-@dp.message(F.text & F.chat.type == "private", state=AssetStates.amount)
+@dp.message(StateFilter(AssetStates.amount), F.text & F.chat.type == "private")
 async def asset_amount(m: types.Message, state: FSMContext):
     if m.text.lower() == "отмена":
         await state.clear()
@@ -560,14 +541,14 @@ async def asset_amount(m: types.Message, state: FSMContext):
     await state.set_state(AssetStates.type)
     await m.answer("Введите тип актива (bank, deposit, stocks, crypto, cash, other):", reply_markup=cancel_kb)
 
-@dp.message(F.text & F.chat.type == "private", state=AssetStates.type)
+@dp.message(StateFilter(AssetStates.type), F.text & F.chat.type == "private")
 async def asset_type(m: types.Message, state: FSMContext):
     typ = m.text.strip()
     await state.update_data(type=typ)
     await state.set_state(AssetStates.title)
     await m.answer("Введите название (например: 'Сбер вклад'):", reply_markup=cancel_kb)
 
-@dp.message(F.text & F.chat.type == "private", state=AssetStates.title)
+@dp.message(StateFilter(AssetStates.title), F.text & F.chat.type == "private")
 async def asset_title(m: types.Message, state: FSMContext):
     data = await state.get_data()
     amount = data["amount"]
@@ -586,7 +567,7 @@ async def cb_cap_add_liability(c: types.CallbackQuery, state: FSMContext):
     await c.message.answer("Введите сумму долга (например: 70000):", reply_markup=cancel_kb)
     await c.answer()
 
-@dp.message(F.text & F.chat.type == "private", state=LiabilityStates.amount)
+@dp.message(StateFilter(LiabilityStates.amount), F.text & F.chat.type == "private")
 async def liability_amount(m: types.Message, state: FSMContext):
     if m.text.lower() == "отмена":
         await state.clear()
@@ -601,7 +582,7 @@ async def liability_amount(m: types.Message, state: FSMContext):
     await state.set_state(LiabilityStates.monthly_payment)
     await m.answer("Введите ежемесячный платёж (можно 0):", reply_markup=cancel_kb)
 
-@dp.message(F.text & F.chat.type == "private", state=LiabilityStates.monthly_payment)
+@dp.message(StateFilter(LiabilityStates.monthly_payment), F.text & F.chat.type == "private")
 async def liability_monthly(m: types.Message, state: FSMContext):
     try:
         monthly = float(m.text.replace(",", "."))
@@ -612,13 +593,13 @@ async def liability_monthly(m: types.Message, state: FSMContext):
     await state.set_state(LiabilityStates.type)
     await m.answer("Введите тип долга (loan, mortgage, credit_card, other):", reply_markup=cancel_kb)
 
-@dp.message(F.text & F.chat.type == "private", state=LiabilityStates.type)
+@dp.message(StateFilter(LiabilityStates.type), F.text & F.chat.type == "private")
 async def liability_type(m: types.Message, state: FSMContext):
     await state.update_data(type=m.text.strip())
     await state.set_state(LiabilityStates.title)
     await m.answer("Введите название долга (например: 'Кредитка Тинькофф'):", reply_markup=cancel_kb)
 
-@dp.message(F.text & F.chat.type == "private", state=LiabilityStates.title)
+@dp.message(StateFilter(LiabilityStates.title), F.text & F.chat.type == "private")
 async def liability_title(m: types.Message, state: FSMContext):
     data = await state.get_data()
     amount = data["amount"]
@@ -648,7 +629,6 @@ async def cb_cap_show(c: types.CallbackQuery):
         text += f"- {l['title']} ({l['type']}): {l['amount']}₽\n"
     text += f"\nЧистый капитал: {total_assets - total_liabs}₽"
     await c.message.answer(text)
-    # optionally send networth bar
     img = await create_networth_bar(user_id)
     if img:
         await c.message.answer_photo(types.FSInputFile(img))
@@ -722,28 +702,17 @@ async def handle_all_messages(m: types.Message):
     if m.text and m.text.startswith("/"):
         return
     user_id = await get_or_create_user(m.from_user.id)
-    # quick parse: if message contains an amount, try to add quick tx suggestion
-    # simple regex: find number
     import re
     m_amount = re.search(r"([+-]?\s*\d[\d\s\.,]*(?:k|K|m|M|к|К|м|М)?)", m.text) if m.text else None
-    if m_amount:
-        # leave complex quick-parse out — just direct to AI for now
-        # generate AI reply
-        await m.answer("Анализирую... (AI ответ может занять пару секунд)")
-        reply = await generate_ai_reply(user_id, m.text)
-        await m.answer(reply)
-    else:
-        await m.answer("Анализирую... (AI ответ может занять пару секунд)")
-        reply = await generate_ai_reply(user_id, m.text or "")
-        await m.answer(reply)
+    await m.answer("Анализирую... (AI ответ может занять пару секунд)")
+    reply = await generate_ai_reply(user_id, m.text or "")
+    await m.answer(reply)
 
 # ----------------------------
 # Weekly report job
 # ----------------------------
 async def build_weekly_report_for_user(user_id: int) -> str:
-    # Compose summary text with assets/liabilities
     finance_data = await analyze_user_finances_text(user_id)
-    # short top-line totals
     assets = await db.fetch("SELECT amount FROM assets WHERE user_id=$1", user_id)
     liabs = await db.fetch("SELECT amount FROM liabilities WHERE user_id=$1", user_id)
     total_assets = sum(a["amount"] for a in assets) if assets else 0
@@ -761,7 +730,6 @@ async def weekly_report_job():
             tg_id = u["tg_id"]
             txt = await build_weekly_report_for_user(user_id)
             await bot.send_message(tg_id, txt)
-            # add charts if any
             pie = await create_expense_pie(user_id)
             net = await create_networth_bar(user_id)
             if pie:
@@ -781,7 +749,7 @@ async def weekly_report_job():
 async def on_startup():
     global db
     db = await create_db_pool()
-    # start scheduler: weekly on Monday 09:00 UTC (adjust as needed)
+    # weekly Monday 09:00 UTC
     scheduler.add_job(weekly_report_job, 'cron', day_of_week='mon', hour=9, minute=0, id='weekly_report')
     scheduler.start()
     print("DB connected. Scheduler started.")
@@ -801,7 +769,6 @@ async def get_or_create_user(tg_id: int) -> int:
 # ----------------------------
 if __name__ == "__main__":
     try:
-        # Register on_startup to run before polling loop
         dp.startup.register(on_startup)
         asyncio.run(dp.start_polling(bot))
     except (KeyboardInterrupt, SystemExit):
