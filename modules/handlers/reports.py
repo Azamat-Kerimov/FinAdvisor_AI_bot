@@ -1,85 +1,43 @@
-import io
-from aiogram import types
-from aiogram.filters import Command
-from aiogram.types import FSInputFile
+from aiogram import F, types
 
-from modules.utils import normalize_category
-from modules.charts import make_expense_chart, make_goals_progress_chart
+from modules.db import db
+from handlers import analyze_finances, get_or_create_user
 
+@dp.callback_query(F.data == "menu_report")
+async def menu_report(q: types.CallbackQuery):
+    user_id = await get_or_create_user(q.from_user.id)
+    r = await analyze_finances(user_id)
+    await q.message.answer(r)
 
-def register_report_handlers(dp, get_or_create_user, db_pool, save_message):
+@dp.callback_query(F.data == "menu_chart")
+async def chart_cb(q: types.CallbackQuery):
+    user_id = await get_or_create_user(q.from_user.id)
 
-    @dp.message(Command("report"))
-    async def cmd_report(message: types.Message):
-        user_id = await get_or_create_user(message.from_user.id)
+    rows = await db.fetch("""
+        SELECT amount, category
+        FROM transactions
+        WHERE user_id=$1 AND created_at >= now() - interval '30 days'
+    """, user_id)
 
-        async with db_pool.acquire() as connection:
-            rows = await connection.fetch(
-                "SELECT amount, category, description, created_at FROM transactions "
-                "WHERE user_id=$1 ORDER BY created_at DESC LIMIT 10",
-                user_id
-            )
-            assets = await connection.fetch(
-                "SELECT title, amount, type FROM assets WHERE user_id=$1 ORDER BY id",
-                user_id
-            )
-            liabilities = await connection.fetch(
-                "SELECT title, amount, type FROM liabilities WHERE user_id=$1 ORDER BY id",
-                user_id
-            )
+    if not rows:
+        await q.message.answer("Нет данных для графика.")
+        return
 
-        if not rows:
-            tx_table = "Транзакций пока нет."
-        else:
-            header = "🧾 <b>Последние транзакции</b>\n\n"
-            table = "<pre>Сумма    Категория      Дата\n"
-            table += "-----------------------------------\n"
+    categories = {}
+    for r in rows:
+        categories[r["category"]] = categories.get(r["category"], 0) + float(r["amount"])
 
-            for tx in rows:
-                cat = normalize_category(tx["category"]) if tx["category"] else "-"
-                date = tx["created_at"].strftime("%Y-%m-%d %H:%M")
-                table += f"{tx['amount']:>6}   {cat:<12}   {date}\n"
+    labels = list(categories.keys())
+    values = list(categories.values())
 
-            table += "</pre>"
-            tx_table = header + table
+    import matplotlib.pyplot as plt
+    from aiogram.types import FSInputFile
 
-        if assets:
-            assets_text = "\n\n<b>💼 Активы</b>\n"
-            total_assets = sum(a["amount"] for a in assets)
-            for a in assets:
-                assets_text += f"• {a['title']} — {a['amount']} ({a['type']})\n"
-            assets_text += f"\n<b>Всего активов:</b> {total_assets}"
-        else:
-            assets_text = "\n\n<b>💼 Активы:</b> нет"
+    plt.figure(figsize=(6, 6))
+    plt.pie(values, labels=labels, autopct='%1.1f%%')
 
-        if liabilities:
-            liabilities_text = "\n\n<b>💳 Долги</b>\n"
-            total_liabilities = sum(l["amount"] for l in liabilities)
-            for l in liabilities:
-                liabilities_text += f"• {l['title']} — {l['amount']} ({l['type']})\n"
-            liabilities_text += f"\n<b>Всего долгов:</b> {total_liabilities}"
-        else:
-            liabilities_text = "\n\n<b>💳 Долги:</b> нет"
+    filename = f"chart_{user_id}.png"
+    plt.savefig(filename)
+    plt.close()
 
-        net = (sum(a["amount"] for a in assets) if assets else 0) - \
-              (sum(l["amount"] for l in liabilities) if liabilities else 0)
-        net_text = f"\n\n<b>💰 Чистый капитал:</b> {net}"
-
-        await message.answer(
-            f"{tx_table}{assets_text}{liabilities_text}{net_text}",
-            parse_mode="HTML"
-        )
-
-    @dp.message(Command("chart"))
-    async def cmd_chart(message: types.Message):
-        user_id = await get_or_create_user(message.from_user.id)
-
-        buf1 = await make_expense_chart(db_pool, user_id)
-        file1 = FSInputFile(buf1, filename="expenses.png")
-
-        buf2 = await make_goals_progress_chart(db_pool, user_id)
-        file2 = FSInputFile(buf2, filename="goals.png")
-
-        await message.answer("Ваши графики ↓")
-        await message.answer_photo(file1)
-        await message.answer_photo(file2)
+    await q.message.answer_photo(FSInputFile(filename))
