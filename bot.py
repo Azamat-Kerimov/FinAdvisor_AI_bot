@@ -1,46 +1,47 @@
 #!/usr/bin/env python3
-# coding: utf-8
+# -*- coding: utf-8 -*-
+
 """
-FinAdvisor - upgraded bot.py
-- /consult and "💡 Консультация" button
-- assets / liabilities (таблицы assets, liabilities)
-- ai_context and ai_cache usage
-- APScheduler weekly job
-- FSM cancel buttons
-- export CSV, chart PNG
+FinAdvisor bot.py
+- aiogram 3.x
+- uses asyncpg
+- GigaChat integration via OAuth + chat completions (uses blocking requests executed in executor)
+- uses DB tables as provided by user
 """
 
 import os
 import asyncio
-import base64
-import uuid
-import hashlib
-import tempfile
-from datetime import datetime, timedelta
-import requests
-
 import asyncpg
-import httpx
+import uuid
+import base64
+import csv
+import tempfile
+import hashlib
+from datetime import datetime, timedelta
+from functools import partial
+from typing import List, Dict
+
+import requests
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from dotenv import load_dotenv
-
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+
+from dotenv import load_dotenv
 
 load_dotenv()
 
-# -------------------------
-# CONFIG (from .env)
-# -------------------------
+# -----------------------
+# CONFIG
+# -----------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 DB_NAME = os.getenv("DB_NAME")
@@ -49,6 +50,7 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", 5432))
 
+# GigaChat / OAuth params (as you used successfully)
 GIGACHAT_CLIENT_ID = os.getenv("GIGACHAT_CLIENT_ID")
 GIGACHAT_CLIENT_SECRET = os.getenv("GIGACHAT_CLIENT_SECRET")
 GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE")
@@ -56,741 +58,745 @@ GIGACHAT_AUTH_URL = os.getenv("GIGACHAT_AUTH_URL")
 GIGACHAT_API_URL = os.getenv("GIGACHAT_API_URL")
 GIGACHAT_MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat:2.0.28.2")
 
+# chart folder
 CHART_DIR = "/tmp"
 os.makedirs(CHART_DIR, exist_ok=True)
 
-# -------------------------
+# -----------------------
 # GLOBALS
-# -------------------------
+# -----------------------
 bot = Bot(BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-db: asyncpg.pool.Pool | None = None
+db: asyncpg.pool.Pool = None
 scheduler = AsyncIOScheduler()
 
-# quick in-memory pending transactions for confirmation (user_id -> data)
-pending_pending = {}
-
-# -------------------------
-# UTIL: DB pool
-# -------------------------
+# -----------------------
+# HELPERS: DB
+# -----------------------
 async def create_db_pool():
     return await asyncpg.create_pool(
         user=DB_USER, password=DB_PASSWORD, database=DB_NAME, host=DB_HOST, port=DB_PORT, min_size=1, max_size=8
     )
 
-# -------------------------------
-# 100% рабочее получение токена
-# -------------------------------
-def gigachat_get_token():
-    AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-    CLIENT_ID = os.getenv("GIGACHAT_CLIENT_ID")
-    CLIENT_SECRET = os.getenv("GIGACHAT_CLIENT_SECRET")
-    SCOPE = os.getenv("GIGACHAT_SCOPE")
+async def get_or_create_user(tg_id: int) -> int:
+    row = await db.fetchrow("SELECT id FROM users WHERE tg_id=$1", tg_id)
+    if row:
+        return row["id"]
+    r = await db.fetchrow("INSERT INTO users (tg_id, created_at) VALUES ($1, NOW()) RETURNING id", tg_id)
+    return r["id"]
 
-    raw = f"{CLIENT_ID}:{CLIENT_SECRET}"
-    b64 = base64.b64encode(raw.encode()).decode()
+# -----------------------
+# GIGACHAT: blocking requests wrapped in executor
+# -----------------------
+def blocking_get_token():
+    """
+    Blocking token request (synchronous). Uses same working flow as your test script.
+    """
+    auth_header = f"{GIGACHAT_CLIENT_ID}:{GIGACHAT_CLIENT_SECRET}"
+    b64_auth = base64.b64encode(auth_header.encode()).decode()
 
     headers = {
-        "Accept": "application/json",
-        "Authorization": f"Basic {b64}",
+        "Authorization": f"Basic {b64_auth}",
         "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
         "RqUID": str(uuid.uuid4())
     }
+    data = {"scope": GIGACHAT_SCOPE}
+    # verify=False because your environment used self-signed cert; keep same behavior
+    r = requests.post(GIGACHAT_AUTH_URL, headers=headers, data=data, verify=False, timeout=20)
+    r.raise_for_status()
+    return r.json().get("access_token")
 
-    payload = {"scope": SCOPE}
-
-    resp = requests.post(AUTH_URL, headers=headers, data=payload, verify=False)
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-# -------------------------------
-# 100% рабочий Chat Completions
-# -------------------------------
-def gigachat_request_sync(messages):
-    """
-    messages: список [{"role": "...", "content": "..."}]
-    """
-
-    # удаляем пустые сообщения (частая причина 422)
-    clean = []
-    for m in messages:
-        if m.get("content") and m["content"].strip():
-            clean.append(m)
-
-    token = gigachat_get_token()
-
-    API_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-
-    payload = {
-        "model": "GigaChat:2.0.28.2",
-        "messages": clean
-    }
-
+def blocking_gigachat_call(access_token: str, messages: List[Dict]):
     headers = {
-        "Accept": "application/json",
+        "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {token}"
+        "Accept": "application/json"
     }
+    payload = {
+        "model": GIGACHAT_MODEL,
+        "messages": messages,
+        "temperature": 0.3
+    }
+    r = requests.post(GIGACHAT_API_URL, headers=headers, json=payload, verify=False, timeout=30)
+    r.raise_for_status()
+    return r.json()
 
-    resp = requests.post(API_URL, headers=headers, json=payload, verify=False)
-    resp.raise_for_status()
-    data = resp.json()
+async def get_gigachat_token() -> str:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, blocking_get_token)
 
-    return data["choices"][0]["message"]["content"]
+async def gigachat_request(messages: List[Dict]) -> str:
+    """
+    Performs token acquisition and chat call in executor to avoid blocking loop.
+    Uses DB ai_cache to store caching by input hash (see get/save below).
+    """
+    token = await get_gigachat_token()
+    loop = asyncio.get_running_loop()
+    j = await loop.run_in_executor(None, partial(blocking_gigachat_call, token, messages))
+    # parse result safely
+    choices = j.get("choices") or []
+    if choices:
+        msg = choices[0].get("message", {}).get("content")
+        if msg:
+            return msg
+    # fallback: stringify
+    return str(j)
 
+# -----------------------
+# AI CACHE (DB-backed)
+# -----------------------
+def _hash_input(user_message: str, finance_snapshot: str) -> str:
+    h = (user_message or "").strip().lower() + "\n" + (finance_snapshot or "")
+    return hashlib.sha256(h.encode("utf-8")).hexdigest()
 
-# -------------------------------
-# Асинхронная обёртка для aiogram
-# -------------------------------
-async def gigachat_request(messages):
-    from asyncio import to_thread
-    return await to_thread(gigachat_request_sync, messages)
-    
-# -------------------------
-# AI cache helpers (uses ai_cache table)
-# -------------------------
-def _input_hash(user_message: str, snapshot: str) -> str:
-    h = hashlib.sha256((user_message.strip().lower() + "\n" + snapshot).encode("utf-8")).hexdigest()
-    return h
-
-async def get_ai_cache(user_id: int, user_message: str, snapshot: str):
-    h = _input_hash(user_message, snapshot)
+async def get_cached_ai_reply_db(user_id: int, user_message: str, finance_snapshot: str):
+    h = _hash_input(user_message, finance_snapshot)
     row = await db.fetchrow("SELECT answer FROM ai_cache WHERE user_id=$1 AND input_hash=$2 ORDER BY created_at DESC LIMIT 1", user_id, h)
     return row["answer"] if row else None
 
-async def save_ai_cache(user_id: int, user_message: str, snapshot: str, answer: str):
-    h = _input_hash(user_message, snapshot)
+async def save_ai_cache_db(user_id: int, user_message: str, finance_snapshot: str, answer: str):
+    h = _hash_input(user_message, finance_snapshot)
     await db.execute("INSERT INTO ai_cache (user_id, input_hash, answer, created_at) VALUES ($1,$2,$3,NOW())", user_id, h, answer)
 
-# -------------------------
-# ai_context helpers
-# -------------------------
-async def save_context(user_id: int, role: str, content: str):
+# -----------------------
+# AI CONTEXT (DB)
+# -----------------------
+async def save_message_context(user_id: int, role: str, content: str):
     await db.execute("INSERT INTO ai_context (user_id, role, content, created_at) VALUES ($1,$2,$3,NOW())", user_id, role, content)
 
-async def get_full_context(user_id: int):
+async def load_full_context(user_id: int):
     rows = await db.fetch("SELECT role, content FROM ai_context WHERE user_id=$1 ORDER BY id ASC", user_id)
     return [{"role": r["role"], "content": r["content"]} for r in rows]
 
-# Always-on summarization: simple auto-trim when context grows too large (optional)
-CONTEXT_TRIM_THRESHOLD = 800
-CONTEXT_TRIM_KEEP = 400
-
-async def maybe_summarize_context(user_id: int):
-    # if rows count > threshold, summarize oldest portion and replace with a short system summary
-    cnt_row = await db.fetchrow("SELECT count(*)::int AS c FROM ai_context WHERE user_id=$1", user_id)
-    if not cnt_row:
-        return
-    cnt = cnt_row["c"]
-    if cnt <= CONTEXT_TRIM_THRESHOLD:
-        return
-    take = cnt - CONTEXT_TRIM_KEEP
-    rows = await db.fetch("SELECT id, role, content FROM ai_context WHERE user_id=$1 ORDER BY id ASC LIMIT $2", user_id, take)
+# -----------------------
+# FINANCE ANALYSIS (transactions + assets + liabilities + goals)
+# -----------------------
+async def analyze_user_finances_text(user_id: int) -> str:
+    # transactions
+    rows = await db.fetch("SELECT amount, category, description, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 200", user_id)
+    text = ""
     if not rows:
-        return
-    text = "\n".join([f"{r['role']}: {r['content']}" for r in rows])
-    system = {"role": "system", "content": "Сделай компактное (2-3 предложения) резюме ключевых финансовых моментов."}
-    try:
-        summary = await gigachat_request([system, {"role":"user","content":text}])
-        # save summary as system note
-        await save_context(user_id, "system", f"SUMMARY: {summary}")
-        ids = [r["id"] for r in rows]
-        # delete old rows by ids
-        await db.execute("DELETE FROM ai_context WHERE id = ANY($1::int[])", ids)
-    except Exception as e:
-        print("summarize failed:", e)
+        text += "Транзакций: нет.\n"
+    else:
+        text += "Последние транзакции:\n"
+        for r in rows[:50]:
+            created = r["created_at"].strftime("%Y-%m-%d") if r["created_at"] else ""
+            text += f"- {r['amount']}₽ | {r.get('category') or '—'} | {r.get('description') or ''} | {created}\n"
 
-# -------------------------
-# Transactions & auto-categorization helpers
-# -------------------------
-def parse_amount_token(s: str) -> int:
-    # accept numbers with optional k/m suffix, commas, spaces
-    s0 = s.strip().lower().replace(" ", "").replace(",", ".")
-    if s0.endswith("k"):
-        return int(float(s0[:-1]) * 1000)
-    if s0.endswith("m"):
-        return int(float(s0[:-1]) * 1_000_000)
-    return int(float(s0))
-
-CATEGORY_KEYWORDS = {
-    "еда": ["кофе", "ресторан", "пятёрочка", "ашан", "магнит", "кфс", "макдоналдс"],
-    "такси": ["такси", "uber", "bolt", "yandex"],
-    "продукты": ["продукт", "огурец", "хлеб"],
-    "развлечения": ["кино", "театр", "музей"],
-}
-
-def guess_category(text: str):
-    if not text:
-        return None
-    s = text.lower()
-    for cat, kws in CATEGORY_KEYWORDS.items():
-        for kw in kws:
-            if kw in s:
-                return cat
-    return None
-
-async def analyze_user_finances_text(user_id: int, limit: int = 100):
-    rows = await db.fetch("SELECT amount, category, description, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2", user_id, limit)
-    if not rows:
-        return "Нет транзакций."
-    text = "Последние транзакции:\n"
-    for r in rows:
-        ts = r["created_at"].strftime("%Y-%m-%d") if r["created_at"] else ""
-        text += f"- {r['amount']}₽ | {r.get('category') or '—'} | {r.get('description') or ''} | {ts}\n"
     # goals
-    goals = await db.fetch("SELECT title, target, current, created_at FROM goals WHERE user_id=$1", user_id)
-    if goals:
+    gs = await db.fetch("SELECT title, target, current, created_at FROM goals WHERE user_id=$1", user_id)
+    if gs:
         text += "\nЦели:\n"
-        for g in goals:
+        for g in gs:
             text += f"- {g.get('title','Цель')}: {g['current']}/{g['target']} ₽\n"
-    # assets / liabilities brief
-    assets = await db.fetch("SELECT title, amount, type FROM assets WHERE user_id=$1", user_id)
+
+    # assets
+    assets = await db.fetch("SELECT title, type, amount FROM assets WHERE user_id=$1 ORDER BY created_at DESC", user_id)
     if assets:
         text += "\nАктивы:\n"
         for a in assets:
             text += f"- {a['title']} ({a['type']}): {a['amount']} ₽\n"
-    liabs = await db.fetch("SELECT title, amount, type FROM liabilities WHERE user_id=$1", user_id)
-    if liabs:
+        total_assets = sum(a["amount"] for a in assets)
+        text += f"Итого активов: {total_assets}₽\n"
+    else:
+        text += "\nАктивы: нет.\n"
+
+    # liabilities
+    liab = await db.fetch("SELECT title, type, amount FROM liabilities WHERE user_id=$1 ORDER BY created_at DESC", user_id)
+    if liab:
         text += "\nДолги:\n"
-        for l in liabs:
+        for l in liab:
             text += f"- {l['title']} ({l['type']}): {l['amount']} ₽\n"
+        total_liab = sum(l["amount"] for l in liab)
+        text += f"Итого долгов: {total_liab}₽\n"
+    else:
+        text += "\nДолги: нет.\n"
+
+    # net worth
+    total_assets = sum(a["amount"] for a in assets) if assets else 0
+    total_liab = sum(l["amount"] for l in liab) if liab else 0
+    net = total_assets - total_liab
+    text += f"\nЧистый капитал: {net}₽\n"
+
     return text
 
-# -------------------------
-# User helpers
-# -------------------------
-async def get_or_create_user(tg_id: int):
-    row = await db.fetchrow("SELECT id FROM users WHERE tg_id=$1", tg_id)
-    if row:
-        return row["id"]
-    row = await db.fetchrow("INSERT INTO users (tg_id, created_at) VALUES ($1,NOW()) RETURNING id", tg_id)
-    return row["id"]
+# -----------------------
+# AI reply builder & /consult
+# -----------------------
+async def generate_ai_reply(user_id: int, user_message: str) -> str:
+    # try cache
+    finance_snapshot = await analyze_user_finances_text(user_id)
+    cached = await get_cached_ai_reply_db(user_id, user_message, finance_snapshot)
+    if cached:
+        await save_message_context(user_id, "assistant", cached)
+        return cached
 
-# -------------------------
-# Keyboards
-# -------------------------
+    # prepare messages (system + context + user)
+    context = await load_full_context(user_id)
+    system_prompt = (
+        "Ты — персональный финансовый ассистент. Используй историю диалога, транзакции, активы, долги и цели."
+        "Отвечай чётко и профессионально."
+    )
+    messages = [{"role": "system", "content": system_prompt}] + context + [{"role": "user", "content": user_message}]
+    try:
+        resp = await gigachat_request(messages)
+    except Exception as e:
+        # fallback to cache empty
+        fallback = await get_cached_ai_reply_db(user_id, user_message, "")
+        if fallback:
+            await save_message_context(user_id, "assistant", fallback)
+            return fallback
+        return "Извините, AI временно недоступен. Попробуйте позже."
+
+    await save_message_context(user_id, "assistant", resp)
+    await save_ai_cache_db(user_id, user_message, finance_snapshot, resp)
+    return resp
+
+async def generate_consultation(user_id: int) -> str:
+    # Short step-by-step plan based on finances
+    finance_snapshot = await analyze_user_finances_text(user_id)
+    # system: ask GigaChat to give short step-by-step plan
+    messages = [
+        {"role": "system", "content": "Ты — финансовый консультант. Дай 5 коротких и конкретных шагов для улучшения финансового состояния."},
+        {"role": "user", "content": f"Вот данные пользователя:\n{finance_snapshot}\nСформируй 5 пунктов плана, каждый пункт — одно предложение."}
+    ]
+    try:
+        resp = await gigachat_request(messages)
+    except Exception:
+        return "Извините, не удалось получить консультацию от AI. Попробуйте позже."
+    # save assistant message to context
+    await save_message_context(user_id, "assistant", resp)
+    return resp
+
+# -----------------------
+# UI: keyboards
+# -----------------------
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить расход", callback_data="menu_add")],
-        [InlineKeyboardButton(text="🎯 Мои цели", callback_data="menu_goals"), InlineKeyboardButton(text="💡 Консультация", callback_data="menu_consult")],
-        [InlineKeyboardButton(text="💼 Управление капиталом", callback_data="menu_capital"), InlineKeyboardButton(text="📈 График", callback_data="menu_chart")],
-        [InlineKeyboardButton(text="📤 Экспорт CSV", callback_data="menu_export"), InlineKeyboardButton(text="📊 Отчёт", callback_data="menu_report")]
+        [InlineKeyboardButton(text="➕ Добавить транзакцию", callback_data="menu_add"),
+         InlineKeyboardButton(text="🎯 Мои цели", callback_data="menu_goals")],
+        [InlineKeyboardButton(text="💼 Управление капиталом", callback_data="menu_capital"),
+         InlineKeyboardButton(text="📊 Отчёт", callback_data="menu_report")],
+        [InlineKeyboardButton(text="📈 График (/chart)", callback_data="menu_chart"),
+         InlineKeyboardButton(text="💡 Консультация", callback_data="menu_consult")],
+        [InlineKeyboardButton(text="📤 Экспорт CSV", callback_data="menu_export")]
     ])
 
-def cancel_kb():
+def cancel_kb(text="❌ Отмена"):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_fsm")]
+        [InlineKeyboardButton(text=text, callback_data="cancel_fsm")],
     ])
 
-def confirm_kb():
+# Capital submenu
+def capital_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Подтвердить ✅", callback_data="confirm_tx"), InlineKeyboardButton(text="Отмена ❌", callback_data="cancel_fsm")]
+        [InlineKeyboardButton(text="➕ Добавить актив", callback_data="cap_add_asset"),
+         InlineKeyboardButton(text="➕ Добавить долг", callback_data="cap_add_liab")],
+        [InlineKeyboardButton(text="📋 Показать активы/долги", callback_data="cap_show"),
+         InlineKeyboardButton(text="💳 Чистый капитал", callback_data="cap_net")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_back")]
     ])
 
-def capital_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить актив", callback_data="cap_add_asset"), InlineKeyboardButton(text="➕ Добавить долг", callback_data="cap_add_liab")],
-        [InlineKeyboardButton(text="📋 Показать баланс", callback_data="cap_show"), InlineKeyboardButton(text="⬅️ В меню", callback_data="menu_back")]
-    ])
+# confirm pending transaction keyboard (when parsed quick text)
+confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="Подтвердить ✅", callback_data="confirm_tx"),
+     InlineKeyboardButton(text="Отмена ❌", callback_data="cancel_tx")]
+])
 
-# -------------------------
-# Handlers: /start /help
-# -------------------------
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await get_or_create_user(message.from_user.id)
-    txt = ("Привет! Я FinAdvisor — твой финансовый помощник 🤖\n\n"
-           "Быстрая запись: '-2500 кофе', '+150k зарплата'\n\n"
-           "Выбери действие:")
-    await message.answer(txt, reply_markup=main_menu_kb())
-
-@dp.message(Command("help"))
-async def cmd_help(message: types.Message):
-    await message.answer("Команды: /consult /export /chart /start\nИли используй меню.", reply_markup=main_menu_kb())
-
-# -------------------------
-# Callback menu handlers
-# -------------------------
-@dp.callback_query(F.data == "menu_back")
-async def cb_menu_back(q: types.CallbackQuery):
-    await q.message.edit_text("Главное меню:", reply_markup=main_menu_kb())
-    await q.answer()
-
-@dp.callback_query(F.data == "menu_add")
-async def cb_menu_add(q: types.CallbackQuery, state: FSMContext):
-    await state.set_state(AddTx.amount)
-    await q.message.answer("Введите сумму (пример: -2500 или 1500):", reply_markup=cancel_kb())
-    await q.answer()
-
-@dp.callback_query(F.data == "menu_goals")
-async def cb_menu_goals(q: types.CallbackQuery):
-    user_id = await get_or_create_user(q.from_user.id)
-    rows = await db.fetch("SELECT id, title, target, current FROM goals WHERE user_id=$1", user_id)
-    if not rows:
-        await q.message.answer("Целей нет. Используй меню и добавь через 'Мои цели' -> /goal")
-    else:
-        s = "Твои цели:\n"
-        for r in rows:
-            s += f"- {r['title']}: {r['current']}/{r['target']} ₽\n"
-        await q.message.answer(s)
-    await q.answer()
-
-@dp.callback_query(F.data == "menu_chart")
-async def cb_menu_chart(q: types.CallbackQuery):
-    await q.message.answer("Генерирую график...")
-    # delegate to chart handler
-    await handle_chart(q.message)
-    await q.answer()
-
-@dp.callback_query(F.data == "menu_export")
-async def cb_menu_export(q: types.CallbackQuery):
-    await q.message.answer("Генерирую CSV...")
-    await handle_export(q.message)
-    await q.answer()
-
-@dp.callback_query(F.data == "menu_report")
-async def cb_menu_report(q: types.CallbackQuery):
-    user_id = await get_or_create_user(q.from_user.id)
-    text = await analyze_user_finances_text(user_id)
-    # add assets/liabilities summary
-    assets = await db.fetch("SELECT title, amount FROM assets WHERE user_id=$1", user_id)
-    liabs = await db.fetch("SELECT title, amount FROM liabilities WHERE user_id=$1", user_id)
-    text += "\n\nАктивы:\n"
-    total_assets = 0
-    for a in assets:
-        total_assets += a["amount"]
-        text += f"- {a['title']}: {a['amount']} ₽\n"
-    text += "\nДолги:\n"
-    total_liab = 0
-    for l in liabs:
-        total_liab += l["amount"]
-        text += f"- {l['title']}: {l['amount']} ₽\n"
-    text += f"\nЧистый капитал: {total_assets - total_liab} ₽\n"
-    await q.message.answer(text)
-    await q.answer()
-
-@dp.callback_query(F.data == "menu_capital")
-async def cb_menu_capital(q: types.CallbackQuery):
-    await q.message.edit_text("Управление капиталом:", reply_markup=capital_kb())
-    await q.answer()
-
-@dp.callback_query(F.data == "cap_add_asset")
-async def cb_cap_add_asset(q: types.CallbackQuery, state: FSMContext):
-    await state.set_state(AddAsset.amount)
-    await q.message.answer("Добавление актива — введите сумму (пример: 150000):", reply_markup=cancel_kb())
-    await q.answer()
-
-@dp.callback_query(F.data == "cap_add_liab")
-async def cb_cap_add_liab(q: types.CallbackQuery, state: FSMContext):
-    await state.set_state(AddLiab.amount)
-    await q.message.answer("Добавление долга — введите сумму (пример: 500000):", reply_markup=cancel_kb())
-    await q.answer()
-
-@dp.callback_query(F.data == "cap_show")
-async def cb_cap_show(q: types.CallbackQuery):
-    user_id = await get_or_create_user(q.from_user.id)
-    assets = await db.fetch("SELECT title, amount, type FROM assets WHERE user_id=$1", user_id)
-    liabs = await db.fetch("SELECT title, amount, type FROM liabilities WHERE user_id=$1", user_id)
-    text = "Активы:\n"
-    total_assets = 0
-    for a in assets:
-        total_assets += a["amount"]
-        text += f"- {a['title']} ({a['type']}): {a['amount']} ₽\n"
-    text += "\nДолги:\n"
-    total_liab = 0
-    for l in liabs:
-        total_liab += l["amount"]
-        text += f"- {l['title']} ({l['type']}): {l['amount']} ₽\n"
-    text += f"\nЧистый капитал: {total_assets - total_liab} ₽"
-    await q.message.answer(text)
-    await q.answer()
-
-@dp.callback_query(F.data == "menu_consult")
-async def cb_menu_consult(q: types.CallbackQuery):
-    # open consult: prompt user to ask or run /consult
-    await q.message.answer("Напиши свой вопрос или вызови команду /consult для автоматической рекомендаций.")
-    await q.answer()
-
-# -------------------------
-# FSMs: Add transaction, assets, liabilities, goals
-# -------------------------
-class AddTx(StatesGroup):
+# -----------------------
+# FSM states
+# -----------------------
+class TxStates(StatesGroup):
     amount = State()
     category = State()
-    desc = State()
+    description = State()
 
-class AddAsset(StatesGroup):
-    amount = State()
-    type = State()
-    title = State()
-
-class AddLiab(StatesGroup):
-    amount = State()
-    monthly = State()
-    title = State()
-
-class AddGoal(StatesGroup):
+class GoalStates(StatesGroup):
     target = State()
     title = State()
 
-# Cancel callback for FSMs
-@dp.callback_query(F.data == "cancel_fsm")
-async def cb_cancel_fsm(q: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await q.message.answer("Операция отменена.", reply_markup=main_menu_kb())
-    await q.answer()
+class AssetStates(StatesGroup):
+    amount = State()
+    typ = State()
+    title = State()
 
-# Add transaction flow
-@dp.message(AddTx.amount)
-async def tx_amount(message: types.Message, state: FSMContext):
-    txt = message.text.strip()
+class LiabStates(StatesGroup):
+    amount = State()
+    typ = State()
+    title = State()
+
+# -----------------------
+# Quick text parsing helper (very simple)
+# -----------------------
+import re
+UNIT_MAP = {"k": 1_000, "к": 1_000, "m": 1_000_000, "м": 1_000_000, "млн": 1_000_000}
+def parse_amount_token(s: str):
+    s0 = s.strip().lower().replace(" ", "").replace("\u2009","")
+    s0 = s0.replace(",", ".")
+    m = re.match(r"^([+-]?\d+(\.\d+)?)([a-zа-яё%]*)$", s0, re.IGNORECASE)
+    if not m:
+        # try to catch "1.5k"
+        m2 = re.match(r"^([\d\.]+)([a-zа-я]+)$", s0, re.IGNORECASE)
+        if not m2:
+            raise ValueError("invalid")
+        num = float(m2.group(1))
+        unit = m2.group(2)
+        mult = 1
+        for k,v in UNIT_MAP.items():
+            if unit.startswith(k):
+                mult = v
+                break
+        return int(round(num*mult))
+    num = float(m.group(1))
+    unit = m.group(3) or ""
+    mult = 1
+    for k,v in UNIT_MAP.items():
+        if unit.startswith(k):
+            mult = v
+            break
+    return int(round(num*mult))
+
+# -----------------------
+# PENDING quick parsed tx storage
+# -----------------------
+pending_tx = {}
+
+# -----------------------
+# COMMANDS / CALLBACKS / HANDLERS
+# -----------------------
+@dp.message(Command("start"))
+async def cmd_start(m: types.Message):
+    await get_or_create_user(m.from_user.id)
+    await m.answer(
+        "Привет! Я FinAdvisor — помощник по личным финансам.\n\n"
+        "Можно быстро добавить транзакцию в одну строку (например: -2500 кофе) или воспользоваться меню.",
+        reply_markup=main_menu_kb()
+    )
+
+@dp.callback_query(lambda c: c.data == "menu_back")
+async def cb_menu_back(c: types.CallbackQuery):
+    await c.message.edit_text("Главное меню:", reply_markup=main_menu_kb())
+    await c.answer()
+
+@dp.callback_query(lambda c: c.data == "menu_report")
+async def cb_menu_report(c: types.CallbackQuery):
+    user_id = await get_or_create_user(c.from_user.id)
+    txt = await analyze_user_finances_text(user_id)
+    await c.message.answer(txt)
+    await c.answer()
+
+@dp.callback_query(lambda c: c.data == "menu_export")
+async def cb_menu_export(c: types.CallbackQuery):
+    # call export handler
+    await handle_export_callback(c)
+    await c.answer()
+
+@dp.callback_query(lambda c: c.data == "menu_chart")
+async def cb_menu_chart(c: types.CallbackQuery):
+    # call chart handler
+    await cmd_chart(c.message)
+    await c.answer()
+
+@dp.callback_query(lambda c: c.data == "menu_consult")
+async def cb_menu_consult(c: types.CallbackQuery):
+    user_id = await get_or_create_user(c.from_user.id)
+    await c.message.answer("Готовлю короткую консультацию...")
+    resp = await generate_consultation(user_id)
+    await c.message.answer(resp)
+    await c.answer()
+
+# -----------------------
+# Capital submenu
+# -----------------------
+@dp.callback_query(lambda c: c.data == "menu_capital")
+async def cb_menu_capital(c: types.CallbackQuery):
+    await c.message.edit_text("Управление капиталом:", reply_markup=capital_menu_kb())
+    await c.answer()
+
+@dp.callback_query(lambda c: c.data == "cap_add_asset")
+async def cb_cap_add_asset(c: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AssetStates.amount)
+    await c.message.answer("Введите сумму актива (пример: 150000):", reply_markup=cancel_kb())
+    await c.answer()
+
+@dp.callback_query(lambda c: c.data == "cap_add_liab")
+async def cb_cap_add_liab(c: types.CallbackQuery, state: FSMContext):
+    await state.set_state(LiabStates.amount)
+    await c.message.answer("Введите сумму долга (пример: 500000):", reply_markup=cancel_kb())
+    await c.answer()
+
+@dp.callback_query(lambda c: c.data == "cap_show")
+async def cb_cap_show(c: types.CallbackQuery):
+    user_id = await get_or_create_user(c.from_user.id)
+    assets = await db.fetch("SELECT title, type, amount FROM assets WHERE user_id=$1", user_id)
+    liabs = await db.fetch("SELECT title, type, amount FROM liabilities WHERE user_id=$1", user_id)
+    out = "Активы:\n"
+    if assets:
+        for a in assets:
+            out += f"- {a['title']} ({a['type']}): {a['amount']} ₽\n"
+    else:
+        out += "- нет\n"
+    out += "\nДолги:\n"
+    if liabs:
+        for l in liabs:
+            out += f"- {l['title']} ({l['type']}): {l['amount']} ₽\n"
+    else:
+        out += "- нет\n"
+    # net
+    tot_a = sum(a["amount"] for a in assets) if assets else 0
+    tot_l = sum(l["amount"] for l in liabs) if liabs else 0
+    out += f"\nЧистый капитал: {tot_a - tot_l} ₽"
+    await c.message.answer(out)
+    await c.answer()
+
+@dp.callback_query(lambda c: c.data == "cap_net")
+async def cb_cap_net(c: types.CallbackQuery):
+    user_id = await get_or_create_user(c.from_user.id)
+    assets = await db.fetch("SELECT amount FROM assets WHERE user_id=$1", user_id)
+    liabs = await db.fetch("SELECT amount FROM liabilities WHERE user_id=$1", user_id)
+    tot_a = sum(a["amount"] for a in assets) if assets else 0
+    tot_l = sum(l["amount"] for l in liabs) if liabs else 0
+    await c.message.answer(f"Чистый капитал: {tot_a - tot_l} ₽ (активы {tot_a} ₽, долги {tot_l} ₽)")
+    await c.answer()
+
+# -----------------------
+# Asset FSM
+# -----------------------
+@dp.message(lambda m: True, state=AssetStates.amount)
+async def asset_amount(message: types.Message, state: FSMContext):
+    if message.text and message.text.startswith("/"):
+        return
     try:
-        amt = parse_amount_token(txt) if txt else None
+        amount = parse_amount_token(message.text.strip())
     except Exception:
-        try:
-            amt = int(float(txt.replace(",", ".")))
-        except:
-            await message.answer("Неверная сумма. Введите число.")
-            return
-    await state.update_data(amount=amt)
-    await state.set_state(AddTx.category)
-    await message.answer("Категория (или '-' для пропуска):", reply_markup=cancel_kb())
+        await message.answer("Неверный формат суммы. Попробуйте цифрами (пример 150000).", reply_markup=cancel_kb())
+        return
+    await state.update_data(amount=amount)
+    await state.set_state(AssetStates.typ)
+    await message.answer("Укажите тип актива (bank, deposit, stocks, cash, crypto, other):", reply_markup=cancel_kb())
 
-@dp.message(AddTx.category)
+@dp.message(lambda m: True, state=AssetStates.typ)
+async def asset_type(message: types.Message, state: FSMContext):
+    await state.update_data(typ=message.text.strip())
+    await state.set_state(AssetStates.title)
+    await message.answer("Укажите название (например: 'Банк Точка - счет')", reply_markup=cancel_kb())
+
+@dp.message(lambda m: True, state=AssetStates.title)
+async def asset_title(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    user_id = await get_or_create_user(message.from_user.id)
+    await db.execute("INSERT INTO assets (user_id, title, type, amount, created_at) VALUES ($1,$2,$3,$4,NOW())",
+                     user_id, message.text.strip(), data["typ"], data["amount"])
+    await save_message_context(user_id, "system", f"Добавлен актив: {message.text.strip()} {data['amount']} ₽")
+    await message.answer("Актив добавлен ✅", reply_markup=main_menu_kb())
+    await state.clear()
+
+# -----------------------
+# Liability FSM
+# -----------------------
+@dp.message(lambda m: True, state=LiabStates.amount)
+async def liab_amount(message: types.Message, state: FSMContext):
+    if message.text and message.text.startswith("/"):
+        return
+    try:
+        amount = parse_amount_token(message.text.strip())
+    except Exception:
+        await message.answer("Неверный формат суммы. Попробуйте цифрами (пример 500000).", reply_markup=cancel_kb())
+        return
+    await state.update_data(amount=amount)
+    await state.set_state(LiabStates.typ)
+    await message.answer("Укажите тип долга (loan, mortgage, credit_card, other):", reply_markup=cancel_kb())
+
+@dp.message(lambda m: True, state=LiabStates.typ)
+async def liab_type(message: types.Message, state: FSMContext):
+    await state.update_data(typ=message.text.strip())
+    await state.set_state(LiabStates.title)
+    await message.answer("Укажите название (например: 'Ипотека Сбер')", reply_markup=cancel_kb())
+
+@dp.message(lambda m: True, state=LiabStates.title)
+async def liab_title(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    user_id = await get_or_create_user(message.from_user.id)
+    await db.execute("INSERT INTO liabilities (user_id, title, type, amount, created_at) VALUES ($1,$2,$3,$4,NOW())",
+                     user_id, message.text.strip(), data["typ"], data["amount"])
+    await save_message_context(user_id, "system", f"Добавлен долг: {message.text.strip()} {data['amount']} ₽")
+    await message.answer("Долг добавлен ✅", reply_markup=main_menu_kb())
+    await state.clear()
+
+# -----------------------
+# Cancel FSM callback
+# -----------------------
+@dp.callback_query(lambda c: c.data == "cancel_fsm")
+async def cb_cancel_fsm(c: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await c.message.answer("Операция отменена.", reply_markup=main_menu_kb())
+    await c.answer()
+
+# -----------------------
+# Transactions & Goals: add via menu FSM
+# -----------------------
+@dp.callback_query(lambda c: c.data == "menu_add")
+async def cb_menu_add(c: types.CallbackQuery, state: FSMContext):
+    await state.set_state(TxStates.amount)
+    await c.message.answer("Введите сумму транзакции (пример -2500 или 1500):", reply_markup=cancel_kb())
+    await c.answer()
+
+@dp.message(lambda m: True, state=TxStates.amount)
+async def tx_amount(message: types.Message, state: FSMContext):
+    if message.text and message.text.startswith("/"):
+        return
+    try:
+        amount = parse_amount_token(message.text.strip())
+    except Exception:
+        await message.answer("Неверная сумма. Введите цифру или пример 1.5k:", reply_markup=cancel_kb())
+        return
+    await state.update_data(amount=amount)
+    await state.set_state(TxStates.category)
+    await message.answer("Введите категорию (или '-' чтобы пропустить):", reply_markup=cancel_kb())
+
+@dp.message(lambda m: True, state=TxStates.category)
 async def tx_category(message: types.Message, state: FSMContext):
     cat = message.text.strip()
     if cat == "-":
         cat = None
     await state.update_data(category=cat)
-    await state.set_state(AddTx.desc)
-    await message.answer("Описание (или '-' для пропуска):", reply_markup=cancel_kb())
+    await state.set_state(TxStates.description)
+    await message.answer("Введите описание (или '-' чтобы пропустить):", reply_markup=cancel_kb())
 
-@dp.message(AddTx.desc)
-async def tx_desc(message: types.Message, state: FSMContext):
+@dp.message(lambda m: True, state=TxStates.description)
+async def tx_description(message: types.Message, state: FSMContext):
     data = await state.get_data()
+    desc = message.text.strip()
+    if desc == "-":
+        desc = None
     user_id = await get_or_create_user(message.from_user.id)
-    category = data.get("category") or guess_category(message.text)
-    desc = message.text.strip() if message.text.strip() != "-" else None
     await db.execute("INSERT INTO transactions (user_id, amount, category, description, created_at) VALUES ($1,$2,$3,$4,NOW())",
-                     user_id, data["amount"], category, desc)
-    await save_context(user_id, "system", f"Добавлена транзакция: {data['amount']} | {category} | {desc}")
+                     user_id, data["amount"], data["category"], desc)
+    await save_message_context(user_id, "system", f"Добавлена транзакция: {data['amount']} {data['category']} {desc}")
     await message.answer("Транзакция добавлена ✅", reply_markup=main_menu_kb())
     await state.clear()
 
-# Add asset flow
-@dp.message(AddAsset.amount)
-async def asset_amount(message: types.Message, state: FSMContext):
-    try:
-        amt = int(float(message.text.strip().replace(",", ".")))
-    except:
-        await message.answer("Неверная сумма. Попробуйте ещё раз.")
-        return
-    await state.update_data(amount=amt)
-    await state.set_state(AddAsset.type)
-    await message.answer("Тип актива (bank/deposit/stocks/crypto/cash/other):", reply_markup=cancel_kb())
+# Goals menu
+@dp.callback_query(lambda c: c.data == "menu_goals")
+async def cb_menu_goals(c: types.CallbackQuery):
+    await c.message.answer("Управление целями: нажмите /goal чтобы добавить новую цель.", reply_markup=cancel_kb())
+    await c.answer()
 
-@dp.message(AddAsset.type)
-async def asset_type(message: types.Message, state: FSMContext):
-    t = message.text.strip()
-    await state.update_data(type=t)
-    await state.set_state(AddAsset.title)
-    await message.answer("Название актива (например 'Счёт в Тинькофф'):", reply_markup=cancel_kb())
-
-@dp.message(AddAsset.title)
-async def asset_title(message: types.Message, state: FSMContext):
-    d = await state.get_data()
-    user_id = await get_or_create_user(message.from_user.id)
-    title = message.text.strip()
-    await db.execute("INSERT INTO assets (user_id, amount, type, title, created_at) VALUES ($1,$2,$3,$4,NOW())",
-                     user_id, d["amount"], d["type"], title)
-    await save_context(user_id, "system", f"Добавлен актив: {title} {d['amount']} ₽ ({d['type']})")
-    await message.answer("Актив добавлен ✅", reply_markup=main_menu_kb())
-    await state.clear()
-
-# Add liability flow
-@dp.message(AddLiab.amount)
-async def liab_amount(message: types.Message, state: FSMContext):
-    try:
-        amt = int(float(message.text.strip().replace(",", ".")))
-    except:
-        await message.answer("Неверная сумма. Попробуйте ещё раз.")
-        return
-    await state.update_data(amount=amt)
-    await state.set_state(AddLiab.monthly)
-    await message.answer("Ежемесячный платёж (числом):", reply_markup=cancel_kb())
-
-@dp.message(AddLiab.monthly)
-async def liab_monthly(message: types.Message, state: FSMContext):
-    try:
-        monthly = int(float(message.text.strip().replace(",", ".")))
-    except:
-        await message.answer("Неверный формат. Попробуйте число.")
-        return
-    await state.update_data(monthly=monthly)
-    await state.set_state(AddLiab.title)
-    await message.answer("Название долга (например 'Ипотека Сбер'):", reply_markup=cancel_kb())
-
-@dp.message(AddLiab.title)
-async def liab_title(message: types.Message, state: FSMContext):
-    d = await state.get_data()
-    user_id = await get_or_create_user(message.from_user.id)
-    title = message.text.strip()
-    await db.execute("INSERT INTO liabilities (user_id, amount, type, title, created_at) VALUES ($1,$2,$3,$4,NOW())",
-                     user_id, d["amount"], "loan", title)
-    await save_context(user_id, "system", f"Добавлен долг: {title} {d['amount']} ₽")
-    await message.answer("Долг добавлен ✅", reply_markup=main_menu_kb())
-    await state.clear()
-
-# Goals (simple)
 @dp.message(Command("goal"))
-async def cmd_goal_start(message: types.Message, state: FSMContext):
-    await state.set_state(AddGoal.target)
-    await message.answer("Введите сумму цели:", reply_markup=cancel_kb())
+async def cmd_goal_start(m: types.Message, state: FSMContext):
+    await state.set_state(GoalStates.target)
+    await m.answer("Введите сумму цели:", reply_markup=cancel_kb())
 
-@dp.message(AddGoal.target)
-async def goal_target(message: types.Message, state: FSMContext):
+@dp.message(lambda m: True, state=GoalStates.target)
+async def goal_target(m: types.Message, state: FSMContext):
     try:
-        t = int(float(message.text.strip().replace(",", ".")))
-    except:
-        await message.answer("Введите число.")
+        t = parse_amount_token(m.text.strip())
+    except Exception:
+        await m.answer("Неверный формат суммы.", reply_markup=cancel_kb())
         return
     await state.update_data(target=t)
-    await state.set_state(AddGoal.title)
-    await message.answer("Название цели:", reply_markup=cancel_kb())
+    await state.set_state(GoalStates.title)
+    await m.answer("Название цели:", reply_markup=cancel_kb())
 
-@dp.message(AddGoal.title)
-async def goal_title(message: types.Message, state: FSMContext):
+@dp.message(lambda m: True, state=GoalStates.title)
+async def goal_title(m: types.Message, state: FSMContext):
     d = await state.get_data()
-    user_id = await get_or_create_user(message.from_user.id)
+    user_id = await get_or_create_user(m.from_user.id)
     await db.execute("INSERT INTO goals (user_id, target, current, title, created_at) VALUES ($1,$2,0,$3,NOW())",
-                     user_id, d["target"], message.text.strip())
-    await save_context(user_id, "system", f"Создана цель: {message.text.strip()} на {d['target']} ₽")
-    await message.answer("Цель создана ✅", reply_markup=main_menu_kb())
+                     user_id, d["target"], m.text.strip())
+    await save_message_context(user_id, "system", f"Создана цель: {m.text.strip()} {d['target']} ₽")
+    await m.answer("Цель добавлена ✅", reply_markup=main_menu_kb())
     await state.clear()
 
-# -------------------------
-# Confirm pending tx (for quick parse scenario)
-# -------------------------
-@dp.callback_query(F.data == "confirm_tx")
-async def cb_confirm_tx(q: types.CallbackQuery):
-    data = pending_pending.pop(q.from_user.id, None)
-    if not data:
-        await q.answer("Нет ожидающих данных.", show_alert=True)
-        return
-    user_id = await get_or_create_user(q.from_user.id)
-    if not data.get("category"):
-        data["category"] = guess_category(data.get("description") or "")
-    await db.execute("INSERT INTO transactions (user_id, amount, category, description, created_at) VALUES ($1,$2,$3,$4,NOW())",
-                     user_id, data["amount"], data.get("category"), data.get("description"))
-    await save_context(user_id, "system", f"Добавлена транзакция: {data['amount']} | {data.get('category')} | {data.get('description')}")
-    await q.message.edit_text("Транзакция добавлена ✅")
-    await q.answer()
-
-# -------------------------
-# Quick free-text parse: if user sends "-2500 кофе" etc.
-# -------------------------
-import re
-def smart_parse_free_text(text: str):
-    if not text:
-        return None
-    m = re.search(r"([+-]?\s*\d[\d\s\.,]*(?:k|m|к|м|млн)?)", text, re.IGNORECASE)
-    if not m:
-        return None
-    token = m.group(1).replace(" ", "")
-    # normalize token
-    token = token.replace(",", ".")
-    try:
-        amount = parse_amount_token(token)
-    except:
-        try:
-            amount = int(float(token))
-        except:
-            return None
-    left = (text[:m.start()] + " " + text[m.end():]).strip()
-    description = left or None
-    guessed_category = guess_category(left or "")
-    return (amount, guessed_category, description)
-
+# -----------------------
+# Quick free-text parsing: if user sends "-2500 кофе" etc.
+# -----------------------
 @dp.message()
 async def catch_all(message: types.Message):
-    # ignore pure commands (handled)
-    if message.text and message.text.startswith("/"):
+    text = message.text or ""
+    # ignore commands (they have handlers)
+    if text.startswith("/"):
         return
-    # quick affirmative after add prompts
-    if message.text and message.text.strip().lower() in ("да", "ok", "yes"):
-        await message.answer("Окей — /report или /chart ?", reply_markup=main_menu_kb())
-        return
-    # parse free-text transaction
-    parsed = smart_parse_free_text(message.text or "")
-    if parsed:
-        amount, cat, desc = parsed
-        pending_pending[message.from_user.id] = {"amount": amount, "category": cat, "description": desc}
-        await message.answer(f"Найдено: {amount}₽ | {cat or '—'} | {desc or ''}\nПодтвердить?", reply_markup=confirm_kb())
-        return
-    # otherwise treat as question for AI assistant: default flow — reply with AI
-    user_id = await get_or_create_user(message.from_user.id)
-    # background summarization trim if needed
-    asyncio.create_task(maybe_summarize_context(user_id))
-    # prepare messages: system + context + user
-    finance_snapshot = await analyze_user_finances_text(user_id)
-    sys_prompt = f"Ты — умный финансовый ассистент. Используй историю диалога и данные транзакций/активов/долгов/целей.\nДанные пользователя:\n{finance_snapshot}"
-    context = await get_full_context(user_id)
-    messages = [{"role":"system","content":sys_prompt}] + context + [{"role":"user","content":message.text}]
-    # try cache
-    cached = await get_ai_cache(user_id, message.text or "", finance_snapshot)
-    if cached:
-        await save_context(user_id, "assistant", cached)
-        await message.answer(cached)
-        return
+    # try parse like "-2500 кофе"
+    parsed = None
     try:
-        ans = await gigachat_request(messages)
-        await save_context(user_id, "assistant", ans)
-        await save_ai_cache(user_id, message.text or "", finance_snapshot, ans)
-        await message.answer(ans)
-    except Exception as e:
-        print("GigaChat error:", e)
-        return f"AI ошибка: {e}"
-
-    
-
-# -------------------------
-# /consult command (short step-by-step plan)
-# -------------------------
-@dp.message(Command("consult"))
-async def cmd_consult(message: types.Message):
-    user_id = await get_or_create_user(message.from_user.id)
-    # build snapshot
-    finance_snapshot = await analyze_user_finances_text(user_id)
-    sys_prompt = ("Ты — персональный финансовый консультант. На основе предоставленных данных "
-                  "составь краткий пошаговый план (5 шагов максимум) для улучшения финансового состояния пользователя. "
-                  "Формат: нумерованный список из коротких пунктов.")
-    context = await get_full_context(user_id)
-    messages = [{"role":"system","content":sys_prompt}] + context + [{"role":"user","content":finance_snapshot}]
-    # cache check
-    cached = await get_ai_cache(user_id, "/consult", finance_snapshot)
-    if cached:
-        await save_context(user_id, "assistant", cached)
-        await message.answer(cached)
-        return
-    try:
-        ans = await gigachat_request(messages)
-        await save_context(user_id, "assistant", ans)
-        await save_ai_cache(user_id, "/consult", finance_snapshot, ans)
-        await message.answer(ans)
-    except Exception as e:
-        print("consult error:", e)
-        await message.answer("Ошибка при обращении к AI. Попробуйте позже.")
-
-# -------------------------
-# /export CSV handler
-# -------------------------
-@dp.message(Command("export"))
-async def cmd_export(message: types.Message):
-    user_id = await get_or_create_user(message.from_user.id)
-    rows = await db.fetch("SELECT id, amount, category, description, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at ASC", user_id)
-    if not rows:
-        await message.answer("Нет транзакций для экспорта.")
-        return
-    fd, path = tempfile.mkstemp(prefix=f"finances_{user_id}_", suffix=".csv")
-    os_close = None
-    try:
-        os.close(fd)
+        # find first number token
+        m = re.search(r"([+-]?\d[\d\s\.,]*[a-zA-Zа-яА-ЯкКмМлLn%]*)", text)
+        if m:
+            token = m.group(1)
+            amt = parse_amount_token(token)
+            # description is rest
+            desc = (text[:m.start()] + " " + text[m.end():]).strip()
+            parsed = (amt, None, desc)
     except Exception:
-        pass
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        import csv
-        w = csv.writer(f)
-        w.writerow(["id","amount","category","description","created_at"])
-        for r in rows:
-            w.writerow([r["id"], r["amount"], r["category"] or "", r["description"] or "", r["created_at"].isoformat() if r["created_at"] else ""])
-    await message.answer_document(types.FSInputFile(path), caption="Экспорт транзакций")
-    try:
-        os.remove(path)
-    except:
-        pass
+        parsed = None
 
-# -------------------------
-# Chart generation /chart
-# -------------------------
-@dp.message(Command("chart"))
-async def cmd_chart(message: types.Message):
-    await handle_chart(message)
+    if parsed:
+        amount, category, description = parsed
+        # store pending and ask confirm
+        pending_tx[message.from_user.id] = {"amount": amount, "category": category, "description": description}
+        await message.answer(f"Найдено: {amount}₽ | {category or '—'} | {description or ''}\nПодтвердить?", reply_markup=confirm_kb)
+        return
 
-async def handle_chart(message: types.Message):
+    # otherwise treat as AI assistant query (always-on summarization)
     user_id = await get_or_create_user(message.from_user.id)
+    await message.answer("Запрашиваю ответ у AI...")
+    resp = await generate_ai_reply(user_id, text)
+    await message.answer(resp)
+
+# confirm/cancel pending tx
+@dp.callback_query(lambda c: c.data == "confirm_tx")
+async def cb_confirm_tx(c: types.CallbackQuery):
+    data = pending_tx.pop(c.from_user.id, None)
+    if not data:
+        await c.answer("Нет ожидающей транзакции", show_alert=True)
+        return
+    user_id = await get_or_create_user(c.from_user.id)
+    cat = data.get("category")
+    await db.execute("INSERT INTO transactions (user_id, amount, category, description, created_at) VALUES ($1,$2,$3,$4,NOW())",
+                     user_id, data["amount"], cat, data.get("description"))
+    await save_message_context(user_id, "system", f"Добавлена транзакция: {data['amount']} {cat} {data.get('description')}")
+    await c.message.edit_text("Транзакция добавлена ✅")
+    await c.answer()
+
+@dp.callback_query(lambda c: c.data == "cancel_tx")
+async def cb_cancel_tx(c: types.CallbackQuery):
+    pending_tx.pop(c.from_user.id, None)
+    await c.message.edit_text("Операция отменена.")
+    await c.answer()
+
+# -----------------------
+# /consult command
+# -----------------------
+@dp.message(Command("consult"))
+async def cmd_consult(m: types.Message):
+    user_id = await get_or_create_user(m.from_user.id)
+    await m.answer("Готовлю краткую консультацию...")
+    resp = await generate_consultation(user_id)
+    await m.answer(resp)
+
+# -----------------------
+# Chart command (expenses + assets vs liabilities)
+# -----------------------
+@dp.message(Command("chart"))
+async def cmd_chart(m: types.Message):
+    user_id = await get_or_create_user(m.from_user.id)
     since = datetime.utcnow() - timedelta(days=30)
     rows = await db.fetch("SELECT amount, created_at FROM transactions WHERE user_id=$1 AND created_at >= $2 ORDER BY created_at ASC", user_id, since)
-    if not rows:
-        await message.answer("Нет транзакций за 30 дней.")
+    assets = await db.fetch("SELECT title, amount FROM assets WHERE user_id=$1", user_id)
+    liabs = await db.fetch("SELECT title, amount FROM liabilities WHERE user_id=$1", user_id)
+
+    if not rows and not assets and not liabs:
+        await m.answer("Нет данных для графика.")
         return
+
+    # expenses time series
     daily = {}
     for r in rows:
-        d = r["created_at"].date().isoformat()
-        daily[d] = daily.get(d, 0) + float(r["amount"])
+        day = r["created_at"].date().isoformat()
+        daily[day] = daily.get(day, 0) + float(r["amount"])
     dates = sorted(daily.keys())
     values = [daily[d] for d in dates]
-    plt.figure(figsize=(10,4))
-    plt.plot(dates, values, marker='o')
-    plt.xticks(rotation=45)
-    plt.title("Динамика за 30 дней")
+
+    # create figure with two subplots: time series + assets/liab bar
+    fig, axs = plt.subplots(2, 1, figsize=(8, 8))
+    if dates:
+        axs[0].plot(dates, values, marker='o')
+        axs[0].set_title("Динамика транзакций (30 дней)")
+        axs[0].tick_params(axis='x', rotation=45)
+    else:
+        axs[0].text(0.5, 0.5, "Нет транзакций", ha='center')
+
+    # assets vs liabilities
+    labels = []
+    vals = []
+    for a in assets:
+        labels.append(a["title"] or "asset")
+        vals.append(float(a["amount"]))
+    for l in liabs:
+        labels.append(l["title"] or "liab")
+        vals.append(-float(l["amount"]))  # show debts as negative to visualize
+    if labels:
+        axs[1].barh(labels, vals)
+        axs[1].set_title("Активы (полож.) и долги (отриц.)")
+    else:
+        axs[1].text(0.5, 0.5, "Нет активов/долгов", ha='center')
+
     plt.tight_layout()
     fname = f"{CHART_DIR}/chart_{user_id}_{int(datetime.utcnow().timestamp())}.png"
     plt.savefig(fname)
-    plt.close()
-    await message.answer_photo(types.FSInputFile(fname), caption="График расходов/доходов (30 дней)")
+    plt.close(fig)
+    await m.answer_photo(types.FSInputFile(fname), caption="График аккаунта (30 дней)")
     try:
         os.remove(fname)
-    except:
+    except Exception:
         pass
 
-# -------------------------
-# Weekly report job (APScheduler)
-# -------------------------
-async def build_weekly_for_user(user):
-    user_id = user["id"]
-    tg_id = user["tg_id"]
-    finance = await analyze_user_finances_text(user_id)
-    assets = await db.fetch("SELECT title, amount FROM assets WHERE user_id=$1", user_id)
-    liabs = await db.fetch("SELECT title, amount FROM liabilities WHERE user_id=$1", user_id)
-    tot_assets = sum(a["amount"] for a in assets) if assets else 0
-    tot_liabs = sum(l["amount"] for l in liabs) if liabs else 0
-    net = tot_assets - tot_liabs
-    text = f"Еженедельный отчёт:\n\n{finance}\n\nАктивы: {tot_assets} ₽\nДолги: {tot_liabs} ₽\nЧистый капитал: {net} ₽"
-    # send
+# -----------------------
+# EXPORT handler (callback or command)
+# -----------------------
+async def handle_export_callback(c: types.CallbackQuery):
+    user_id = await get_or_create_user(c.from_user.id)
+    rows = await db.fetch("SELECT amount, category, description, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at ASC", user_id)
+    if not rows:
+        await c.message.answer("Нет транзакций для экспорта.")
+        return
+    fd, path = tempfile.mkstemp(prefix=f"finances_{user_id}_", suffix=".csv")
+    os.close(fd)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["amount", "category", "description", "created_at"])
+        for r in rows:
+            w.writerow([r["amount"], r["category"] or "", r["description"] or "", r["created_at"].isoformat() if r["created_at"] else ""])
+    await c.message.answer_document(types.FSInputFile(path), caption="Экспорт транзакций (CSV)")
     try:
-        await bot.send_message(tg_id, text)
-    except Exception as e:
-        print("send weekly failed:", e)
+        os.remove(path)
+    except Exception:
+        pass
+
+# -----------------------
+# Weekly report (APScheduler)
+# -----------------------
+async def build_weekly_report_for_user(user_id: int) -> str:
+    finance = await analyze_user_finances_text(user_id)
+    # totals
+    since7 = datetime.utcnow() - timedelta(days=7)
+    rows7 = await db.fetch("SELECT amount FROM transactions WHERE user_id=$1 AND created_at >= $2", user_id, since7)
+    total7 = sum(r["amount"] for r in rows7) if rows7 else 0
+    text = f"Еженедельный отчёт\nЗа 7 дней: {total7}₽\n\n{finance[:3000]}"
+    return text
 
 async def weekly_job():
     users = await db.fetch("SELECT id, tg_id FROM users")
     for u in users:
-        await build_weekly_for_user(u)
+        try:
+            report = await build_weekly_report_for_user(u["id"])
+            await bot.send_message(u["tg_id"], report)
+        except Exception:
+            pass
 
-def start_scheduler():
-    # run weekly on Monday 09:00 UTC (adjust if needed)
-    scheduler.add_job(weekly_job, 'cron', day_of_week='mon', hour=9, minute=0)
-    scheduler.start()
-
-# -------------------------
-# Startup / Shutdown
-# -------------------------
-@dp.startup()
+# -----------------------
+# STARTUP / SCHEDULER
+# -----------------------
 async def on_startup():
     global db
     db = await create_db_pool()
-    print("DB connected")
-    start_scheduler()
+    # schedule weekly job: every Monday 09:00 UTC (adjust if needed)
+    scheduler.add_job(weekly_job, "cron", day_of_week="mon", hour=9, minute=0, id="weekly_report")
+    scheduler.start()
+    print("DB connected, scheduler started.")
 
-# -------------------------
-# Main run
-# -------------------------
+# attach startup handler to dispatcher and run polling properly
+dp.startup.register(on_startup)
+
+# -----------------------
+# RUN
+# -----------------------
 if __name__ == "__main__":
     try:
         asyncio.run(dp.start_polling(bot))
-    except (KeyboardInterrupt, SystemExit):
-        print("Shutting down")
-
-
-
+    except KeyboardInterrupt:
+        print("Exit")
