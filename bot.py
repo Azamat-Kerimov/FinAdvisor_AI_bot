@@ -3,16 +3,17 @@
 
 """
 FinAdvisor - bot.py
-Улучшенная / исправленная версия:
+Исправленная и рабочая версия под aiogram 3.x (без зависимостей на aiogram.fsm.filters)
 - ai-context в PostgreSQL (таблица ai_context)
 - ai-cache (таблица ai_cache)
 - assets, liabilities
 - transactions, goals, users
 - интеграция с GigaChat (OAuth + chat completions)
 - APScheduler - еженедельный отчёт
-- FSM с кнопкой Отмена
+- FSM с кнопкой Отмена (универсальная маршрутизация состояний)
 - команда /consult и кнопка "💡 Консультация"
-- Исправлена регистрация FSM-хендлеров для aiogram 3.x (StateFilter)
+- всегда включённая автосуммаризация контекста
+- кеширование ответов AI
 """
 
 import os
@@ -27,7 +28,6 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import httpx
-import requests
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -42,7 +42,6 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFil
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.filters import StateFilter
 
 load_dotenv()
 
@@ -126,7 +125,6 @@ async def get_gigachat_token():
     Request access token (client_credentials).
     Use async httpx to avoid blocking.
     """
-    # Build basic auth header as in your working test
     auth_str = f"{GIGACHAT_CLIENT_ID}:{GIGACHAT_CLIENT_SECRET}"
     b64 = base64.b64encode(auth_str.encode()).decode()
     headers = {
@@ -160,10 +158,10 @@ async def gigachat_request(messages):
         r = await client.post(GIGACHAT_API_URL, headers=headers, json=payload)
         r.raise_for_status()
         j = r.json()
-        # defensive
         if "choices" in j and j["choices"]:
             return j["choices"][0]["message"]["content"]
-        return str(j)
+        # fallback whole json
+        return json.dumps(j, ensure_ascii=False)
 
 # ----------------------------
 # AI cache (uses ai_cache table)
@@ -368,7 +366,17 @@ async def create_networth_bar(user_id: int):
     return fname
 
 # ----------------------------
-# Handlers
+# Utility: get_or_create_user (returns internal users.id)
+# ----------------------------
+async def get_or_create_user(tg_id: int) -> int:
+    r = await db.fetchrow("SELECT id FROM users WHERE tg_id=$1", tg_id)
+    if r:
+        return r["id"]
+    row = await db.fetchrow("INSERT INTO users (tg_id, username, created_at) VALUES ($1,$2,NOW()) RETURNING id", tg_id, None)
+    return row["id"]
+
+# ----------------------------
+# Handlers - callback queries and commands
 # ----------------------------
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message):
@@ -421,100 +429,6 @@ async def cmd_consult(m: types.Message):
     ans = await generate_consultation(user_id)
     await m.answer(ans)
 
-# TX FSM handlers use StateFilter instead of state=... kwarg
-@dp.message(StateFilter(TXStates.amount), F.text & F.chat.type == "private")
-async def tx_amount(m: types.Message, state: FSMContext):
-    if m.text and m.text.lower() == "отмена":
-        await state.clear()
-        await m.answer("Отменено.", reply_markup=main_menu_kb())
-        return
-    try:
-        amount = float(m.text.replace(",", "."))
-    except Exception:
-        await m.answer("Неверная сумма. Введите цифру, например: -2500 или 1500")
-        return
-    await state.update_data(amount=amount)
-    await state.set_state(TXStates.category)
-    await m.answer("Введите категорию (например: продукты, транспорт).", reply_markup=cancel_kb)
-
-@dp.message(StateFilter(TXStates.category), F.text & F.chat.type == "private")
-async def tx_category(m: types.Message, state: FSMContext):
-    if m.text and m.text.lower() == "отмена":
-        await state.clear()
-        await m.answer("Отменено.", reply_markup=main_menu_kb())
-        return
-    await state.update_data(category=m.text.strip())
-    await state.set_state(TXStates.description)
-    await m.answer("Введите описание (или '-' для пропуска).", reply_markup=cancel_kb)
-
-@dp.message(StateFilter(TXStates.description), F.text & F.chat.type == "private")
-async def tx_description(m: types.Message, state: FSMContext):
-    if m.text and m.text.lower() == "отмена":
-        await state.clear()
-        await m.answer("Отменено.", reply_markup=main_menu_kb())
-        return
-    data = await state.get_data()
-    amount = data.get("amount")
-    category = data.get("category")
-    description = None if m.text.strip() == "-" else m.text.strip()
-    user_id = await get_or_create_user(m.from_user.id)
-    await db.execute("INSERT INTO transactions (user_id, amount, category, description, created_at) VALUES ($1,$2,$3,$4,NOW())",
-                     user_id, amount, category, description)
-    await save_message(user_id, "system", f"Добавлена транзакция: {amount} | {category} | {description}")
-    await m.answer("Транзакция добавлена ✅", reply_markup=main_menu_kb())
-    await state.clear()
-
-# Cancel callback for FSMs
-@dp.callback_query(F.data == "cancel_fsm")
-async def cb_cancel_fsm(c: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await c.message.answer("Отменено.", reply_markup=main_menu_kb())
-    await c.answer()
-
-# Confirm / cancel pending tx (from quick parse)
-@dp.callback_query(F.data == "confirm_tx")
-async def cb_confirm_tx(c: types.CallbackQuery):
-    await c.answer("Используй меню для добавления транзакции (быстрая запись поддерживается в текстовом вводе).")
-
-@dp.callback_query(F.data == "cancel_tx")
-async def cb_cancel_tx(c: types.CallbackQuery):
-    await c.message.edit_text("Отменено.", reply_markup=main_menu_kb())
-    await c.answer()
-
-# Goals: allow adding via command /goal (FSM)
-@dp.message(Command("goal"))
-async def cmd_goal(m: types.Message, state: FSMContext):
-    await state.set_state(GOALStates.target)
-    await m.answer("Введите сумму цели (например: 100000).", reply_markup=cancel_kb)
-
-@dp.message(StateFilter(GOALStates.target), F.text & F.chat.type == "private")
-async def goal_target(m: types.Message, state: FSMContext):
-    if m.text and m.text.lower() == "отмена":
-        await state.clear()
-        await m.answer("Отменено.", reply_markup=main_menu_kb())
-        return
-    try:
-        target = float(m.text.replace(",", "."))
-    except Exception:
-        await m.answer("Неверный формат суммы.")
-        return
-    await state.update_data(target=target)
-    await state.set_state(GOALStates.title)
-    await m.answer("Введите название цели.", reply_markup=cancel_kb)
-
-@dp.message(StateFilter(GOALStates.title), F.text & F.chat.type == "private")
-async def goal_title(m: types.Message, state: FSMContext):
-    data = await state.get_data()
-    target = data.get("target")
-    title = m.text.strip()
-    user_id = await get_or_create_user(m.from_user.id)
-    await db.execute("INSERT INTO goals (user_id, target, current, title, created_at) VALUES ($1,$2,0,$3,NOW())",
-                     user_id, target, title)
-    await save_message(user_id, "system", f"Создана цель: {title} на {target}₽")
-    await m.answer("Цель добавлена ✅", reply_markup=main_menu_kb())
-    await state.clear()
-
-# Capital management callbacks
 @dp.callback_query(F.data == "menu_capital")
 async def cb_menu_capital(c: types.CallbackQuery):
     await c.message.edit_text("Управление капиталом", reply_markup=capital_kb)
@@ -526,92 +440,11 @@ async def cb_cap_add_asset(c: types.CallbackQuery, state: FSMContext):
     await c.message.answer("Введите сумму актива (например: 150000):", reply_markup=cancel_kb)
     await c.answer()
 
-@dp.message(StateFilter(AssetStates.amount), F.text & F.chat.type == "private")
-async def asset_amount(m: types.Message, state: FSMContext):
-    if m.text.lower() == "отмена":
-        await state.clear()
-        await m.answer("Отменено.", reply_markup=main_menu_kb())
-        return
-    try:
-        amount = float(m.text.replace(",", "."))
-    except Exception:
-        await m.answer("Неверная сумма.")
-        return
-    await state.update_data(amount=amount)
-    await state.set_state(AssetStates.type)
-    await m.answer("Введите тип актива (bank, deposit, stocks, crypto, cash, other):", reply_markup=cancel_kb)
-
-@dp.message(StateFilter(AssetStates.type), F.text & F.chat.type == "private")
-async def asset_type(m: types.Message, state: FSMContext):
-    typ = m.text.strip()
-    await state.update_data(type=typ)
-    await state.set_state(AssetStates.title)
-    await m.answer("Введите название (например: 'Сбер вклад'):", reply_markup=cancel_kb)
-
-@dp.message(StateFilter(AssetStates.title), F.text & F.chat.type == "private")
-async def asset_title(m: types.Message, state: FSMContext):
-    data = await state.get_data()
-    amount = data["amount"]
-    typ = data["type"]
-    title = m.text.strip()
-    user_id = await get_or_create_user(m.from_user.id)
-    await db.execute("INSERT INTO assets (user_id, amount, type, title, created_at) VALUES ($1,$2,$3,$4,NOW())",
-                     user_id, amount, typ, title)
-    await save_message(user_id, "system", f"Добавлен актив: {title} {amount}₽ ({typ})")
-    await m.answer("Актив добавлен ✅", reply_markup=main_menu_kb())
-    await state.clear()
-
 @dp.callback_query(F.data == "cap_add_liability")
 async def cb_cap_add_liability(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(LiabilityStates.amount)
     await c.message.answer("Введите сумму долга (например: 70000):", reply_markup=cancel_kb)
     await c.answer()
-
-@dp.message(StateFilter(LiabilityStates.amount), F.text & F.chat.type == "private")
-async def liability_amount(m: types.Message, state: FSMContext):
-    if m.text.lower() == "отмена":
-        await state.clear()
-        await m.answer("Отменено.", reply_markup=main_menu_kb())
-        return
-    try:
-        amount = float(m.text.replace(",", "."))
-    except Exception:
-        await m.answer("Неверная сумма.")
-        return
-    await state.update_data(amount=amount)
-    await state.set_state(LiabilityStates.monthly_payment)
-    await m.answer("Введите ежемесячный платёж (можно 0):", reply_markup=cancel_kb)
-
-@dp.message(StateFilter(LiabilityStates.monthly_payment), F.text & F.chat.type == "private")
-async def liability_monthly(m: types.Message, state: FSMContext):
-    try:
-        monthly = float(m.text.replace(",", "."))
-    except Exception:
-        await m.answer("Неверный формат.")
-        return
-    await state.update_data(monthly_payment=monthly)
-    await state.set_state(LiabilityStates.type)
-    await m.answer("Введите тип долга (loan, mortgage, credit_card, other):", reply_markup=cancel_kb)
-
-@dp.message(StateFilter(LiabilityStates.type), F.text & F.chat.type == "private")
-async def liability_type(m: types.Message, state: FSMContext):
-    await state.update_data(type=m.text.strip())
-    await state.set_state(LiabilityStates.title)
-    await m.answer("Введите название долга (например: 'Кредитка Тинькофф'):", reply_markup=cancel_kb)
-
-@dp.message(StateFilter(LiabilityStates.title), F.text & F.chat.type == "private")
-async def liability_title(m: types.Message, state: FSMContext):
-    data = await state.get_data()
-    amount = data["amount"]
-    monthly = data["monthly_payment"]
-    typ = data["type"]
-    title = m.text.strip()
-    user_id = await get_or_create_user(m.from_user.id)
-    await db.execute("INSERT INTO liabilities (user_id, amount, type, title, created_at) VALUES ($1,$2,$3,$4,NOW())",
-                     user_id, amount, typ, title)
-    await save_message(user_id, "system", f"Добавлен долг: {title} {amount}₽ ({typ}), платёж {monthly}₽")
-    await m.answer("Долг добавлен ✅", reply_markup=main_menu_kb())
-    await state.clear()
 
 @dp.callback_query(F.data == "cap_show")
 async def cb_cap_show(c: types.CallbackQuery):
@@ -638,7 +471,6 @@ async def cb_cap_show(c: types.CallbackQuery):
             pass
     await c.answer()
 
-# Stats and chart handlers
 @dp.callback_query(F.data == "menu_stats")
 async def cb_stats(c: types.CallbackQuery):
     user_id = await get_or_create_user(c.from_user.id)
@@ -696,14 +528,229 @@ async def cb_export(c: types.CallbackQuery):
         pass
     await c.answer()
 
-# Catch-all messages → AI assistant (excluding slash commands)
-@dp.message()
-async def handle_all_messages(m: types.Message):
+@dp.callback_query(F.data == "cancel_fsm")
+async def cb_cancel_fsm(c: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await c.message.answer("Отменено.", reply_markup=main_menu_kb())
+    await c.answer()
+
+@dp.callback_query(F.data == "confirm_tx")
+async def cb_confirm_tx(c: types.CallbackQuery):
+    await c.answer("Используй меню для добавления транзакции (быстрая запись поддерживается в текстовом вводе).")
+
+@dp.callback_query(F.data == "cancel_tx")
+async def cb_cancel_tx(c: types.CallbackQuery):
+    await c.message.edit_text("Отменено.", reply_markup=main_menu_kb())
+    await c.answer()
+
+# ----------------------------
+# Unified FSM message router
+# ----------------------------
+async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
+    """
+    Return True if message was handled as part of FSM, False otherwise.
+    This avoids using StateFilter import which can be missing in some aiogram versions.
+    """
+    current = await state.get_state()
+    if not current:
+        return False
+
+    # TX flow
+    if current == TXStates.amount.state:
+        text = (m.text or "").strip()
+        if text.lower() in ("отмена", "cancel"):
+            await state.clear()
+            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            return True
+        try:
+            amount = float(text.replace(",", "."))
+        except Exception:
+            await m.answer("Неверная сумма. Введите цифру, например: -2500 или 1500")
+            return True
+        await state.update_data(amount=amount)
+        await state.set_state(TXStates.category)
+        await m.answer("Введите категорию (например: продукты, транспорт).", reply_markup=cancel_kb)
+        return True
+
+    if current == TXStates.category.state:
+        text = (m.text or "").strip()
+        if text.lower() in ("отмена", "cancel"):
+            await state.clear()
+            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            return True
+        await state.update_data(category=text)
+        await state.set_state(TXStates.description)
+        await m.answer("Введите описание (или '-' для пропуска).", reply_markup=cancel_kb)
+        return True
+
+    if current == TXStates.description.state:
+        text = (m.text or "").strip()
+        if text.lower() in ("отмена", "cancel"):
+            await state.clear()
+            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            return True
+        data = await state.get_data()
+        amount = data.get("amount")
+        category = data.get("category")
+        description = None if text == "-" else text
+        user_id = await get_or_create_user(m.from_user.id)
+        await db.execute("INSERT INTO transactions (user_id, amount, category, description, created_at) VALUES ($1,$2,$3,$4,NOW())",
+                         user_id, amount, category, description)
+        await save_message(user_id, "system", f"Добавлена транзакция: {amount} | {category} | {description}")
+        await m.answer("Транзакция добавлена ✅", reply_markup=main_menu_kb())
+        await state.clear()
+        return True
+
+    # Goal flow
+    if current == GOALStates.target.state:
+        text = (m.text or "").strip()
+        if text.lower() in ("отмена", "cancel"):
+            await state.clear()
+            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            return True
+        try:
+            target = float(text.replace(",", "."))
+        except Exception:
+            await m.answer("Неверный формат суммы.")
+            return True
+        await state.update_data(target=target)
+        await state.set_state(GOALStates.title)
+        await m.answer("Введите название цели.", reply_markup=cancel_kb)
+        return True
+
+    if current == GOALStates.title.state:
+        text = (m.text or "").strip()
+        if text.lower() in ("отмена", "cancel"):
+            await state.clear()
+            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            return True
+        data = await state.get_data()
+        target = data.get("target")
+        title = text
+        user_id = await get_or_create_user(m.from_user.id)
+        await db.execute("INSERT INTO goals (user_id, target, current, title, created_at) VALUES ($1,$2,0,$3,NOW())",
+                         user_id, target, title)
+        await save_message(user_id, "system", f"Создана цель: {title} на {target}₽")
+        await m.answer("Цель добавлена ✅", reply_markup=main_menu_kb())
+        await state.clear()
+        return True
+
+    # Asset flow
+    if current == AssetStates.amount.state:
+        text = (m.text or "").strip()
+        if text.lower() in ("отмена", "cancel"):
+            await state.clear()
+            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            return True
+        try:
+            amount = float(text.replace(",", "."))
+        except Exception:
+            await m.answer("Неверная сумма.")
+            return True
+        await state.update_data(amount=amount)
+        await state.set_state(AssetStates.type)
+        await m.answer("Введите тип актива (bank, deposit, stocks, crypto, cash, other):", reply_markup=cancel_kb)
+        return True
+
+    if current == AssetStates.type.state:
+        text = (m.text or "").strip()
+        if text.lower() in ("отмена", "cancel"):
+            await state.clear()
+            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            return True
+        await state.update_data(type=text)
+        await state.set_state(AssetStates.title)
+        await m.answer("Введите название (например: 'Сбер вклад'):", reply_markup=cancel_kb)
+        return True
+
+    if current == AssetStates.title.state:
+        text = (m.text or "").strip()
+        if text.lower() in ("отмена", "cancel"):
+            await state.clear()
+            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            return True
+        data = await state.get_data()
+        amount = data.get("amount")
+        typ = data.get("type")
+        title = text
+        user_id = await get_or_create_user(m.from_user.id)
+        await db.execute("INSERT INTO assets (user_id, amount, type, title, created_at) VALUES ($1,$2,$3,$4,NOW())",
+                         user_id, amount, typ, title)
+        await save_message(user_id, "system", f"Добавлен актив: {title} {amount}₽ ({typ})")
+        await m.answer("Актив добавлен ✅", reply_markup=main_menu_kb())
+        await state.clear()
+        return True
+
+    # Liability flow
+    if current == LiabilityStates.amount.state:
+        text = (m.text or "").strip()
+        if text.lower() in ("отмена", "cancel"):
+            await state.clear()
+            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            return True
+        try:
+            amount = float(text.replace(",", "."))
+        except Exception:
+            await m.answer("Неверная сумма.")
+            return True
+        await state.update_data(amount=amount)
+        await state.set_state(LiabilityStates.monthly_payment)
+        await m.answer("Введите ежемесячный платёж (можно 0):", reply_markup=cancel_kb)
+        return True
+
+    if current == LiabilityStates.monthly_payment.state:
+        text = (m.text or "").strip()
+        try:
+            monthly = float(text.replace(",", "."))
+        except Exception:
+            await m.answer("Неверный формат.")
+            return True
+        await state.update_data(monthly_payment=monthly)
+        await state.set_state(LiabilityStates.type)
+        await m.answer("Введите тип долга (loan, mortgage, credit_card, other):", reply_markup=cancel_kb)
+        return True
+
+    if current == LiabilityStates.type.state:
+        text = (m.text or "").strip()
+        await state.update_data(type=text)
+        await state.set_state(LiabilityStates.title)
+        await m.answer("Введите название долга (например: 'Кредитка Тинькофф'):", reply_markup=cancel_kb)
+        return True
+
+    if current == LiabilityStates.title.state:
+        text = (m.text or "").strip()
+        data = await state.get_data()
+        amount = data.get("amount")
+        monthly = data.get("monthly_payment")
+        typ = data.get("type")
+        title = text
+        user_id = await get_or_create_user(m.from_user.id)
+        await db.execute("INSERT INTO liabilities (user_id, amount, type, title, created_at) VALUES ($1,$2,$3,$4,NOW())",
+                         user_id, amount, typ, title)
+        await save_message(user_id, "system", f"Добавлен долг: {title} {amount}₽ ({typ}), платёж {monthly}₽")
+        await m.answer("Долг добавлен ✅", reply_markup=main_menu_kb())
+        await state.clear()
+        return True
+
+    # default: not handled
+    return False
+
+# ----------------------------
+# Catch-all messages → FSM router or AI assistant
+# ----------------------------
+@dp.message(F.text & F.chat.type == "private")
+async def catchall_private(m: types.Message, state: FSMContext):
+    # First: if user is in any FSM state, route to unified handler
+    handled = await handle_stateful_message(m, state)
+    if handled:
+        return
+
+    # If message is a slash command, ignore (commands are handled separately)
     if m.text and m.text.startswith("/"):
         return
+
+    # Otherwise: pass to AI assistant (generate reply)
     user_id = await get_or_create_user(m.from_user.id)
-    import re
-    m_amount = re.search(r"([+-]?\s*\d[\d\s\.,]*(?:k|K|m|M|к|К|м|М)?)", m.text) if m.text else None
     await m.answer("Анализирую... (AI ответ может занять пару секунд)")
     reply = await generate_ai_reply(user_id, m.text or "")
     await m.answer(reply)
@@ -749,26 +796,17 @@ async def weekly_report_job():
 async def on_startup():
     global db
     db = await create_db_pool()
-    # weekly Monday 09:00 UTC
+    # weekly Monday 09:00 UTC (adjust timezone as needed)
     scheduler.add_job(weekly_report_job, 'cron', day_of_week='mon', hour=9, minute=0, id='weekly_report')
     scheduler.start()
     print("DB connected. Scheduler started.")
-
-# ----------------------------
-# Utility: get_or_create_user (returns internal users.id)
-# ----------------------------
-async def get_or_create_user(tg_id: int) -> int:
-    r = await db.fetchrow("SELECT id FROM users WHERE tg_id=$1", tg_id)
-    if r:
-        return r["id"]
-    row = await db.fetchrow("INSERT INTO users (tg_id, username, created_at) VALUES ($1,$2,NOW()) RETURNING id", tg_id, None)
-    return row["id"]
 
 # ----------------------------
 # Run
 # ----------------------------
 if __name__ == "__main__":
     try:
+        # register startup
         dp.startup.register(on_startup)
         asyncio.run(dp.start_polling(bot))
     except (KeyboardInterrupt, SystemExit):
