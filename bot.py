@@ -41,21 +41,21 @@ load_dotenv()
 # ----------------------------
 # Config from .env
 # ----------------------------
-BOT_TOKEN = "7584304243:AAHuvHzROsjtlaQywzgMTp9myS1hfp7ojuo"
+load_dotenv()
 
-DB_NAME = "FinAdvisor_Beta"
-DB_USER = "postgres"
-DB_PASSWORD = "kerimovtech"
-DB_HOST = "localhost"
-DB_PORT = 5432  # это число → без кавычек
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# GigaChat OAuth
-GIGACHAT_CLIENT_ID = "96852308-997c-49c7-a338-f0295c07f618"
-GIGACHAT_CLIENT_SECRET = "d9b10800-04dd-4c46-8b43-935e742c7fee"
-GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
-GIGACHAT_AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-GIGACHAT_API_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-GIGACHAT_MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat:2.0.28.2")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT")
+
+G_CLIENT_ID = os.getenv("GIGACHAT_CLIENT_ID")
+G_CLIENT_SECRET = os.getenv("GIGACHAT_CLIENT_SECRET")
+G_SCOPE = os.getenv("GIGACHAT_SCOPE")
+G_AUTH_URL = os.getenv("GIGACHAT_AUTH_URL")
+G_API_URL = os.getenv("GIGACHAT_API_URL")
 
 
 # ----------------------------
@@ -1302,4 +1302,5 @@ if __name__ == "__main__":
         asyncio.run(dp.start_polling(bot))
     except (KeyboardInterrupt, SystemExit):
         print("Shutting down")
+
 
