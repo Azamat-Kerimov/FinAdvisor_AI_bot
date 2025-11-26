@@ -34,9 +34,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.dates as mdates
 
-## это для запуска БД в notebook (для VPS удалить)
-import nest_asyncio 
-nest_asyncio.apply()
+
 
 load_dotenv()
 
@@ -1304,3 +1302,4 @@ if __name__ == "__main__":
         asyncio.run(dp.start_polling(bot))
     except (KeyboardInterrupt, SystemExit):
         print("Shutting down")
+
