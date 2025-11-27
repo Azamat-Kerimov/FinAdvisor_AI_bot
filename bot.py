@@ -174,7 +174,7 @@ liabilities_categories = [
 # ----------------------------
 # Keyboards
 # ----------------------------
-def main_menu_kb():
+def main():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить транзакцию", callback_data="menu_add_tx"),
          InlineKeyboardButton(text="💼 Управление капиталом", callback_data="menu_capital")],
@@ -637,6 +637,48 @@ async def create_weekly_balance_chart(user_id: int):
     plt.close(fig)
     return fname
 
+# Handlers Графики
+@dp.callback_query(F.data == "menu_chart")
+async def cb_chart(c: types.CallbackQuery):
+    user_id = await get_or_create_user(c.from_user.id)
+    
+    # 1. График расходов (donut)
+    img_expense = await create_expense_donut(user_id)
+    if img_expense:
+        await c.message.answer_photo(types.FSInputFile(img_expense), caption="Траты за текущий месяц (donut)")
+        try:
+            os.remove(img_expense)
+        except Exception:
+            pass
+    else:
+        await c.message.answer("Нет данных для графика расходов.")
+    
+    # 2. График прогресса по целям
+    img_progress = await create_goals_progress_bar(user_id)
+    if img_progress:
+        await c.message.answer_photo(types.FSInputFile(img_progress), caption="Прогресс по целям")
+        try:
+            os.remove(img_progress)
+        except Exception:
+            pass
+    else:
+        await c.message.answer("Нет данных о целях.")
+        
+    # 3. График баланса по неделям
+    img_balance = await create_weekly_balance_chart(user_id)
+    if img_balance:
+        await c.message.answer_photo(types.FSInputFile(img_balance), caption="Баланс по неделям за год")
+        try:
+            os.remove(img_balance)
+        except Exception:
+            pass
+    else:
+        await c.message.answer("Нет данных для графика баланса.")
+    
+    await c.answer()
+
+
+
 # ----------------------------
 # Utility: get_or_create_user (returns internal users.id)
 # ----------------------------
@@ -659,8 +701,8 @@ async def cmd_start(m: types.Message):
         await db.execute("INSERT INTO users (tg_id, username, created_at) VALUES ($1,$2,NOW())", m.from_user.id, m.from_user.username)
     await m.answer(
         "Привет! Я FinAdvisor — твой финансовый помощник.\n"
-        "Используй меню ниже или пиши сообщение.",
-        reply_markup=main_menu_kb()
+        "Используй меню ниже.",
+        reply_markup=main()
     )
 
 
@@ -671,7 +713,9 @@ def format_amount(amount: float) -> str:
 @dp.callback_query(F.data == "menu_add_tx")
 async def cb_menu_add_tx(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(TXStates.choose_type)
-    await c.message.answer("Выберите тип транзакции:", reply_markup=kb_tx_type)
+    await c.message.answer(
+    "Шаг 1 из 4.\n"
+    "Выберите тип транзакции:", reply_markup=kb_tx_type)
     await c.answer()
 
 # Обработчик выбора типа (Доход / Расход)
@@ -680,7 +724,9 @@ async def choose_income(c: types.CallbackQuery, state: FSMContext):
     await state.update_data(tx_type="income")
     kb = build_categories_kb(list(income_emojis.keys()))
     await state.set_state(TXStates.choose_category)
-    await c.message.answer("Выберите категорию дохода:", reply_markup=kb)
+    await c.message.answer(
+    "Шаг 2 из 4.\n"
+    "Выберите категорию дохода:", reply_markup=kb)
     await c.answer()
 
 @dp.callback_query(F.data == "tx_type_expense")
@@ -688,7 +734,9 @@ async def choose_expense(c: types.CallbackQuery, state: FSMContext):
     await state.update_data(tx_type="expense")
     kb = build_categories_kb(list(expense_emojis.keys()))
     await state.set_state(TXStates.choose_category)
-    await c.message.answer("Выберите категорию расхода:", reply_markup=kb)
+    await c.message.answer(
+    "Шаг 2 из 4.\n"
+    "Выберите категорию расхода:", reply_markup=kb)
     await c.answer()
 
 # Обработчик выбора категории транзакции
@@ -698,7 +746,9 @@ async def choose_category(c: types.CallbackQuery, state: FSMContext):
     await state.update_data(category=category)
 
     await state.set_state(TXStates.amount)
-    await c.message.answer("Введите сумму:", reply_markup=cancel_kb)
+    await c.message.answer(
+    "Шаг 3 из 4.\n"
+    "Введите сумму:", reply_markup=cancel_kb)
     await c.answer()
 
 # Обработчик ввода суммы транзакции
@@ -707,7 +757,7 @@ async def tx_enter_amount(msg: types.Message, state: FSMContext):
     text = msg.text.strip()
     if text.lower() in ("↩️ Назад", "cancel_fsm"):
         await state.clear()
-        await msg.answer("Отменено.", reply_markup=main_menu_kb())
+        await msg.answer("Отменено.", reply_markup=main())
         return
 
     try:
@@ -730,6 +780,7 @@ async def tx_enter_amount(msg: types.Message, state: FSMContext):
 
     await state.set_state(TXStates.description)
     await msg.answer(
+        "Шаг 4 из 4.\n"
         f"Сумма установлена: {format_amount(amount)}\n"
         "Введите описание транзакции (или '-' для пропуска):",
         reply_markup=cancel_kb
@@ -741,7 +792,7 @@ async def tx_enter_description(msg: types.Message, state: FSMContext):
     text = msg.text.strip()
     if text.lower() in ("↩️ Назад", "cancel_fsm"):
         await state.clear()
-        await msg.answer("Отменено.", reply_markup=main_menu_kb())
+        await msg.answer("Отменено.", reply_markup=main())
         return
 
     description = None if text == "-" else text
@@ -765,7 +816,7 @@ async def tx_enter_description(msg: types.Message, state: FSMContext):
         f"✅ Транзакция добавлена:\n"
         f"{emoji or ''} {cat}: {format_amount(data['amount'])}\n"
         f"{'Описание: ' + description if description else ''}",
-        reply_markup=main_menu_kb()
+        reply_markup=main()
     )
 
     await state.clear()
@@ -843,8 +894,6 @@ async def cb_cap_show(c: types.CallbackQuery):
     await c.message.answer(text, parse_mode="Markdown")
 
 
-
-
 # Обработчик меню целей
 @dp.callback_query(F.data == "menu_goals")
 async def menu_goals(q: types.CallbackQuery, state: FSMContext):
@@ -875,10 +924,8 @@ async def goal_title(message: types.Message, state: FSMContext):
         user_id, data["target"], message.text
     )
 
-    await message.answer("Цель добавлена.", reply_markup=main_menu_kb())
+    await message.answer("Цель добавлена.", reply_markup=main())
     await state.clear()
-
-
 
 
 # Кнопка консультация
@@ -974,67 +1021,32 @@ async def cb_stats(c: types.CallbackQuery):
     await c.message.answer(text, parse_mode="Markdown")
     await c.answer()
 
-@dp.callback_query(F.data == "menu_chart")
-async def cb_chart(c: types.CallbackQuery):
-    user_id = await get_or_create_user(c.from_user.id)
-    
-    # 1. График расходов (donut)
-    img_expense = await create_expense_donut(user_id)
-    if img_expense:
-        await c.message.answer_photo(types.FSInputFile(img_expense), caption="Траты за текущий месяц (donut)")
-        try:
-            os.remove(img_expense)
-        except Exception:
-            pass
-    else:
-        await c.message.answer("Нет данных для графика расходов.")
-    
-    # 2. График прогресса по целям
-    img_progress = await create_goals_progress_bar(user_id)
-    if img_progress:
-        await c.message.answer_photo(types.FSInputFile(img_progress), caption="Прогресс по целям")
-        try:
-            os.remove(img_progress)
-        except Exception:
-            pass
-    else:
-        await c.message.answer("Нет данных о целях.")
-        
-    # 3. График баланса по неделям
-    img_balance = await create_weekly_balance_chart(user_id)
-    if img_balance:
-        await c.message.answer_photo(types.FSInputFile(img_balance), caption="Баланс по неделям за год")
-        try:
-            os.remove(img_balance)
-        except Exception:
-            pass
-    else:
-        await c.message.answer("Нет данных для графика баланса.")
-    
-    await c.answer()
 
-@dp.callback_query(F.data == "menu_export")
-async def cb_export(c: types.CallbackQuery):
-    user_id = await get_or_create_user(c.from_user.id)
-    rows = await db.fetch("SELECT id, amount, category, description, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at ASC", user_id)
-    if not rows:
-        await c.message.answer("Нет транзакций для экспорта.")
-        await c.answer()
-        return
-    fd, path = tempfile.mkstemp(prefix=f"finances_{user_id}_", suffix=".csv")
-    os.close(fd)
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        import csv
-        writer = csv.writer(f)
-        writer.writerow(["id","amount","category","description","created_at"])
-        for r in rows:
-            writer.writerow([r["id"], r["amount"], r["category"] or "", r["description"] or "", r["created_at"].isoformat() if r["created_at"] else ""])
-    await c.message.answer_document(types.FSInputFile(path), caption="Экспорт транзакций (CSV)")
-    try:
-        os.remove(path)
-    except Exception:
-        pass
-    await c.answer()
+
+
+
+# @dp.callback_query(F.data == "menu_export")
+# async def cb_export(c: types.CallbackQuery):
+    # user_id = await get_or_create_user(c.from_user.id)
+    # rows = await db.fetch("SELECT id, amount, category, description, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at ASC", user_id)
+    # if not rows:
+        # await c.message.answer("Нет транзакций для экспорта.")
+        # await c.answer()
+        # return
+    # fd, path = tempfile.mkstemp(prefix=f"finances_{user_id}_", suffix=".csv")
+    # os.close(fd)
+    # with open(path, "w", encoding="utf-8", newline="") as f:
+        # import csv
+        # writer = csv.writer(f)
+        # writer.writerow(["id","amount","category","description","created_at"])
+        # for r in rows:
+            # writer.writerow([r["id"], r["amount"], r["category"] or "", r["description"] or "", r["created_at"].isoformat() if r["created_at"] else ""])
+    # await c.message.answer_document(types.FSInputFile(path), caption="Экспорт транзакций (CSV)")
+    # try:
+        # os.remove(path)
+    # except Exception:
+        # pass
+    # await c.answer()
 
 
 # @dp.callback_query(F.data == "stat_goals")
@@ -1058,8 +1070,19 @@ async def cb_export(c: types.CallbackQuery):
 @dp.callback_query(F.data == "cancel_fsm")
 async def cb_cancel_fsm(c: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await c.message.answer("Отменено.", reply_markup=main_menu_kb())
+    await c.message.answer("Отменено.", reply_markup=main())
     await c.answer()
+
+# Команда главного меню
+@dp.message(Command("main"))
+async def cmd_help(message: types.Message):
+    await message.answer("Главное меню:", reply_markup=main())
+
+# Команда Help
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    await message.answer("Используй меню ниже:", reply_markup=main())
+
 
 
 # ----------------------------
@@ -1077,7 +1100,7 @@ async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
         text = (m.text or "").strip()
         if text.lower() in ("отмена", "cancel"):
             await state.clear()
-            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            await m.answer("Отменено.", reply_markup=main())
             return True
         try:
             target = float(text.replace(",", "."))
@@ -1093,7 +1116,7 @@ async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
         text = (m.text or "").strip()
         if text.lower() in ("отмена", "cancel"):
             await state.clear()
-            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            await m.answer("Отменено.", reply_markup=main())
             return True
         data = await state.get_data()
         target = data.get("target")
@@ -1102,7 +1125,7 @@ async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
         await db.execute("INSERT INTO goals (user_id, target, current, title, created_at) VALUES ($1,$2,0,$3,NOW())",
                          user_id, target, title)
         await save_message(user_id, "system", f"Создана цель: {title} на {target}₽")
-        await m.answer("Цель добавлена ✅", reply_markup=main_menu_kb())
+        await m.answer("Цель добавлена ✅", reply_markup=main())
         await state.clear()
         return True
 
@@ -1111,7 +1134,7 @@ async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
         text = (m.text or "").strip()
         if text.lower() in ("отмена", "cancel"):
             await state.clear()
-            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            await m.answer("Отменено.", reply_markup=main())
             return True
 
         try:
@@ -1131,7 +1154,7 @@ async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
         text = (m.text or "").strip()
         if text.lower() in ("отмена", "cancel"):
             await state.clear()
-            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            await m.answer("Отменено.", reply_markup=main())
             return True
         await state.update_data(type=text)
         await state.set_state(AssetStates.title)
@@ -1142,7 +1165,7 @@ async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
         text = (m.text or "").strip()
         if text.lower() in ("отмена", "cancel"):
             await state.clear()
-            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            await m.answer("Отменено.", reply_markup=main())
             return True
         data = await state.get_data()
         amount = data.get("amount")
@@ -1152,7 +1175,7 @@ async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
         await db.execute("INSERT INTO assets (user_id, amount, type, title, created_at) VALUES ($1,$2,$3,$4,NOW())",
                          user_id, amount, typ, title)
         await save_message(user_id, "system", f"Добавлен актив: {title} {amount}₽ ({typ})")
-        await m.answer("Актив добавлен ✅", reply_markup=main_menu_kb())
+        await m.answer("Актив добавлен ✅", reply_markup=main())
         await state.clear()
         return True
 
@@ -1161,7 +1184,7 @@ async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
         text = (m.text or "").strip()
         if text.lower() in ("отмена", "cancel"):
             await state.clear()
-            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            await m.answer("Отменено.", reply_markup=main())
             return True
         try:
             amount = float(text.replace(",", "."))
@@ -1178,7 +1201,7 @@ async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
         text = (m.text or "").strip()
         if text.lower() in ("отмена", "cancel"):
             await state.clear()
-            await m.answer("Отменено.", reply_markup=main_menu_kb())
+            await m.answer("Отменено.", reply_markup=main())
             return True
         try:
             monthly = float(text.replace(",", "."))
@@ -1213,7 +1236,7 @@ async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
         )
 
         await save_message(user_id, "system", f"Добавлен долг: {title} {amount}₽ ({typ}), платёж {monthly}₽")
-        await m.answer("Долг добавлен ✅", reply_markup=main_menu_kb())
+        await m.answer("Долг добавлен ✅", reply_markup=main())
         await state.clear()
         return True
 
@@ -1235,11 +1258,15 @@ async def catchall_private(m: types.Message, state: FSMContext):
     if m.text and m.text.startswith("/"):
         return
 
-    # Otherwise: pass to AI assistant (generate reply)
+    # Otherwise: глушилка
     user_id = await get_or_create_user(m.from_user.id)
-    await m.answer("Анализирую... (AI ответ может занять пару секунд)")
-    reply = await generate_ai_reply(user_id, m.text or "")
-    await m.answer(reply)
+    await m.answer("Неверная команда", reply_markup=main())
+    
+    # # Otherwise: pass to AI assistant (generate reply)
+    # user_id = await get_or_create_user(m.from_user.id)
+    # await m.answer("Анализирую... (AI ответ может занять пару секунд)")
+    # reply = await generate_ai_reply(user_id, m.text or "")
+    # await m.answer(reply)
 
 # ----------------------------
 # Weekly report job
@@ -1302,5 +1329,6 @@ if __name__ == "__main__":
         asyncio.run(dp.start_polling(bot))
     except (KeyboardInterrupt, SystemExit):
         print("Shutting down")
+
 
 
