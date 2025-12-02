@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# v_02.12.25
 
 import os
 import asyncio
@@ -34,7 +33,9 @@ import numpy as np
 import pandas as pd
 import matplotlib.dates as mdates
 
-
+import io
+import math
+import decimal
 
 load_dotenv()
 
@@ -111,8 +112,6 @@ async def gigachat_request(messages):
             return j["choices"][0]["message"]["content"]
         # fallback whole json
         return json.dumps(j, ensure_ascii=False)
-
-
 
 # -----------------------------------------------------------------------------------------------------------------------
 # Глобальные настройки
@@ -236,7 +235,7 @@ def main():
         [InlineKeyboardButton(text="➕ Транзакция", callback_data="menu_add_tx"),
          InlineKeyboardButton(text="🎯 Мои цели", callback_data="menu_goals")],
         [InlineKeyboardButton(text="💼 Капитал", callback_data="menu_capital"),
-         InlineKeyboardButton(text="📈 Отчеты", callback_data="menu_stats")],
+         InlineKeyboardButton(text="📈 Отчеты", callback_data="menu_charts")],
         # [InlineKeyboardButton(text="📊 Статистика", callback_data="menu_stats"),
          # InlineKeyboardButton(text="📈 График", callback_data="menu_chart")],
         [InlineKeyboardButton(text="💡 Личная консультация", callback_data="menu_consult")]
@@ -279,14 +278,21 @@ class TXStates(StatesGroup):
     description = State()
 
 # Добавляем кнопки
-def build_categories_kb(cats: list):
+def build_categories_kb(categories: dict):
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=cat, callback_data=f"tx_cat:{cat}")]
-            for cat in cats
-        ] + [[InlineKeyboardButton(text="↩️ Назад", callback_data="cancel_fsm")]]
+            [
+                InlineKeyboardButton(
+                    text=f"{emoji} {cat}",
+                    callback_data=f"tx_cat:{cat}"
+                )
+            ]
+            for cat, emoji in categories.items()
+        ] + [
+            [InlineKeyboardButton(text="↩️ Назад", callback_data="cancel_fsm")]
+        ]
     )
-    
+
 # Выбор типа транзакции
 kb_tx_type = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="💰 Доход", callback_data="tx_type_income")],
@@ -307,21 +313,23 @@ async def cb_menu_add_tx(c: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "tx_type_income")
 async def choose_income(c: types.CallbackQuery, state: FSMContext):
     await state.update_data(tx_type="income")
-    kb = build_categories_kb(list(income_emojis.keys()))
+    kb = build_categories_kb(income_emojis)   # ← передаем словарь
     await state.set_state(TXStates.choose_category)
     await c.message.answer(
-    "Шаг 2 из 4.\n"
-    "Выберите категорию дохода:", reply_markup=kb)
+        "Шаг 2 из 4.\nВыберите категорию дохода:",
+        reply_markup=kb
+    )
     await c.answer()
 
 @dp.callback_query(F.data == "tx_type_expense")
 async def choose_expense(c: types.CallbackQuery, state: FSMContext):
     await state.update_data(tx_type="expense")
-    kb = build_categories_kb(list(expense_emojis.keys()))
+    kb = build_categories_kb(expense_emojis)
     await state.set_state(TXStates.choose_category)
     await c.message.answer(
-    "Шаг 2 из 4.\n"
-    "Выберите категорию расхода:", reply_markup=kb)
+        "Шаг 2 из 4.\nВыберите категорию расхода:",
+        reply_markup=kb
+    )
     await c.answer()
 
 # Обработчик выбора категории транзакции
@@ -406,15 +414,296 @@ async def tx_enter_description(msg: types.Message, state: FSMContext):
 
     await state.clear()
 
-
-
 # -----------------------------------------------------------------------------------------------------------------------
 # 🎯 Мои цели
 # -----------------------------------------------------------------------------------------------------------------------
 class GOALStates(StatesGroup):
     target = State()
     title = State()
+    description = State()
 
+class GOAL_EDIT(StatesGroup):
+    edit_title = State()
+    edit_target = State()
+    edit_desc = State()
+
+def goals_menu_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎯 Новая цель", callback_data="goal_new")],
+            [InlineKeyboardButton(text="✏️ Обновить цели", callback_data="goal_update_list")],
+            [InlineKeyboardButton(text="↩️ Назад", callback_data="cancel_fsm")]
+        ]
+    )
+
+def goal_edit_kb(goal_id: int):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Изменить название", callback_data=f"goal_edit_title:{goal_id}")],
+            [InlineKeyboardButton(text="💰 Изменить сумму", callback_data=f"goal_edit_target:{goal_id}")],
+            [InlineKeyboardButton(text="📄 Изменить описание", callback_data=f"goal_edit_desc:{goal_id}")],
+            [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"goal_delete:{goal_id}")],
+            [InlineKeyboardButton(text="↩️ Назад", callback_data="goal_update_list")]
+        ]
+    )
+
+# Форматирование и прогресс цели
+def fmt(x: float) -> str:
+    return f"{int(x):,}".replace(",", " ")
+
+async def get_net_capital(user_id: int) -> float:
+    # Суммарные активы
+    assets = await db.fetch("""
+        SELECT v.amount 
+        FROM assets a
+        JOIN LATERAL (
+            SELECT amount FROM asset_values WHERE asset_id = a.id ORDER BY created_at DESC LIMIT 1
+        ) v ON TRUE
+        WHERE a.user_id=$1
+    """, user_id)
+
+    total_assets = sum([float(a["amount"]) for a in assets]) if assets else 0
+
+    # Суммарные долги
+    liabs = await db.fetch("""
+        SELECT v.amount 
+        FROM liabilities l
+        JOIN LATERAL (
+            SELECT amount FROM liability_values WHERE liability_id = l.id ORDER BY created_at DESC LIMIT 1
+        ) v ON TRUE
+        WHERE l.user_id=$1
+    """, user_id)
+
+    total_liabs = sum([float(l["amount"]) for l in liabs]) if liabs else 0
+
+    return total_assets - total_liabs
+
+# "Мои цели" → показываем текущие цели + меню
+@dp.callback_query(F.data == "menu_goals")
+async def menu_goals(c: types.CallbackQuery, state: FSMContext):
+    user_id = await get_or_create_user(c.from_user.id)
+    goals = await db.fetch("""
+        SELECT id, title, target, current, description 
+        FROM goals 
+        WHERE user_id=$1 
+        ORDER BY id
+    """, user_id)
+
+    if goals:
+        net_cap = await get_net_capital(user_id)
+
+        text = "🎯 *Ваши цели:*\n\n"
+
+        for g in goals:
+            title = g["title"]
+            target = float(g["target"])
+
+            percent = net_cap / target
+
+            # целевой текст
+            target_fmt = fmt(target) + " ₽"
+
+            # процент
+            if percent >= 1:
+                progress = "Цель достигнута! 🎉"
+            else:
+                progress = f"{round(percent * 100)}%"
+
+            text += f"• *{title}* — {target_fmt} ({progress})\n"
+
+    else:
+        text = "У вас пока нет целей."
+
+    await c.message.edit_text(
+        text + "\n\nЧто хотите сделать?",
+        reply_markup=goals_menu_kb(),
+        parse_mode="Markdown"
+    )
+    await c.answer()
+    
+# Шаг 1 — сумма:
+@dp.callback_query(F.data == "goal_new")
+async def goal_new_start(c: types.CallbackQuery, state: FSMContext):
+    await state.set_state(GOALStates.target)
+    await c.message.answer("Введите сумму цели:", reply_markup=cancel_kb)
+    await c.answer()
+    
+# Шаг 2 — название:
+@dp.message(GOALStates.target)
+async def goal_target(msg: types.Message, state: FSMContext):
+    try:
+        target = float(msg.text.replace(",", "."))
+    except:
+        await msg.answer("Введите корректную сумму.")
+        return
+
+    await state.update_data(target=target)
+    await state.set_state(GOALStates.title)
+    await msg.answer("Введите название цели:", reply_markup=cancel_kb)
+
+# Шаг 3 — описание (необязательно):
+@dp.message(GOALStates.title)
+async def goal_title(msg: types.Message, state: FSMContext):
+    await state.update_data(title=msg.text.strip())
+    await state.set_state(GOALStates.description)
+    await msg.answer("Введите описание цели (можно пропустить):", reply_markup=cancel_kb)
+
+# Создание цели:
+@dp.message(GOALStates.description)
+async def goal_description(msg: types.Message, state: FSMContext):
+    data = await state.get_data()
+    user_id = await get_or_create_user(msg.from_user.id)
+
+    await db.execute(
+        """INSERT INTO goals (user_id, target, current, title, description, created_at)
+           VALUES ($1,$2,0,$3,$4,NOW())""",
+        user_id, data["target"], data["title"], msg.text.strip()
+    )
+
+    await msg.answer("🎯 Цель успешно создана!", reply_markup=main())
+    await state.clear()
+
+# Кнопка "Обновить цели"
+@dp.callback_query(F.data == "goals_update_list")
+async def goals_update_list(c: types.CallbackQuery):
+    user_id = await get_or_create_user(c.from_user.id)
+
+    goals = await db.fetch("""
+        SELECT id, title, target, current, description
+        FROM goals
+        WHERE user_id=$1
+        ORDER BY id
+    """, user_id)
+
+    if not goals:
+        await c.message.edit_text("У вас пока нет целей.", reply_markup=goals_menu_kb())
+        return
+
+    # считаем капитал
+    net_cap = await get_net_capital(user_id)
+
+    def fmt(x: float) -> str:
+        return f"{int(x):,}".replace(",", " ")
+
+    text = "🎯 *Ваши цели:*\n\n"
+
+    kb_buttons = []
+
+    for g in goals:
+        gid = g["id"]
+        title = g["title"]
+        target = float(g["target"])
+
+        percent = net_cap / target
+        target_fmt = fmt(target) + " ₽"
+
+        # форматируем прогресс
+        if percent >= 1:
+            progress = "Цель достигнута! 🎉"
+        else:
+            progress = f"{round(percent * 100)}%"
+
+        text += f"• *{title}* — {target_fmt} ({progress})\n"
+
+        # кнопка для выбора цели
+        kb_buttons.append([
+            InlineKeyboardButton(
+                text=f"{title}",
+                callback_data=f"goal_edit:{gid}"
+            )
+        ])
+
+    # добавляем кнопку назад
+    kb_buttons.append([InlineKeyboardButton(text="↩️ Назад", callback_data="menu_goals")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+
+    await c.message.edit_text(
+        text + "\nВыберите цель для редактирования:",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+    await c.answer()
+    
+# Редактирование цели    
+@dp.callback_query(F.data.startswith("goal_edit:"))
+async def goal_edit(c: types.CallbackQuery):
+    goal_id = int(c.data.split(":")[1])
+    row = await db.fetchrow("SELECT * FROM goals WHERE id=$1", goal_id)
+
+    text = (f"🎯 *{row['title']}*\n"
+            f"Цель: {row['current']:,} / {row['target']:,} ₽\n\n"
+            f"Описание: {row['description'] or '—'}")
+
+    await c.message.edit_text(text, reply_markup=goal_edit_kb(goal_id), parse_mode="Markdown")
+    await c.answer()
+
+# Изменить название
+@dp.callback_query(F.data.startswith("goal_edit_title:"))
+async def goal_edit_title_start(c: types.CallbackQuery, state: FSMContext):
+    gid = int(c.data.split(":")[1])
+    await state.update_data(goal_id=gid)
+    await state.set_state(GOAL_EDIT.edit_title)
+    await c.message.answer("Введите новое название:", reply_markup=cancel_kb)
+    await c.answer()
+
+@dp.message(GOAL_EDIT.edit_title)
+async def goal_edit_title_finish(msg: types.Message, state: FSMContext):
+    gid = (await state.get_data())["goal_id"]
+    await db.execute("UPDATE goals SET title=$1, updated_at=NOW() WHERE id=$2",
+                     msg.text.strip(), gid)
+    await msg.answer("Название обновлено!", reply_markup=main())
+    await state.clear()    
+    
+# Изменить сумму 
+@dp.callback_query(F.data.startswith("goal_edit_target:"))
+async def goal_edit_target_start(c: types.CallbackQuery, state: FSMContext):
+    gid = int(c.data.split(":")[1])
+    await state.update_data(goal_id=gid)
+    await state.set_state(GOAL_EDIT.edit_target)
+    await c.message.answer("Введите новую сумму цели:", reply_markup=cancel_kb)
+    await c.answer()
+
+@dp.message(GOAL_EDIT.edit_target)
+async def goal_edit_target_finish(msg: types.Message, state: FSMContext):
+    try:
+        target = float(msg.text.replace(",", "."))
+    except:
+        await msg.answer("Введите корректное число.")
+        return
+
+    gid = (await state.get_data())["goal_id"]
+    await db.execute("UPDATE goals SET target=$1, updated_at=NOW() WHERE id=$2",
+                     target, gid)
+    await msg.answer("Сумма цели обновлена.", reply_markup=main())
+    await state.clear()
+
+# Изменить описание    
+@dp.callback_query(F.data.startswith("goal_edit_desc:"))
+async def goal_edit_desc_start(c: types.CallbackQuery, state: FSMContext):
+    gid = int(c.data.split(":")[1])
+    await state.update_data(goal_id=gid)
+    await state.set_state(GOAL_EDIT.edit_desc)
+    await c.message.answer("Введите новое описание:", reply_markup=cancel_kb)
+    await c.answer()
+    
+@dp.message(GOAL_EDIT.edit_desc)
+async def goal_edit_desc_finish(msg: types.Message, state: FSMContext):
+    gid = (await state.get_data())["goal_id"]
+    await db.execute("UPDATE goals SET description=$1, updated_at=NOW() WHERE id=$2",
+                     msg.text.strip(), gid)
+    await msg.answer("Описание обновлено.", reply_markup=main())
+    await state.clear()
+
+# Удаление цели
+@dp.callback_query(F.data.startswith("goal_delete:"))
+async def goal_delete(c: types.CallbackQuery):
+    gid = int(c.data.split(":")[1])
+    await db.execute("DELETE FROM goals WHERE id=$1", gid)
+    await c.message.answer("Цель удалена.", reply_markup=main())
+    await c.answer() 
+ 
+ 
 # Обработчик меню целей
 @dp.callback_query(F.data == "menu_goals")
 async def menu_goals(q: types.CallbackQuery, state: FSMContext):
@@ -518,7 +807,7 @@ capital_kb = InlineKeyboardMarkup(inline_keyboard=[
         InlineKeyboardButton(text="🔄 Обновить долги", callback_data="liab_update_list")
     ],
     [
-        InlineKeyboardButton(text="📋 Мой капитал", callback_data="cap_show"),
+        
         InlineKeyboardButton(text="↩️ Назад", callback_data="cancel_fsm")
     ]
 ])
@@ -536,11 +825,50 @@ def build_capital_category_kb(categories: list[str], emojis: dict[str, str], pre
 
 # -------- CAPITAL MENU --------
 
+def fmt(n: float) -> str:
+    return f"{int(n):,}".replace(",", " ")
+
+async def render_capital_text(user_id: int) -> str:
+    assets = await get_assets_list(user_id)
+    liabs = await get_liabilities_list(user_id)
+
+    total_assets = sum(x["amount"] for x in assets)
+    total_liabs = sum(x["amount"] for x in liabs)
+    net_capital = total_assets - total_liabs
+
+    net_emoji = "🟢" if net_capital >= 0 else "🔴"
+
+    text = "💰 *Активы:*\n"
+    if assets:
+        for a in assets:
+            text += f"• {a['type']} — {fmt(a['amount'])} ₽ ({a['title']})\n"
+    else:
+        text += "• Нет активов\n"
+
+    text += "\n💸 *Долги:*\n"
+    if liabs:
+        for l in liabs:
+            text += f"• {l['type']} — {fmt(l['amount'])} ₽ ({l['title']})\n"
+    else:
+        text += "• Нет долгов\n"
+
+    text += f"\n*Чистый капитал: {net_emoji} {fmt(net_capital)} ₽*"
+
+    return text
+
+
 @dp.callback_query(F.data == "menu_capital")
 async def main_capital_menu(c: types.CallbackQuery):
+    user_id = await get_or_create_user(c.from_user.id)
 
-    await c.message.edit_text(f" (здесь место для текущих активов) \nУправление капиталом:", reply_markup=capital_kb)
-    
+    text = await render_capital_text(user_id)
+    text += "\n\nЧто хотите сделать?"
+
+    await c.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=capital_kb
+    )
     await c.answer()
 
 # ============================
@@ -689,7 +1017,7 @@ async def asset_update_selected(c: types.CallbackQuery, state: FSMContext):
     aid = int(c.data.split("asset_update:")[1])
     await state.update_data(asset_id=aid)
     await state.set_state(AssetStates.update_amount)
-    await c.message.answer("Введите новую стоимость актива:", reply_markup=cancel_kb)
+    await c.message.answer("Введите новую стоимость актива (0, если хотите удалить):", reply_markup=cancel_kb)
     await c.answer()
 
 
@@ -864,7 +1192,7 @@ async def liab_update_selected(c: types.CallbackQuery, state: FSMContext):
     lid = int(c.data.split("liab_update:")[1])
     await state.update_data(liability_id=lid)
     await state.set_state(LiabilityStates.update_amount)
-    await c.message.answer("Введите новую сумму долга:", reply_markup=cancel_kb)
+    await c.message.answer("Введите новую сумму долга (0, если хотите удалить):", reply_markup=cancel_kb)
     await c.answer()
 
 
@@ -884,398 +1212,674 @@ async def liab_update_amount(msg: types.Message, state: FSMContext):
         reply_markup=main()
     )
     await state.clear()
- 
-# # Показать активы/долги
-
-# @dp.callback_query(F.data == "cap_show")
-# async def cb_cap_show(c: types.CallbackQuery):
-    # user_id = await get_or_create_user(c.from_user.id)
-    
-    # assets = await db.fetch(
-        # """
-        # SELECT a.id AS asset_id, a.title, a.type, a.currency,
-               # v.amount, v.created_at AS updated_at
-        # FROM assets a
-        # LEFT JOIN LATERAL (
-            # SELECT amount, created_at
-            # FROM asset_values
-            # WHERE asset_id = a.id
-            # ORDER BY created_at DESC
-            # LIMIT 1
-        # ) v ON TRUE
-        # WHERE a.user_id = $1
-        # and v.amount >0
-        # ORDER BY a.type, v.amount ASC
-        # """, user_id)
-    # liabs = await db.fetch(
-        # """
-        # SELECT l.id AS liability_id, l.title, l.type, l.currency,
-               # v.amount, v.monthly_payment, v.created_at AS updated_at
-        # FROM liabilities l
-        # LEFT JOIN LATERAL (
-            # SELECT amount, monthly_payment, created_at
-            # FROM liability_values
-            # WHERE liability_id = l.id
-            # ORDER BY created_at DESC
-            # LIMIT 1
-        # ) v ON TRUE
-        # WHERE l.user_id = $1
-        # and v.amount >0
-        # ORDER BY l.type,v.amount ASC
-        # """, user_id)
-    
-    # total_assets = sum(a["amount"] for a in assets) if assets else 0
-    # total_liabs = sum(l["amount"] for l in liabs) if liabs else 0
-    # net_capital = total_assets - total_liabs
-
-    # # --- Активы ---
-    # text = f"💰 *Активы* - {int(total_assets):,}".replace(",", " ") + "₽:\n"
-    # for a in assets:
-        # amt = int(a["amount"])
-        # text += f"- {a['type']}: {amt:,}".replace(",", " ") + f"₽ ({a['title']})\n"
-
-    # # --- Долги ---
-    # text += f"\n💸 *Долги* - {int(total_liabs):,}".replace(",", " ") + "₽:\n"
-    # for l in liabs:
-        # amt = int(l["amount"])
-        # text += f"- {l['type']}: {amt:,}".replace(",", " ") + f"₽ ({l['title']})\n"
-
-    # # --- Чистый капитал ---
-    # if net_capital >= 0:
-        # net_emoji = "🟢"
-    # else:
-        # net_emoji = "🔴"
-    # text += f"\n *Чистый капитал: {net_emoji} * {int(net_capital):,}".replace(",", " ") + "₽" 
-
-    # await c.message.answer(text, parse_mode="Markdown")
 
 
 # -----------------------------------------------------------------------------------------------------------------------
 # 📈 Отчеты
 # -----------------------------------------------------------------------------------------------------------------------
+# ---------- Вспомогательные функции ----------
+def fmt(n: float) -> str:
+    return f"{int(n):,}".replace(",", " ")
+
+# ---------- Вспомогательные функции ----------
+def fmt(n: float) -> str:
+    return f"{int(n):,}".replace(",", " ")
+
+
+async def get_goals_text(user_id: int) -> str:
+    """Красивый список целей — как ты просил."""
+    goals = await db.fetch("SELECT title, target, current FROM goals WHERE user_id=$1", user_id)
+    if not goals:
+        return "🎯 *Ваши цели:* \n• Нет целей\n"
+
+    text = "🎯 *Ваши цели:*\n\n"
+    assets = await get_assets_list(user_id)
+    liabs = await get_liabilities_list(user_id)
+    net_capital = sum(a["amount"] for a in assets) - sum(l["amount"] for l in liabs)
+
+    for g in goals:
+        title = g["title"]
+        target = g["target"]
+        if target <= 0:
+            text += f"• {title} — некорректная цель\n"
+            continue
+
+        pct = net_capital / target * 100
+        pct_int = int(pct)
+
+        if pct >= 100:
+            text += f"• {title} — {fmt(target)} ₽ *(Цель достигнута!)*\n"
+        else:
+            text += f"• {title} — {fmt(target)} ₽ ({pct_int}%)\n"
+
+    return text
+
+
+# ---------------------------------------------------------
+# 1. Текстовая статистика по доходам и расходам
+# ---------------------------------------------------------
+async def build_text_stats(user_id: int) -> str:
+    since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    rows = await db.fetch(
+        """
+        SELECT amount, category, created_at
+        FROM transactions
+        WHERE user_id=$1 AND created_at >= $2
+        ORDER BY created_at ASC
+        """,
+        user_id,
+        since,
+    )
+
+    if not rows:
+        return "📊 *Статистика за текущий месяц:*\nНет транзакций.\n"
+
+    income_by_cat = {}
+    expense_by_cat = {}
+
+    for r in rows:
+        amount = float(r["amount"])
+        cat = r["category"] or "—"
+        if amount >= 0:
+            income_by_cat[cat] = income_by_cat.get(cat, 0) + amount
+        else:
+            expense_by_cat[cat] = expense_by_cat.get(cat, 0) + (-amount)
+
+    total_income = sum(income_by_cat.values())
+    total_expense = sum(expense_by_cat.values())
+
+    text = "📊 *Статистика (текущий месяц):*\n"
+    text += f"*Доходы всего:* {fmt(total_income)} ₽\n"
+    text += f"*Расходы всего:* {fmt(total_expense)} ₽\n\n"
+
+    if income_by_cat:
+        text += "💰 *Доходы по категориям:*\n"
+        for cat, val in sorted(income_by_cat.items(), key=lambda x: -x[1]):
+            emoji = CATEGORY_EMOJI.get(cat, "❓")
+            text += f"{emoji} {cat}: {fmt(val)} ₽\n"
+        text += "\n"
+
+    if expense_by_cat:
+        text += "💸 *Расходы по категориям:*\n"
+        for cat, val in sorted(expense_by_cat.items(), key=lambda x: -x[1]):
+            emoji = CATEGORY_EMOJI.get(cat, "❓")
+            text += f"{emoji} {cat}: {fmt(val)} ₽\n"
+
+    return text
+
+
+# ---------------------------------------------------------
+# 2. Donut расходов
+# ---------------------------------------------------------
 async def create_expense_donut(user_id: int):
-    # Текущая дата в UTC для определения начала месяца
-    
     start_month = datetime(now.year, now.month, 1)
-    
-    # Получаем все транзакции пользователя с суммами и категориями за текущий месяц (расходы отрицательные)
-    rows = await db.fetch("SELECT amount, category FROM transactions WHERE user_id=$1 AND created_at >= $2", user_id, start_month)
+
+    rows = await db.fetch(
+        "SELECT amount, category FROM transactions WHERE user_id=$1 AND created_at >= $2",
+        user_id,
+        start_month,
+    )
     if not rows:
         return None
-    
+
     by_cat = {}
-    total_expense = 0.0
     for r in rows:
         amount = float(r["amount"])
         if amount >= 0:
-            continue  # учитываем только расходы (отрицательные суммы)
+            continue
         cat = r["category"] or "—"
-        by_cat[cat] = by_cat.get(cat, 0) + (-amount)  # делаем положительным
-    
+        by_cat[cat] = by_cat.get(cat, 0) + (-amount)
+
+    if not by_cat:
+        return None
+
     total_expense = sum(by_cat.values())
-    
-    # Объединяем малые категории (меньше 5% от суммы) в "Прочее"
     threshold = total_expense * 0.05
-    large_cats = {k:v for k,v in by_cat.items() if v >= threshold}
-    small_cats_sum = sum(v for v in by_cat.values() if v < threshold)
-    if small_cats_sum > 0:
-        large_cats["Прочее"] = small_cats_sum
-    
+
+    large_cats = {k: v for k, v in by_cat.items() if v >= threshold}
+    small_sum = sum(v for v in by_cat.values() if v < threshold)
+    if small_sum > 0:
+        large_cats["Прочее"] = small_sum
+
     labels = list(large_cats.keys())
     sizes = list(large_cats.values())
-    
-    # Создаем фигуру 6x6 для диаграммы
-    fig, ax = plt.subplots(figsize=(6,6))
-    
-    # Основной пирог
-    wedges, texts, autotexts = ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, pctdistance=0.85)
-    
-    # Рисуем "дырку" по центру (donut effect)
-    centre_circle = plt.Circle((0,0),0.70,fc='white')
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    wedges, texts, autotexts = ax.pie(
+        sizes, labels=labels, autopct="%1.1f%%", startangle=90, pctdistance=0.85
+    )
+
+    centre_circle = plt.Circle((0, 0), 0.70, fc="white")
     fig.gca().add_artist(centre_circle)
-    
-    # В центре выводим сумму расходов
-    ax.text(0, 0, f'{total_expense:,.0f}₽', ha='center', va='center', fontsize=18, fontweight='bold')
-    
-    # Заголовок и легенда сверху
-    ax.set_title("Расходы по категориям в текущем месяце", y=1.05, fontsize=14)
-    ax.legend(wedges, labels, bbox_to_anchor=(0.5, 1.15), loc='upper center', ncol=3)
-    
-    plt.tight_layout()
-    
-    # Сохраняем снимок
-    fname = f"{TMP_DIR}/donut_expense_{user_id}_{int(now_moscow.replace(tzinfo=None).timestamp())}.png"
+
+    ax.text(
+        0,
+        0,
+        f"{total_expense:,.0f}₽",
+        ha="center",
+        va="center",
+        fontsize=18,
+        fontweight="bold",
+    )
+
+    ax.set_title("Расходы за месяц", y=1.05, fontsize=14)
+
+    fname = f"{TMP_DIR}/donut_expense_{user_id}_{int(datetime.now().timestamp())}.png"
     plt.savefig(fname)
     plt.close(fig)
     return fname
 
+
+# ---------------------------------------------------------
+# 3. Прогресс целей (bar chart)
+# ---------------------------------------------------------
 async def create_goals_progress_bar(user_id: int):
     goals = await db.fetch("SELECT title, target, current FROM goals WHERE user_id=$1", user_id)
     if not goals:
         return None
-    
+
     titles = []
     progress = []
-    full_done = []
-    
+
+    assets = await get_assets_list(user_id)
+    liabs = await get_liabilities_list(user_id)
+    net_capital = sum(a["amount"] for a in assets) - sum(l["amount"] for l in liabs)
+
     for g in goals:
         titles.append(g["title"])
-        if g["target"] == 0:
-            pct = 0
+        if g["target"] <= 0:
+            progress.append(0)
         else:
-            pct = min(int(round(g["current"] / g["target"] * 100)), 100)
-        progress.append(pct)
-        full_done.append(pct == 100)
-    
+            pct = min(int(net_capital / g["target"] * 100), 100)
+            progress.append(pct)
+
     fig, ax = plt.subplots(figsize=(8, len(goals) * 0.6 + 1))
-    
-    y_pos = np.arange(len(goals))
-    ax.barh(y_pos, progress, color='green', edgecolor='black')
-    ax.barh(y_pos, [100 - p for p in progress], left=progress, color='lightgray', edgecolor='black')
-    
-    # Подписи по оси Y — названия целей
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(titles, fontsize=10)
-    ax.invert_yaxis()  # чтобы первая цель сверху
-    
-    # Добавляем процентовки и галочки у целей
-    for i, (p, done) in enumerate(zip(progress, full_done)):
-        ax.text(p + 2, i, f"{p}%", va='center', fontsize=9)
-        if done:
-            ax.text(102, i, "✔", va='center', fontsize=12, color='green', fontweight='bold')
-    
+    y = np.arange(len(goals))
+
+    ax.barh(y, progress, color="green")
+    ax.barh(y, [100 - p for p in progress], left=progress, color="lightgray")
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(titles)
+    ax.invert_yaxis()
+
+    for i, p in enumerate(progress):
+        ax.text(p + 2, i, f"{p}%", va="center")
+
     ax.set_xlim(0, 110)
-    ax.set_xlabel('Выполнение цели (%)')
-    ax.set_title('Прогресс по целям', fontsize=14)
-    plt.tight_layout()
-    
-    fname = f"{TMP_DIR}/goals_progress_{user_id}_{int(now_moscow.replace(tzinfo=None).timestamp())}.png"
+    ax.set_title("Прогресс по целям")
+
+    fname = f"{TMP_DIR}/goals_progress_{user_id}_{int(datetime.now().timestamp())}.png"
     plt.savefig(fname)
     plt.close(fig)
     return fname
+# # ---------------------------------------------------------
+# # 4. История портфеля (финансовый путь по неделям)
+# # ---------------------------------------------------------
+# async def create_portfolio_history_chart(user_id: int, weeks: int = 26):
+    # cutoff = now_moscow.replace(tzinfo=None) - timedelta(weeks=weeks)
 
+    # # История активов
+    # asset_rows = await db.fetch(
+        # """
+        # SELECT av.amount, av.created_at
+        # FROM asset_values av
+        # JOIN assets a ON a.id = av.asset_id
+        # WHERE a.user_id = $1 AND av.created_at >= $2
+        # ORDER BY av.created_at ASC
+        # """,
+        # user_id,
+        # cutoff,
+    # )
 
-async def create_weekly_balance_chart(user_id: int):
-    from datetime import datetime, timedelta
-    import matplotlib.dates as mdates
-    import pandas as pd
+    # # История долгов
+    # liab_rows = await db.fetch(
+        # """
+        # SELECT lv.amount, lv.created_at
+        # FROM liability_values lv
+        # JOIN liabilities l ON l.id = lv.liability_id
+        # WHERE l.user_id = $1 AND lv.created_at >= $2
+        # ORDER BY lv.created_at ASC
+        # """,
+        # user_id,
+        # cutoff,
+    # )
 
-    one_year_ago = now_moscow.replace(tzinfo=None) - timedelta(days=365)
+    # if not asset_rows and not liab_rows:
+        # return None
 
-    assets = await db.fetch(
-        "SELECT amount, created_at FROM assets WHERE user_id=$1 AND created_at >= $2 ORDER BY created_at ASC",
-        user_id, one_year_ago
+    # # ---------- Дневные суммы активов и долгов ----------
+    # def build_daily(df_raw):
+        # if not df_raw:
+            # return pd.DataFrame(columns=["created_at", "amount"])
+        # df = pd.DataFrame(
+            # [
+                # {"amount": float(r["amount"]), "created_at": r["created_at"].date()}
+                # for r in df_raw
+            # ]
+        # )
+        # daily = (
+            # df.groupby("created_at")["amount"]
+            # .sum()
+            # .reset_index()
+            # .sort_values("created_at")
+        # )
+        # daily["created_at"] = pd.to_datetime(daily["created_at"])
+        # return daily
+
+    # asset_daily = build_daily(asset_rows)
+    # liab_daily = build_daily(liab_rows)
+
+    # # Диапазон дат (по дням) для выравнивания и последующего ресемплинга
+    # all_dates = []
+    # if not asset_daily.empty:
+        # all_dates.append(asset_daily["created_at"].min())
+        # all_dates.append(asset_daily["created_at"].max())
+    # if not liab_daily.empty:
+        # all_dates.append(liab_daily["created_at"].min())
+        # all_dates.append(liab_daily["created_at"].max())
+
+    # if not all_dates:
+        # return None
+
+    # start_date = min(all_dates)
+    # end_date = max(all_dates)
+
+    # full_range = pd.date_range(start=start_date, end=end_date, freq="D")
+
+    # def to_full_daily(daily):
+        # if daily.empty:
+            # s = pd.Series(0, index=full_range)
+        # else:
+            # s = daily.set_index("created_at")["amount"].reindex(full_range).ffill().fillna(0)
+        # return s
+
+    # asset_series = to_full_daily(asset_daily)
+    # liab_series = to_full_daily(liab_daily)
+
+    # # ---------- Ресемплинг по неделям (конец недели) ----------
+    # asset_weekly = asset_series.resample("W").last()
+    # liab_weekly = liab_series.resample("W").last()
+
+    # weekly = pd.DataFrame(
+        # {
+            # "date": asset_weekly.index,  # конец недели
+            # "assets": asset_weekly.values,
+            # "liabs": liab_weekly.values,
+        # }
+    # )
+
+    # # Сортируем и обрезаем по количеству недель
+    # weekly = weekly.sort_values("date")
+    # if len(weekly) > weeks:
+        # weekly = weekly.iloc[-weeks:]
+
+    # dates = weekly["date"]
+    # assets_vals = weekly["assets"]
+    # liabs_vals = weekly["liabs"]
+    # net_vals = assets_vals - liabs_vals
+
+    # if len(dates) == 0:
+        # return None
+
+    # # ---------- Рисование графика ----------
+    # fig, ax = plt.subplots(figsize=(14, 5))
+
+    # x = np.arange(len(dates))
+    # bar_width = 0.6
+
+    # # Столбцы активов (вверх)
+    # ax.bar(
+        # x,
+        # assets_vals,
+        # bar_width,
+        # color="#2ecc71",
+        # label="Активы",
+        # zorder=2,
+    # )
+
+    # # Столбцы долгов (вниз)
+    # ax.bar(
+        # x,
+        # -liabs_vals,
+        # bar_width,
+        # color="#e74c3c",
+        # label="Долги",
+        # zorder=2,
+    # )
+
+    # # Линия Net Worth
+    # ax.plot(
+        # x,
+        # net_vals,
+        # color="#8e44ad",
+        # marker="o",
+        # linestyle="--",
+        # linewidth=2,
+        # label="Net Worth",
+        # zorder=3,
+    # )
+
+    # # Подписи значений Net Worth над точками
+    # for i, v in enumerate(net_vals):
+        # ax.text(
+            # x[i],
+            # v,
+            # fmt(v) + " ₽",
+            # fontsize=8,
+            # ha="center",
+            # va="bottom" if v >= 0 else "top",
+        # )
+
+    # # Подписи по оси X: конец недели в формате "ДД.ММ.ГГ"
+    # ax.set_xticks(x)
+    # ax.set_xticklabels(
+        # [d.strftime("%d.%m.%y") for d in dates],
+        # rotation=45,
+        # ha="right",
+    # )
+
+    # ax.set_ylabel("Сумма (₽)")
+    # ax.set_title("Финансовый путь (по неделям)")
+
+    # ax.grid(True, axis="y", linestyle="--", alpha=0.3)
+
+    # # Легенда за пределами графика
+    # handles, labels = ax.get_legend_handles_labels()
+    # ax.legend(
+        # handles,
+        # labels,
+        # loc="upper left",
+        # bbox_to_anchor=(1.02, 1.0),
+        # borderaxespad=0.0,
+    # )
+
+    # fig.tight_layout()
+
+    # fname = f"{TMP_DIR}/portfolio_history_{user_id}_{int(datetime.now().timestamp())}.png"
+    # plt.savefig(fname, bbox_inches="tight")
+    # plt.close(fig)
+    # return fname
+
+# ---------------------------------------------------------
+# 4. История портфеля (финансовый путь по неделям)
+# ---------------------------------------------------------
+async def create_portfolio_history_chart(user_id: int, weeks: int = 26):
+    cutoff = now_moscow.replace(tzinfo=None) - timedelta(weeks=weeks)
+
+    # История активов
+    asset_rows = await db.fetch(
+        """
+        SELECT av.amount, av.created_at
+        FROM asset_values av
+        JOIN assets a ON a.id = av.asset_id
+        WHERE a.user_id = $1 AND av.created_at >= $2
+        ORDER BY av.created_at ASC
+        """,
+        user_id,
+        cutoff,
     )
-    liabs = await db.fetch(
-        "SELECT amount, created_at FROM liabilities WHERE user_id=$1 AND created_at >= $2 ORDER BY created_at ASC",
-        user_id, one_year_ago
+
+    # История долгов
+    liab_rows = await db.fetch(
+        """
+        SELECT lv.amount, lv.created_at
+        FROM liability_values lv
+        JOIN liabilities l ON l.id = lv.liability_id
+        WHERE l.user_id = $1 AND lv.created_at >= $2
+        ORDER BY lv.created_at ASC
+        """,
+        user_id,
+        cutoff,
     )
 
-    if not assets and not liabs:
+    if not asset_rows and not liab_rows:
         return None
 
-    df_assets = pd.DataFrame([(a['created_at'].date(), float(a['amount'])) for a in assets], columns=['date','amount'])
-    df_liabs = pd.DataFrame([(l['created_at'].date(), -float(l['amount'])) for l in liabs], columns=['date','amount'])
+    asset_df = pd.DataFrame(
+        [
+            {"amount": float(r["amount"]), "created_at": r["created_at"].date()}
+            for r in asset_rows
+        ]
+    ) if asset_rows else pd.DataFrame(columns=["amount", "created_at"])
 
-    df_assets['date'] = pd.to_datetime(df_assets['date'])
-    df_liabs['date'] = pd.to_datetime(df_liabs['date'])
-    df_assets.set_index('date', inplace=True)
-    df_liabs.set_index('date', inplace=True)
+    liab_df = pd.DataFrame(
+        [
+            {"amount": float(r["amount"]), "created_at": r["created_at"].date()}
+            for r in liab_rows
+        ]
+    ) if liab_rows else pd.DataFrame(columns=["amount", "created_at"])
 
-    weekly_assets = df_assets.groupby(pd.Grouper(freq='W-MON'))['amount'].sum().reindex(
-        pd.date_range(one_year_ago.date(), now_moscow.replace(tzinfo=None).date(), freq='W-MON'),
-        fill_value=0
+    # Дневные суммы активов и долгов
+    if not asset_df.empty:
+        asset_daily = (
+            asset_df.groupby("created_at")["amount"]
+            .sum()
+            .reset_index()
+            .sort_values("created_at")
+        )
+        asset_daily["created_at"] = pd.to_datetime(asset_daily["created_at"])
+        asset_weekly = (
+            asset_daily.set_index("created_at")
+            .resample("W")
+            .last()
+            .ffill()
+            .reset_index()
+        )
+    else:
+        asset_weekly = pd.DataFrame(columns=["created_at", "amount"])
+
+    if not liab_df.empty:
+        liab_daily = (
+            liab_df.groupby("created_at")["amount"]
+            .sum()
+            .reset_index()
+            .sort_values("created_at")
+        )
+        liab_daily["created_at"] = pd.to_datetime(liab_daily["created_at"])
+        liab_weekly = (
+            liab_daily.set_index("created_at")
+            .resample("W")
+            .last()
+            .ffill()
+            .reset_index()
+        )
+    else:
+        liab_weekly = pd.DataFrame(columns=["created_at", "amount"])
+
+    if asset_weekly.empty and liab_weekly.empty:
+        return None
+
+    weekly = pd.merge(
+        asset_weekly,
+        liab_weekly,
+        on="created_at",
+        how="outer",
+        suffixes=("_assets", "_liabs"),
+    ).sort_values("created_at")
+
+    weekly["amount_assets"] = weekly["amount_assets"].ffill().fillna(0)
+    weekly["amount_liabs"] = weekly["amount_liabs"].ffill().fillna(0)
+
+    dates = weekly["created_at"]
+    assets_vals = weekly["amount_assets"]
+    liabs_vals = weekly["amount_liabs"]
+    net_vals = assets_vals - liabs_vals
+
+    # --- График: столбцы активов/долгов + линия Net Worth ---
+    fig, ax = plt.subplots(figsize=(14, 6))
+    x = np.arange(len(dates))
+    bar_width = 0.6
+
+    # Активы (зелёные столбцы)
+    bars_assets = ax.bar(
+        x,
+        assets_vals,
+        bar_width,
+        color="#2ecc71",
+        label="Активы",
+        zorder=2,
     )
-    weekly_liabs = df_liabs.groupby(pd.Grouper(freq='W-MON'))['amount'].sum().reindex(
-        pd.date_range(one_year_ago.date(), now_moscow.replace(tzinfo=None).date(), freq='W-MON'),
-        fill_value=0
+
+    # Долги (красные столбцы вниз)
+    bars_liabs = ax.bar(
+        x,
+        -liabs_vals,
+        bar_width,
+        color="#e74c3c",
+        label="Долги",
+        zorder=2,
     )
 
-    net_worth = weekly_assets + weekly_liabs
+    # Линия Net Worth
+    line_net, = ax.plot(
+        x,
+        net_vals,
+        color="#8e44ad",
+        marker="o",
+        linestyle="--",
+        linewidth=2,
+        label="Net Worth",
+        zorder=3,
+    )
 
-    fig, ax = plt.subplots(figsize=(12,6))
+    # Подписи по оси X: конец недели в формате "ДД.ММ.ГГ"
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [d.strftime("%d.%m.%y") for d in dates],
+        rotation=45,
+        ha="right",
+    )
 
-    ax.bar(weekly_assets.index, weekly_assets.values, width=4, color='green', label='Активы')
-    ax.bar(weekly_liabs.index, weekly_liabs.values, width=4, color='red', label='Долги')
-
-    for dt, net in zip(net_worth.index, net_worth.values):
-        ax.text(dt, net, f"{int(net):,}", ha='center', va='bottom' if net >= 0 else 'top', fontsize=8, rotation=90)
-
-    ax.set_title("Баланс по неделям за последний год")
-    ax.set_xlabel("Дата (понедельник недели)")
+    # Сетка и оси
     ax.set_ylabel("Сумма (₽)")
-    ax.legend()
+    ax.set_title("Финансовый путь (по неделям)")
+    ax.grid(True, axis="y", linestyle="--", alpha=0.3, zorder=1)
 
-    ax.xaxis.set_major_locator(mdates.MonthLocator())
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
-    plt.xticks(rotation=45)
-    plt.tight_layout()
+    # Делимитеры по Y чуть с запасом
+    min_y = min(
+        -liabs_vals.min() if len(liabs_vals) > 0 else 0,
+        net_vals.min() if len(net_vals) > 0 else 0,
+    )
+    max_y = max(
+        assets_vals.max() if len(assets_vals) > 0 else 0,
+        net_vals.max() if len(net_vals) > 0 else 0,
+    )
+    margin = (max_y - min_y) * 0.1 if max_y != min_y else 1
+    ax.set_ylim(min_y - margin, max_y + margin)
 
-    fname = f"{TMP_DIR}/weekly_balance_{user_id}_{int(now_moscow.replace(tzinfo=None).timestamp())}.png"
-    plt.savefig(fname)
-    plt.close(fig)
-    return fname
+    # Формат чисел как в других отчетах
+    ax.yaxis.set_major_formatter(
+        plt.FuncFormatter(lambda x, pos: fmt(x) + " ₽")
+    )
 
-async def create_asset_history_chart(asset_id: int):
-    hist = await get_asset_history(asset_id)
-    if not hist or len(hist) < 1:
-        return None
-    dates = [h["created_at"].date() for h in hist]
-    vals = [h["amount"] for h in hist]
-
-    fig, ax = plt.subplots(figsize=(10,4))
-    ax.plot(dates, vals, marker='o')
-    ax.set_title("Динамика стоимости актива")
-    ax.set_xlabel("Дата")
-    ax.set_ylabel("Стоимость (₽)")
-    fig.autofmt_xdate()
-    plt.tight_layout()
-    fname = f"{TMP_DIR}/asset_history_{asset_id}_{int(now_moscow.replace(tzinfo=None).timestamp())}.png"
-    plt.savefig(fname)
-    plt.close(fig)
-    return fname
-
-async def create_portfolio_history_chart(user_id: int, days: int = 365):
-    # собираем net-worth по дням: суммарная последняя оценка каждого актива на дату
-    import pandas as pd
-    assets = await db.fetch("SELECT id FROM assets WHERE user_id=$1", user_id)
-    if not assets:
-        return None
-    # собрать все values за период
-    cutoff = now_moscow.replace(tzinfo=None) - timedelta(days=days)
-    rows = await db.fetch("""
-       SELECT av.asset_id, av.amount, av.created_at
-       FROM asset_values av
-       JOIN assets a ON a.id = av.asset_id
-       WHERE a.user_id = $1 AND av.created_at >= $2
-       ORDER BY av.created_at ASC
-    """, user_id, cutoff)
-    if not rows:
-        return None
-    df = pd.DataFrame([{"asset_id": r["asset_id"], "amount": float(r["amount"]), "created_at": r["created_at"].date()} for r in rows])
-    # агрегируем: для каждой даты берем сумму последних значений каждого актива в этот день
-    # упрощённый способ: группируем по (asset_id, date) берём последний amount, затем суммируем по дате
-    df_grouped = df.groupby(["asset_id", "created_at"]).last().reset_index()
-    daily = df_grouped.groupby("created_at")["amount"].sum().reset_index()
-    dates = pd.to_datetime(daily["created_at"])
-    vals = daily["amount"]
-
-    fig, ax = plt.subplots(figsize=(12,5))
-    ax.plot(dates, vals, marker='o')
-    ax.set_title("Динамика чистого капитала")
-    ax.set_xlabel("Дата")
-    ax.set_ylabel("Сумма (₽)")
-    fig.autofmt_xdate()
-    plt.tight_layout()
-    fname = f"{TMP_DIR}/portfolio_history_{user_id}_{int(now_moscow.replace(tzinfo=None).timestamp())}.png"
-    plt.savefig(fname)
-    plt.close(fig)
-    return fname
-
-# Handlers Графики
-@dp.callback_query(F.data == "menu_chart")
-async def cb_chart(c: types.CallbackQuery):
-    user_id = await get_or_create_user(c.from_user.id)
-    
-    # 1. График расходов (donut)
-    img_expense = await create_expense_donut(user_id)
-    if img_expense:
-        await c.message.answer_photo(types.FSInputFile(img_expense), caption="Траты за текущий месяц (donut)")
-        try:
-            os.remove(img_expense)
-        except Exception:
-            pass
-    else:
-        await c.message.answer("Нет данных для графика расходов.")
-    
-    # 2. График прогресса по целям
-    img_progress = await create_goals_progress_bar(user_id)
-    if img_progress:
-        await c.message.answer_photo(types.FSInputFile(img_progress), caption="Прогресс по целям")
-        try:
-            os.remove(img_progress)
-        except Exception:
-            pass
-    else:
-        await c.message.answer("Нет данных о целях.")
-        
-    # 3. График баланса по неделям
-    img_balance = await create_weekly_balance_chart(user_id)
-    if img_balance:
-        await c.message.answer_photo(types.FSInputFile(img_balance), caption="Баланс по неделям за год")
-        try:
-            os.remove(img_balance)
-        except Exception:
-            pass
-    else:
-        await c.message.answer("Нет данных для графика баланса.")
-    
-    await c.answer()
-
-# Статистика
-@dp.callback_query(F.data == "menu_stats")
-async def cb_stats(c: types.CallbackQuery):
-    user_id = await get_or_create_user(c.from_user.id)
-
-    
-    since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-    rows = await db.fetch("""
-        SELECT amount, category, created_at 
-        FROM transactions 
-        WHERE user_id=$1 AND created_at >= $2 
-        ORDER BY created_at ASC
-    """, user_id, since)
-
-    if not rows:
-        await c.message.answer("Нет транзакций в текущем месяце.")
-        await c.answer()
-        return
-
-    total = sum(r["amount"] for r in rows)
-
-    # группировка категорий
-    by_cat = {}
-    for r in rows:
-        cat = r["category"] or "—"
-        by_cat[cat] = by_cat.get(cat, 0) + float(r["amount"])
-
-    cat_count = len(by_cat)
-
-    # ---- Компактный режим ----
-    if cat_count > 7:
-        text = (
-            "📊 *Статистика за текущий месяц (компактный режим)*\n"
-            f"*Всего:* {int(total):,}".replace(",", " ") + " ₽\n\n"
-            "🔻 Топ 5 категорий:\n"
+    # Подписи над/под столбцами активов и долгов
+    for rect in bars_assets:
+        height = rect.get_height()
+        if height <= 0:
+            continue
+        ax.text(
+            rect.get_x() + rect.get_width() / 2,
+            height + margin * 0.02,
+            fmt(height),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            color="#145a32",
         )
 
+    for rect in bars_liabs:
+        height = rect.get_height()
+        if height >= 0:
+            continue
+        ax.text(
+            rect.get_x() + rect.get_width() / 2,
+            height - margin * 0.02,
+            "-" + fmt(abs(height)),
+            ha="center",
+            va="top",
+            fontsize=8,
+            color="#922b21",
+        )
 
-        top5 = sorted(by_cat.items(), key=lambda x: -abs(x[1]))[:5]
-        for cat, val in top5:
-            emoji = CATEGORY_EMOJI.get(cat, "❓")
-            text += f"{emoji} *{cat}*: {int(val):,}".replace(",", " ") + " ₽\n"
+    # Подписи на линии Net Worth
+    for xi, yi in zip(x, net_vals):
+        ax.text(
+            xi,
+            yi + margin * 0.03,
+            fmt(yi),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            color="#4a235a",
+        )
 
-        other_sum = sum(v for _, v in sorted(by_cat.items(), key=lambda x: -abs(x[1]))[5:])
-        if other_sum != 0:
-            text += f"\n📦 Остальные категории: {int(other_sum):,}".replace(",", " ") + " ₽\n"
+    # Легенда вне области графика
+    legend = ax.legend(
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
+        borderaxespad=0.0,
+        frameon=False,
+    )
 
-        text += "\n📱 _Много категорий — включён компактный режим_"
+    fig.tight_layout()
 
-        await c.message.answer(text, parse_mode="Markdown")
-        await c.answer()
-        return
+    fname = f"{TMP_DIR}/portfolio_history_{user_id}_{int(datetime.now().timestamp())}.png"
+    plt.savefig(fname, bbox_inches="tight")
+    plt.close(fig)
+    return fname
 
-    # ---- Обычный режим ----
-    text = f"📊 Статистика (текущий месяц):\n*Всего:* {int(total):,}".replace(",", " ") + " ₽\n\n"
-    for cat, val in sorted(by_cat.items(), key=lambda x: -abs(x[1])):
-        emoji = CATEGORY_EMOJI.get(cat, "❓")
-        text += f"{emoji} {cat}: {int(val):,}".replace(",", " ") + " ₽\n"
+# ---------------------------------------------------------
+# ОБЪЕДИНЁННЫЙ ОБРАБОТЧИК ОТЧЁТОВ (3 сообщения)
+# ---------------------------------------------------------
+@dp.callback_query(F.data == "menu_charts")
+async def menu_charts(c: types.CallbackQuery):
+    user_id = await get_or_create_user(c.from_user.id)
 
-    await c.message.answer(text, parse_mode="Markdown")
+    # 1. Статистика + donut
+    stats_text = await build_text_stats(user_id)
+    img_donut = await create_expense_donut(user_id)
+
+    if img_donut:
+        await c.message.answer(stats_text, parse_mode="Markdown")
+        await c.message.answer_photo(
+            types.FSInputFile(img_donut),
+            caption="Траты за месяц",
+        )
+        os.remove(img_donut)
+    else:
+        await c.message.answer(stats_text, parse_mode="Markdown")
+
+    # 2. Цели (текст) + график прогресса
+    goals_text = await get_goals_text(user_id)
+    img_goals = await create_goals_progress_bar(user_id)
+
+    if img_goals:
+        await c.message.answer(goals_text, parse_mode="Markdown")
+        await c.message.answer_photo(
+            types.FSInputFile(img_goals),
+            caption="Прогресс целей",
+        )
+        os.remove(img_goals)
+    else:
+        await c.message.answer(goals_text, parse_mode="Markdown")
+
+    # 3. Активы/долги (render_capital_text) + история портфеля по неделям
+    cap_text = await render_capital_text(user_id)
+    img_hist = await create_portfolio_history_chart(user_id)
+
+    if img_hist:
+        await c.message.answer(cap_text, parse_mode="Markdown")
+        await c.message.answer_photo(
+            types.FSInputFile(img_hist),
+            caption="Динамика чистого капитала по неделям",
+        )
+        os.remove(img_hist)
+    else:
+        await c.message.answer(cap_text, parse_mode="Markdown")
+
     await c.answer()
-
-
 # -----------------------------------------------------------------------------------------------------------------------
 # 💡 Личная консультация
 # -----------------------------------------------------------------------------------------------------------------------
@@ -1459,19 +2063,6 @@ async def generate_consultation(user_id: int) -> str:
 # ----------------------------
 # Handlers - callback queries and commands
 # ----------------------------
-
-
-
-
-
-
- 
-
-
-
-
-
-
 # @dp.callback_query(F.data == "menu_export")
 # async def cb_export(c: types.CallbackQuery):
     # user_id = await get_or_create_user(c.from_user.id)
@@ -1596,4 +2187,3 @@ if __name__ == "__main__":
         asyncio.run(dp.start_polling(bot))
     except (KeyboardInterrupt, SystemExit):
         print("Shutting down")
-
