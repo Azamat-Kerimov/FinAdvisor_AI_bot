@@ -371,11 +371,11 @@ async def cb_menu_add_tx(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(TXStates.choose_type)
     user_id = await get_or_create_user(c.from_user.id)
     
-    # Показываем последние транзакции перед выбором типа
-    recent_tx_text = await format_recent_transactions_text(user_id, limit=10)
+    # Показываем статистику за текущий месяц перед выбором типа
+    stats_text = await build_text_stats(user_id)
     
-    await c.message.answer(
-        recent_tx_text + "\n"
+    await c.message.edit_text(
+        stats_text + "\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "Шаг 1 из 4.\n"
         "Выберите тип транзакции:",
