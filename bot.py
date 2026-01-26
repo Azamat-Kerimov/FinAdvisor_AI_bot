@@ -1865,11 +1865,6 @@ async def create_portfolio_history_chart(user_id: int, weeks: int = 26):
     liabs_vals = weekly["liabs"]
     net_vals = weekly["net"]
 
-    dates = weekly["created_at"]
-    assets_vals = weekly["amount_assets"]
-    liabs_vals = weekly["amount_liabs"]
-    net_vals = assets_vals - liabs_vals
-
     # --- График: столбцы активов/долгов + линия Net Worth ---
     fig, ax = plt.subplots(figsize=(14, 6))
     x = np.arange(len(dates))
