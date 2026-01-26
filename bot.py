@@ -902,7 +902,7 @@ async def goal_description(msg: types.Message, state: FSMContext):
     await state.clear()
 
 # Кнопка "Обновить цели"
-@dp.callback_query(F.data == "goals_update_list")
+@dp.callback_query(F.data == "goal_update_list")
 async def goals_update_list(c: types.CallbackQuery):
     user_id = await get_or_create_user(c.from_user.id)
 
