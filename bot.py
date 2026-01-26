@@ -301,7 +301,7 @@ def main():
 async def cb_cancel_fsm(c: types.CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = await get_or_create_user(c.from_user.id)
-    await c.message.answer("Отменено.", reply_markup=await main_kb(user_id))
+    await c.message.edit_text("Главное меню", reply_markup=await main_kb(user_id))
     await c.answer()
 
 # Команда главного меню
@@ -862,7 +862,7 @@ async def menu_goals(c: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "goal_new")
 async def goal_new_start(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(GOALStates.target)
-    await c.message.answer("Введите сумму цели:", reply_markup=cancel_kb)
+    await c.message.edit_text("Введите сумму цели:", reply_markup=cancel_kb)
     await c.answer()
     
 # Шаг 2 — название:
@@ -982,7 +982,7 @@ async def goal_edit_title_start(c: types.CallbackQuery, state: FSMContext):
     gid = int(c.data.split(":")[1])
     await state.update_data(goal_id=gid)
     await state.set_state(GOAL_EDIT.edit_title)
-    await c.message.answer("Введите новое название:", reply_markup=cancel_kb)
+    await c.message.edit_text("Введите новое название:", reply_markup=cancel_kb)
     await c.answer()
 
 @dp.message(GOAL_EDIT.edit_title)
@@ -1000,7 +1000,7 @@ async def goal_edit_target_start(c: types.CallbackQuery, state: FSMContext):
     gid = int(c.data.split(":")[1])
     await state.update_data(goal_id=gid)
     await state.set_state(GOAL_EDIT.edit_target)
-    await c.message.answer("Введите новую сумму цели:", reply_markup=cancel_kb)
+    await c.message.edit_text("Введите новую сумму цели:", reply_markup=cancel_kb)
     await c.answer()
 
 @dp.message(GOAL_EDIT.edit_target)
@@ -1024,7 +1024,7 @@ async def goal_edit_desc_start(c: types.CallbackQuery, state: FSMContext):
     gid = int(c.data.split(":")[1])
     await state.update_data(goal_id=gid)
     await state.set_state(GOAL_EDIT.edit_desc)
-    await c.message.answer("Введите новое описание:", reply_markup=cancel_kb)
+    await c.message.edit_text("Введите новое описание:", reply_markup=cancel_kb)
     await c.answer()
     
 @dp.message(GOAL_EDIT.edit_desc)
@@ -1381,7 +1381,7 @@ async def asset_update_selected(c: types.CallbackQuery, state: FSMContext):
     aid = int(c.data.split("asset_update:")[1])
     await state.update_data(asset_id=aid)
     await state.set_state(AssetStates.update_amount)
-    await c.message.answer("Введите новую стоимость актива (0, если хотите удалить):", reply_markup=cancel_kb)
+    await c.message.edit_text("Введите новую стоимость актива (0, если хотите удалить):", reply_markup=cancel_kb)
     await c.answer()
 
 
@@ -1557,7 +1557,7 @@ async def liab_update_selected(c: types.CallbackQuery, state: FSMContext):
     lid = int(c.data.split("liab_update:")[1])
     await state.update_data(liability_id=lid)
     await state.set_state(LiabilityStates.update_amount)
-    await c.message.answer("Введите новую сумму долга (0, если хотите удалить):", reply_markup=cancel_kb)
+    await c.message.edit_text("Введите новую сумму долга (0, если хотите удалить):", reply_markup=cancel_kb)
     await c.answer()
 
 
