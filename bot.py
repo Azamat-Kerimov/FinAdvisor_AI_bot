@@ -1,11 +1,10 @@
-# v_02.12.25
+# v_03.01.26 - Оптимизирован: удалены дубликаты и неиспользуемый код
 
 import os
 import asyncio
 import asyncpg
 import hashlib
 import json
-import tempfile
 import uuid
 import base64
 from datetime import datetime, timedelta
@@ -16,9 +15,10 @@ import httpx
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types, F
@@ -28,20 +28,6 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-import matplotlib.dates as mdates
-
-import io
-import math
-import decimal
-
-load_dotenv()
-
-# ----------------------------
-# Config from .env
-# ----------------------------
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -135,6 +121,10 @@ now = datetime.now()
 # Формат чисел
 def format_amount(amount: float) -> str:
     return f"{int(amount):,}".replace(",", " ") + " ₽"
+
+def fmt(amount: float) -> str:
+    """Форматирование числа с пробелами (без валюты)"""
+    return f"{int(amount):,}".replace(",", " ")
 
 # Получить последние транзакции
 async def get_recent_transactions(user_id: int, limit: int = 10):
@@ -797,8 +787,6 @@ def goal_edit_kb(goal_id: int):
     )
 
 # Форматирование и прогресс цели
-def fmt(x: float) -> str:
-    return f"{int(x):,}".replace(",", " ")
 
 async def get_net_capital(user_id: int) -> float:
     # Суммарные активы
@@ -1204,9 +1192,6 @@ def build_capital_category_kb(categories: list[str], emojis: dict[str, str], pre
 
 # -------- CAPITAL MENU --------
 
-def fmt(n: float) -> str:
-    return f"{int(n):,}".replace(",", " ")
-
 async def render_capital_text(user_id: int) -> str:
     assets = await get_assets_list(user_id)
     liabs = await get_liabilities_list(user_id)
@@ -1599,12 +1584,6 @@ async def liab_update_amount(msg: types.Message, state: FSMContext):
 # 📈 Отчеты
 # -----------------------------------------------------------------------------------------------------------------------
 # ---------- Вспомогательные функции ----------
-def fmt(n: float) -> str:
-    return f"{int(n):,}".replace(",", " ")
-
-# ---------- Вспомогательные функции ----------
-def fmt(n: float) -> str:
-    return f"{int(n):,}".replace(",", " ")
 
 
 async def get_goals_text(user_id: int) -> str:
@@ -1795,194 +1774,6 @@ async def create_goals_progress_bar(user_id: int):
     plt.savefig(fname)
     plt.close(fig)
     return fname
-# # ---------------------------------------------------------
-# # 4. История портфеля (финансовый путь по неделям)
-# # ---------------------------------------------------------
-# async def create_portfolio_history_chart(user_id: int, weeks: int = 26):
-    # cutoff = now_moscow.replace(tzinfo=None) - timedelta(weeks=weeks)
-
-    # # История активов
-    # asset_rows = await db.fetch(
-        # """
-        # SELECT av.amount, av.created_at
-        # FROM asset_values av
-        # JOIN assets a ON a.id = av.asset_id
-        # WHERE a.user_id = $1 AND av.created_at >= $2
-        # ORDER BY av.created_at ASC
-        # """,
-        # user_id,
-        # cutoff,
-    # )
-
-    # # История долгов
-    # liab_rows = await db.fetch(
-        # """
-        # SELECT lv.amount, lv.created_at
-        # FROM liability_values lv
-        # JOIN liabilities l ON l.id = lv.liability_id
-        # WHERE l.user_id = $1 AND lv.created_at >= $2
-        # ORDER BY lv.created_at ASC
-        # """,
-        # user_id,
-        # cutoff,
-    # )
-
-    # if not asset_rows and not liab_rows:
-        # return None
-
-    # # ---------- Дневные суммы активов и долгов ----------
-    # def build_daily(df_raw):
-        # if not df_raw:
-            # return pd.DataFrame(columns=["created_at", "amount"])
-        # df = pd.DataFrame(
-            # [
-                # {"amount": float(r["amount"]), "created_at": r["created_at"].date()}
-                # for r in df_raw
-            # ]
-        # )
-        # daily = (
-            # df.groupby("created_at")["amount"]
-            # .sum()
-            # .reset_index()
-            # .sort_values("created_at")
-        # )
-        # daily["created_at"] = pd.to_datetime(daily["created_at"])
-        # return daily
-
-    # asset_daily = build_daily(asset_rows)
-    # liab_daily = build_daily(liab_rows)
-
-    # # Диапазон дат (по дням) для выравнивания и последующего ресемплинга
-    # all_dates = []
-    # if not asset_daily.empty:
-        # all_dates.append(asset_daily["created_at"].min())
-        # all_dates.append(asset_daily["created_at"].max())
-    # if not liab_daily.empty:
-        # all_dates.append(liab_daily["created_at"].min())
-        # all_dates.append(liab_daily["created_at"].max())
-
-    # if not all_dates:
-        # return None
-
-    # start_date = min(all_dates)
-    # end_date = max(all_dates)
-
-    # full_range = pd.date_range(start=start_date, end=end_date, freq="D")
-
-    # def to_full_daily(daily):
-        # if daily.empty:
-            # s = pd.Series(0, index=full_range)
-        # else:
-            # s = daily.set_index("created_at")["amount"].reindex(full_range).ffill().fillna(0)
-        # return s
-
-    # asset_series = to_full_daily(asset_daily)
-    # liab_series = to_full_daily(liab_daily)
-
-    # # ---------- Ресемплинг по неделям (конец недели) ----------
-    # asset_weekly = asset_series.resample("W").last()
-    # liab_weekly = liab_series.resample("W").last()
-
-    # weekly = pd.DataFrame(
-        # {
-            # "date": asset_weekly.index,  # конец недели
-            # "assets": asset_weekly.values,
-            # "liabs": liab_weekly.values,
-        # }
-    # )
-
-    # # Сортируем и обрезаем по количеству недель
-    # weekly = weekly.sort_values("date")
-    # if len(weekly) > weeks:
-        # weekly = weekly.iloc[-weeks:]
-
-    # dates = weekly["date"]
-    # assets_vals = weekly["assets"]
-    # liabs_vals = weekly["liabs"]
-    # net_vals = assets_vals - liabs_vals
-
-    # if len(dates) == 0:
-        # return None
-
-    # # ---------- Рисование графика ----------
-    # fig, ax = plt.subplots(figsize=(14, 5))
-
-    # x = np.arange(len(dates))
-    # bar_width = 0.6
-
-    # # Столбцы активов (вверх)
-    # ax.bar(
-        # x,
-        # assets_vals,
-        # bar_width,
-        # color="#2ecc71",
-        # label="Активы",
-        # zorder=2,
-    # )
-
-    # # Столбцы долгов (вниз)
-    # ax.bar(
-        # x,
-        # -liabs_vals,
-        # bar_width,
-        # color="#e74c3c",
-        # label="Долги",
-        # zorder=2,
-    # )
-
-    # # Линия Net Worth
-    # ax.plot(
-        # x,
-        # net_vals,
-        # color="#8e44ad",
-        # marker="o",
-        # linestyle="--",
-        # linewidth=2,
-        # label="Net Worth",
-        # zorder=3,
-    # )
-
-    # # Подписи значений Net Worth над точками
-    # for i, v in enumerate(net_vals):
-        # ax.text(
-            # x[i],
-            # v,
-            # fmt(v) + " ₽",
-            # fontsize=8,
-            # ha="center",
-            # va="bottom" if v >= 0 else "top",
-        # )
-
-    # # Подписи по оси X: конец недели в формате "ДД.ММ.ГГ"
-    # ax.set_xticks(x)
-    # ax.set_xticklabels(
-        # [d.strftime("%d.%m.%y") for d in dates],
-        # rotation=45,
-        # ha="right",
-    # )
-
-    # ax.set_ylabel("Сумма (₽)")
-    # ax.set_title("Финансовый путь (по неделям)")
-
-    # ax.grid(True, axis="y", linestyle="--", alpha=0.3)
-
-    # # Легенда за пределами графика
-    # handles, labels = ax.get_legend_handles_labels()
-    # ax.legend(
-        # handles,
-        # labels,
-        # loc="upper left",
-        # bbox_to_anchor=(1.02, 1.0),
-        # borderaxespad=0.0,
-    # )
-
-    # fig.tight_layout()
-
-    # fname = f"{TMP_DIR}/portfolio_history_{user_id}_{int(datetime.now().timestamp())}.png"
-    # plt.savefig(fname, bbox_inches="tight")
-    # plt.close(fig)
-    # return fname
-
 # ---------------------------------------------------------
 # 4. История портфеля (финансовый путь по неделям)
 # ---------------------------------------------------------
@@ -2525,48 +2316,6 @@ async def generate_consultation(user_id: int) -> str:
 
 
 # ----------------------------
-# Handlers - callback queries and commands
-# ----------------------------
-# @dp.callback_query(F.data == "menu_export")
-# async def cb_export(c: types.CallbackQuery):
-    # user_id = await get_or_create_user(c.from_user.id)
-    # rows = await db.fetch("SELECT id, amount, category, description, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at ASC", user_id)
-    # if not rows:
-        # await c.message.answer("Нет транзакций для экспорта.")
-        # await c.answer()
-        # return
-    # fd, path = tempfile.mkstemp(prefix=f"finances_{user_id}_", suffix=".csv")
-    # os.close(fd)
-    # with open(path, "w", encoding="utf-8", newline="") as f:
-        # import csv
-        # writer = csv.writer(f)
-        # writer.writerow(["id","amount","category","description","created_at"])
-        # for r in rows:
-            # writer.writerow([r["id"], r["amount"], r["category"] or "", r["description"] or "", r["created_at"].isoformat() if r["created_at"] else ""])
-    # await c.message.answer_document(types.FSInputFile(path), caption="Экспорт транзакций (CSV)")
-    # try:
-        # os.remove(path)
-    # except Exception:
-        # pass
-    # await c.answer()
-
-
-# @dp.callback_query(F.data == "stat_goals")
-# async def cb_menu_goals(c: types.CallbackQuery):
-    # user_id = await get_or_create_user(c.from_user.id)
-    # rows = await db.fetch("SELECT id, title, target, current, created_at FROM goals WHERE user_id=$1", user_id)
-    # if not rows:
-        # await c.message.answer("Целей нет. Нажми «🎯 Мои цели» и затем /goal, чтобы добавить.")
-    # else:
-        # text = "Твои цели:\n"
-        # for r in rows:
-            # pr = (r["current"] / r["target"] * 100) if r["target"] else 0
-            # text += f"- {r['title']}: {r['current']}/{r['target']} ₽ ({pr:.1f}%)\n"
-        # await c.message.answer(text)
-    # await c.answer()
-
-
-# ----------------------------
 # Заглушка на все неверные запросы
 # ----------------------------
 @dp.message(F.text & F.chat.type == "private")
@@ -2582,14 +2331,7 @@ async def catchall_private(m: types.Message, state: FSMContext):
 
     # Otherwise: глушилка
     user_id = await get_or_create_user(m.from_user.id)
-    user_id = await get_or_create_user(m.from_user.id)
     await m.answer("Неверная команда", reply_markup=await main_kb(user_id))
-    
-    # # Otherwise: pass to AI assistant (generate reply)
-    # user_id = await get_or_create_user(m.from_user.id)
-    # await m.answer("Анализирую... (AI ответ может занять пару секунд)")
-    # reply = await generate_ai_reply(user_id, m.text or "")
-    # await m.answer(reply)
 
 # ----------------------------
 # Job Еженедельный отчет
@@ -2613,21 +2355,30 @@ async def weekly_report_job():
             tg_id = u["tg_id"]
             txt = await build_weekly_report_for_user(user_id)
             await bot.send_message(tg_id, txt)
+            
             pie = await create_expense_donut(user_id)
-            goals_progress_bar = await create_goals_progress_bar(user_id)
-            net = await create_weekly_balance_chart(user_id)
             if pie:
                 await bot.send_photo(tg_id, types.FSInputFile(pie), caption="Расходы по категориям в текущем месяце")
-                try: os.remove(pie)
-                except: pass
-            if net:
-                await bot.send_photo(tg_id, types.FSInputFile(net), caption="Прогресс по целям")
-                try: os.remove(net)
-                except: pass
-            if net:
-                await bot.send_photo(tg_id, types.FSInputFile(net), caption="Активы и долги")
-                try: os.remove(net)
-                except: pass
+                try: 
+                    os.remove(pie)
+                except: 
+                    pass
+            
+            goals_img = await create_goals_progress_bar(user_id)
+            if goals_img:
+                await bot.send_photo(tg_id, types.FSInputFile(goals_img), caption="Прогресс по целям")
+                try: 
+                    os.remove(goals_img)
+                except: 
+                    pass
+            
+            portfolio_img = await create_portfolio_history_chart(user_id)
+            if portfolio_img:
+                await bot.send_photo(tg_id, types.FSInputFile(portfolio_img), caption="Динамика чистого капитала")
+                try: 
+                    os.remove(portfolio_img)
+                except: 
+                    pass
         except Exception as e:
             print("weekly_report error for user", u, e)
 
