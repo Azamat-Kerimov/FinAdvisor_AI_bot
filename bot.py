@@ -1779,100 +1779,91 @@ async def create_goals_progress_bar(user_id: int):
 # ---------------------------------------------------------
 async def create_portfolio_history_chart(user_id: int, weeks: int = 26):
     cutoff = now_moscow.replace(tzinfo=None) - timedelta(weeks=weeks)
-
-    # История активов
-    asset_rows = await db.fetch(
-        """
-        SELECT av.amount, av.created_at
-        FROM asset_values av
-        JOIN assets a ON a.id = av.asset_id
-        WHERE a.user_id = $1 AND av.created_at >= $2
-        ORDER BY av.created_at ASC
-        """,
-        user_id,
-        cutoff,
-    )
-
-    # История долгов
-    liab_rows = await db.fetch(
-        """
-        SELECT lv.amount, lv.created_at
-        FROM liability_values lv
-        JOIN liabilities l ON l.id = lv.liability_id
-        WHERE l.user_id = $1 AND lv.created_at >= $2
-        ORDER BY lv.created_at ASC
-        """,
-        user_id,
-        cutoff,
-    )
-
-    if not asset_rows and not liab_rows:
-        return None
-
-    asset_df = pd.DataFrame(
-        [
-            {"amount": float(r["amount"]), "created_at": r["created_at"].date()}
-            for r in asset_rows
-        ]
-    ) if asset_rows else pd.DataFrame(columns=["amount", "created_at"])
-
-    liab_df = pd.DataFrame(
-        [
-            {"amount": float(r["amount"]), "created_at": r["created_at"].date()}
-            for r in liab_rows
-        ]
-    ) if liab_rows else pd.DataFrame(columns=["amount", "created_at"])
-
-    # Дневные суммы активов и долгов
-    if not asset_df.empty:
-        asset_daily = (
-            asset_df.groupby("created_at")["amount"]
-            .sum()
-            .reset_index()
-            .sort_values("created_at")
-        )
-        asset_daily["created_at"] = pd.to_datetime(asset_daily["created_at"])
-        asset_weekly = (
-            asset_daily.set_index("created_at")
-            .resample("W")
-            .last()
-            .ffill()
-            .reset_index()
-        )
+    
+    # Генерируем список воскресений (концов недель) от cutoff до сегодня
+    current_date = cutoff.date()
+    end_date = now_moscow.replace(tzinfo=None).date()
+    sundays = []
+    
+    # Находим первое воскресенье после cutoff
+    days_until_sunday = (6 - current_date.weekday()) % 7
+    if days_until_sunday == 0 and current_date.weekday() == 6:
+        first_sunday = current_date
     else:
-        asset_weekly = pd.DataFrame(columns=["created_at", "amount"])
-
-    if not liab_df.empty:
-        liab_daily = (
-            liab_df.groupby("created_at")["amount"]
-            .sum()
-            .reset_index()
-            .sort_values("created_at")
-        )
-        liab_daily["created_at"] = pd.to_datetime(liab_daily["created_at"])
-        liab_weekly = (
-            liab_daily.set_index("created_at")
-            .resample("W")
-            .last()
-            .ffill()
-            .reset_index()
-        )
-    else:
-        liab_weekly = pd.DataFrame(columns=["created_at", "amount"])
-
-    if asset_weekly.empty and liab_weekly.empty:
+        first_sunday = current_date + timedelta(days=days_until_sunday)
+    
+    # Собираем все воскресенья до сегодня
+    sunday = first_sunday
+    while sunday <= end_date:
+        sundays.append(sunday)
+        sunday += timedelta(days=7)
+    
+    if not sundays:
         return None
-
-    weekly = pd.merge(
-        asset_weekly,
-        liab_weekly,
-        on="created_at",
-        how="outer",
-        suffixes=("_assets", "_liabs"),
-    ).sort_values("created_at")
-
-    weekly["amount_assets"] = weekly["amount_assets"].ffill().fillna(0)
-    weekly["amount_liabs"] = weekly["amount_liabs"].ffill().fillna(0)
+    
+    # Для каждого воскресенья получаем баланс активов и долгов на конец этого дня
+    weekly_data = []
+    
+    for sunday_date in sundays:
+        # Получаем все активы с последним значением на дату конца недели или раньше
+        asset_rows = await db.fetch(
+            """
+            SELECT a.id, COALESCE(v.amount, 0) as amount
+            FROM assets a
+            LEFT JOIN LATERAL (
+                SELECT amount
+                FROM asset_values
+                WHERE asset_id = a.id
+                  AND created_at::date <= $1
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) v ON TRUE
+            WHERE a.user_id = $2
+            """,
+            sunday_date,
+            user_id,
+        )
+        
+        # Получаем все долги с последним значением на дату конца недели или раньше
+        liab_rows = await db.fetch(
+            """
+            SELECT l.id, COALESCE(v.amount, 0) as amount
+            FROM liabilities l
+            LEFT JOIN LATERAL (
+                SELECT amount
+                FROM liability_values
+                WHERE liability_id = l.id
+                  AND created_at::date <= $1
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) v ON TRUE
+            WHERE l.user_id = $2
+            """,
+            sunday_date,
+            user_id,
+        )
+        
+        total_assets = sum(float(r["amount"]) for r in asset_rows if r["amount"] and float(r["amount"]) > 0)
+        total_liabs = sum(float(r["amount"]) for r in liab_rows if r["amount"] and float(r["amount"]) > 0)
+        
+        weekly_data.append({
+            "date": sunday_date,
+            "assets": total_assets,
+            "liabs": total_liabs,
+            "net": total_assets - total_liabs
+        })
+    
+    if not weekly_data:
+        return None
+    
+    # Создаем DataFrame
+    weekly = pd.DataFrame(weekly_data)
+    weekly["created_at"] = pd.to_datetime(weekly["date"])
+    
+    dates = weekly["created_at"]
+    assets_vals = weekly["assets"]
+    liabs_vals = weekly["liabs"]
+    net_vals = weekly["net"]
 
     dates = weekly["created_at"]
     assets_vals = weekly["amount_assets"]
