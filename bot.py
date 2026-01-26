@@ -2269,32 +2269,40 @@ async def menu_charts(c: types.CallbackQuery):
 @dp.callback_query(F.data == "menu_consult")
 async def cb_menu_consult(c: types.CallbackQuery):
     user_id = await get_or_create_user(c.from_user.id)
-    await c.message.answer("🤔 Анализирую ваши финансы... (это займет несколько секунд)")
+    await c.answer()  # Отвечаем на callback сразу
+    
+    # Отправляем сообщение о начале анализа
+    status_msg = await c.message.answer("🤔 Анализирую ваши финансы... (это займет несколько секунд)")
     await bot.send_chat_action(c.message.chat.id, "typing")
-    ans = await generate_consultation(user_id)
-    await c.message.answer(ans)
-    await c.answer()
+    
+    try:
+        ans = await generate_consultation(user_id)
+        # Редактируем сообщение с результатом
+        await status_msg.edit_text(ans)
+    except Exception as e:
+        print(f"Ошибка при генерации консультации: {e}")
+        await status_msg.edit_text(
+            f"❌ Произошла ошибка при генерации консультации.\n"
+            f"Попробуйте позже или обратитесь в поддержку.\n\n"
+            f"Ошибка: {str(e)}"
+        )
 
 @dp.message(Command("consult"))
 async def cmd_consult(m: types.Message):
     user_id = await get_or_create_user(m.from_user.id)
-    await m.answer("🤔 Анализирую ваши финансы... (это займет несколько секунд)")
+    status_msg = await m.answer("🤔 Анализирую ваши финансы... (это займет несколько секунд)")
     await bot.send_chat_action(m.chat.id, "typing")
-    ans = await generate_consultation(user_id)
-    await m.answer(ans)    
     
-    
-        
-    # --- График прогресса целей ---
-    img = await create_goals_progress_bar(user_id)
-    if img:
-        await c.message.answer_photo(types.FSInputFile(img))
-        try:
-            os.remove(img)
-        except Exception:
-            pass
-    
-    await c.answer()
+    try:
+        ans = await generate_consultation(user_id)
+        await status_msg.edit_text(ans)
+    except Exception as e:
+        print(f"Ошибка при генерации консультации: {e}")
+        await status_msg.edit_text(
+            f"❌ Произошла ошибка при генерации консультации.\n"
+            f"Попробуйте позже или обратитесь в поддержку.\n\n"
+            f"Ошибка: {str(e)}"
+        )
 
 
 
@@ -2363,29 +2371,37 @@ MAX_TX_FOR_ANALYSIS = 200
 
 async def analyze_user_finances_text(user_id: int) -> str:
     rows = await db.fetch("SELECT amount, category, description, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2", user_id, MAX_TX_FOR_ANALYSIS)
-    if not rows:
-        return "У пользователя нет транзакций."
-    s = "Последние транзакции:\n"
-    for r in rows:
-        ts = r["created_at"].strftime("%Y-%m-%d") if r["created_at"] else ""
-        s += f"- {r['amount']}₽ | {r.get('category') or '-'} | {r.get('description') or ''} | {ts}\n"
+    s = ""
+    if rows:
+        s = "Последние транзакции:\n"
+        for r in rows:
+            ts = r["created_at"].strftime("%Y-%m-%d") if r["created_at"] else ""
+            s += f"- {r['amount']}₽ | {r.get('category') or '-'} | {r.get('description') or ''} | {ts}\n"
+    else:
+        s = "У пользователя нет транзакций.\n"
+    
     goals = await db.fetch("SELECT title, target, current, created_at FROM goals WHERE user_id=$1", user_id)
     if goals:
         s += "\nЦели:\n"
         for g in goals:
             s += f"- {g.get('title','Цель')}: {g['current']}/{g['target']} ₽\n"
-    assets = await db.fetch("SELECT title, amount, type FROM assets WHERE user_id=$1", user_id)
+    
+    # Получаем активы с последними значениями
+    assets = await get_assets_list(user_id)
     if assets:
         total_assets = sum([a["amount"] for a in assets])
         s += f"\nАктивы (итого {total_assets}₽):\n"
         for a in assets:
             s += f"- {a['title']} ({a['type']}): {a['amount']}₽\n"
-    liabs = await db.fetch("SELECT title, amount, type FROM liabilities WHERE user_id=$1", user_id)
+    
+    # Получаем долги с последними значениями
+    liabs = await get_liabilities_list(user_id)
     if liabs:
         total_liabs = sum([l["amount"] for l in liabs])
         s += f"\nДолги (итого {total_liabs}₽):\n"
         for l in liabs:
             s += f"- {l['title']} ({l['type']}): {l['amount']}₽\n"
+    
     total_assets = sum([a["amount"] for a in assets]) if assets else 0
     total_liabs = sum([l["amount"] for l in liabs]) if liabs else 0
     s += f"\nЧистый капитал: {total_assets - total_liabs}₽\n"
@@ -2422,24 +2438,51 @@ async def generate_ai_reply(user_id: int, user_message: str) -> str:
 # Short actionable step-by-step recommendations
 
 async def generate_consultation(user_id: int) -> str:
-    finance_snapshot = await analyze_user_finances_text(user_id)
-    system_prompt = (
-        "Ты — финансовый консультант. На основе данных пользователя (транзакции, цели, активы, долги) "
-        "составь краткий практический план из 4 шагов: что сделать в ближайший месяц, что в ближайшие 6 месяцев, "
-        "как улучшить бюджет и какие шаги для резервного фонда. Формат: нумерованный список."
-    )
-    messages = [
-        {"role":"system","content":system_prompt},
-        {"role":"user","content":finance_snapshot}
-    ]
     try:
+        finance_snapshot = await analyze_user_finances_text(user_id)
+        
+        # Если нет данных, возвращаем базовую консультацию
+        if not finance_snapshot or "нет транзакций" in finance_snapshot.lower() and "нет активов" in finance_snapshot.lower():
+            return (
+                "📊 *Ваша финансовая консультация*\n\n"
+                "У вас пока нет финансовых данных для анализа.\n\n"
+                "Рекомендации для начала:\n"
+                "1. Начните вести учет доходов и расходов\n"
+                "2. Добавьте информацию о ваших активах\n"
+                "3. Установите финансовые цели\n"
+                "4. Регулярно обновляйте данные\n\n"
+                "После добавления данных вы получите персональные рекомендации!"
+            )
+        
+        system_prompt = (
+            "Ты — финансовый консультант. На основе данных пользователя (транзакции, цели, активы, долги) "
+            "составь краткий практический план из 4 шагов: что сделать в ближайший месяц, что в ближайшие 6 месяцев, "
+            "как улучшить бюджет и какие шаги для резервного фонда. Формат: нумерованный список. "
+            "Отвечай на русском языке, будь конкретным и практичным."
+        )
+        messages = [
+            {"role":"system","content":system_prompt},
+            {"role":"user","content":finance_snapshot}
+        ]
+        
         answer = await gigachat_request(messages)
+        
+        if not answer or len(answer.strip()) == 0:
+            return "Извините, не удалось сгенерировать консультацию. Попробуйте позже."
+        
+        await save_message(user_id, "assistant", f"Consultation generated")
+        await save_ai_cache(user_id, "CONSULT_REQUEST", finance_snapshot, answer)
+        return answer
+        
     except Exception as e:
-        print("consult gigachat error:", e)
-        return "Извините, AI временно недоступен. Уже чиним."
-    await save_message(user_id, "assistant", f"Consultation generated")
-    await save_ai_cache(user_id, "CONSULT_REQUEST", finance_snapshot, answer)
-    return answer
+        print(f"Ошибка при генерации консультации: {e}")
+        import traceback
+        traceback.print_exc()
+        return (
+            "❌ *Ошибка при генерации консультации*\n\n"
+            "Извините, произошла техническая ошибка.\n"
+            "Попробуйте позже или обратитесь в поддержку."
+        )
 
 
 # ----------------------------
