@@ -1777,7 +1777,7 @@ async def create_goals_progress_bar(user_id: int):
 # ---------------------------------------------------------
 # 4. История портфеля (финансовый путь по неделям)
 # ---------------------------------------------------------
-async def create_portfolio_history_chart(user_id: int, weeks: int = 26):
+async def create_portfolio_history_chart(user_id: int, weeks: int = 12):
     cutoff = now_moscow.replace(tzinfo=None) - timedelta(weeks=weeks)
     
     # Генерируем список воскресений (концов недель) от cutoff до сегодня
@@ -1915,17 +1915,24 @@ async def create_portfolio_history_chart(user_id: int, weeks: int = 26):
     ax.set_title("Финансовый путь (по неделям)")
     ax.grid(True, axis="y", linestyle="--", alpha=0.3, zorder=1)
 
-    # Делимитеры по Y чуть с запасом
-    min_y = min(
-        -liabs_vals.min() if len(liabs_vals) > 0 else 0,
-        net_vals.min() if len(net_vals) > 0 else 0,
+    # Делимитеры по Y чуть с запасом - учитываем активы сверху и долги снизу
+    max_positive = max(
+        assets_vals.max() if len(assets_vals) > 0 and assets_vals.max() > 0 else 0,
+        net_vals.max() if len(net_vals) > 0 and net_vals.max() > 0 else 0,
     )
-    max_y = max(
-        assets_vals.max() if len(assets_vals) > 0 else 0,
-        net_vals.max() if len(net_vals) > 0 else 0,
+    max_negative = max(
+        liabs_vals.max() if len(liabs_vals) > 0 and liabs_vals.max() > 0 else 0,
+        abs(net_vals.min()) if len(net_vals) > 0 and net_vals.min() < 0 else 0,
     )
-    margin = (max_y - min_y) * 0.1 if max_y != min_y else 1
-    ax.set_ylim(min_y - margin, max_y + margin)
+    
+    # Устанавливаем диапазон от -max_negative до max_positive с запасом
+    total_range = max_positive + max_negative
+    margin = total_range * 0.1 if total_range > 0 else max(max_positive, max_negative) * 0.1 if max(max_positive, max_negative) > 0 else 1
+    
+    min_y = -max_negative - margin
+    max_y = max_positive + margin
+    
+    ax.set_ylim(min_y, max_y)
 
     # Формат чисел как в других отчетах
     ax.yaxis.set_major_formatter(
