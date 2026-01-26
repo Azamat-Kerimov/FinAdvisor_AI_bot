@@ -292,7 +292,6 @@ async def main_kb(user_id: int = None):
          InlineKeyboardButton(text="🎯 Мои цели", callback_data="menu_goals")],
         [InlineKeyboardButton(text="💼 Капитал", callback_data="menu_capital"),
          InlineKeyboardButton(text="📈 Отчеты", callback_data="menu_charts")],
-        [InlineKeyboardButton(text="📜 История транзакций", callback_data="menu_tx_history")],
         [InlineKeyboardButton(text="💡 Личная консультация", callback_data="menu_consult")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -304,7 +303,6 @@ def main():
          InlineKeyboardButton(text="🎯 Мои цели", callback_data="menu_goals")],
         [InlineKeyboardButton(text="💼 Капитал", callback_data="menu_capital"),
          InlineKeyboardButton(text="📈 Отчеты", callback_data="menu_charts")],
-        [InlineKeyboardButton(text="📜 История транзакций", callback_data="menu_tx_history")],
         [InlineKeyboardButton(text="💡 Личная консультация", callback_data="menu_consult")]
     ])
 
@@ -551,10 +549,8 @@ async def show_transactions_history(c: types.CallbackQuery, user_id: int, page: 
         emoji = "💰" if r["amount"] >= 0 else "💸"
         date = r["created_at"].strftime("%d.%m.%Y %H:%M")
         cat = r["category"] or "—"
-        desc = f"\n   _{r['description']}_" if r['description'] else ""
-        text += f"{emoji} {format_amount(r['amount'])} | {cat}{desc}\n"
-        text += f"   📅 {date}\n"
-        text += f"   [ID: {r['id']}]\n\n"
+        desc = f" — {r['description']}" if r['description'] else ""
+        text += f"{emoji} {format_amount(r['amount'])} | {cat}{desc} | 📅 {date}\n"
     
     total_pages = (total + 9) // 10 if total > 0 else 1
     kb_buttons = []
@@ -562,10 +558,19 @@ async def show_transactions_history(c: types.CallbackQuery, user_id: int, page: 
     # Кнопки для каждой транзакции
     for r in rows[:5]:  # Показываем кнопки только для первых 5 на странице
         tx_id = r["id"]
-        tx_preview = f"{format_amount(r['amount'])[:15]}..." if len(format_amount(r['amount'])) > 15 else format_amount(r['amount'])
+        date_short = r["created_at"].strftime("%d.%m")
+        cat = r["category"] or "—"
+        # Сокращаем категорию если слишком длинная
+        cat_short = cat[:12] + "..." if len(cat) > 15 else cat
+        amount_str = format_amount(r['amount'])
+        # Формируем текст кнопки: сумма | категория | дата
+        button_text = f"✏️ {amount_str} | {cat_short} | {date_short}"
+        # Ограничиваем длину текста кнопки (Telegram ограничение ~64 символа)
+        if len(button_text) > 60:
+            button_text = f"✏️ {amount_str} | {cat_short[:10]} | {date_short}"
         kb_buttons.append([
             InlineKeyboardButton(
-                text=f"✏️ {tx_preview}",
+                text=button_text,
                 callback_data=f"tx_edit:{tx_id}"
             )
         ])
@@ -2455,10 +2460,19 @@ async def generate_consultation(user_id: int) -> str:
             )
         
         system_prompt = (
-            "Ты — финансовый консультант. На основе данных пользователя (транзакции, цели, активы, долги) "
-            "составь краткий практический план из 4 шагов: что сделать в ближайший месяц, что в ближайшие 6 месяцев, "
-            "как улучшить бюджет и какие шаги для резервного фонда. Формат: нумерованный список. "
-            "Отвечай на русском языке, будь конкретным и практичным."
+            "Ты — финансовый консультант. Проанализируй данные пользователя и составь персональные рекомендации.\n\n"
+            "ОБЯЗАТЕЛЬНО учитывай:\n"
+            "1. ТРАНЗАКЦИИ - проанализируй доходы и расходы, найди паттерны, определи категории с наибольшими тратами\n"
+            "2. ЦЕЛИ - учти финансовые цели пользователя и их прогресс\n"
+            "3. АКТИВЫ - текущее состояние капитала\n"
+            "4. ДОЛГИ - обязательства и их влияние на бюджет\n\n"
+            "Составь краткий практический план из 4 шагов:\n"
+            "- Что сделать в ближайший месяц (на основе текущих транзакций и целей)\n"
+            "- Что в ближайшие 6 месяцев (с учетом долгосрочных целей)\n"
+            "- Как улучшить бюджет (на основе анализа транзакций)\n"
+            "- Какие шаги для резервного фонда (с учетом активов и долгов)\n\n"
+            "Формат: нумерованный список. Отвечай на русском языке, будь конкретным и практичным. "
+            "Ссылайся на конкретные данные из транзакций и целей."
         )
         messages = [
             {"role":"system","content":system_prompt},
