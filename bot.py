@@ -390,7 +390,7 @@ async def choose_income(c: types.CallbackQuery, state: FSMContext):
     await state.update_data(tx_type="income")
     kb = build_categories_kb(income_emojis)   # ← передаем словарь
     await state.set_state(TXStates.choose_category)
-    await c.message.answer(
+    await c.message.edit_text(
         "Шаг 2 из 4.\nВыберите категорию дохода:",
         reply_markup=kb
     )
@@ -401,7 +401,7 @@ async def choose_expense(c: types.CallbackQuery, state: FSMContext):
     await state.update_data(tx_type="expense")
     kb = build_categories_kb(expense_emojis)
     await state.set_state(TXStates.choose_category)
-    await c.message.answer(
+    await c.message.edit_text(
         "Шаг 2 из 4.\nВыберите категорию расхода:",
         reply_markup=kb
     )
@@ -414,7 +414,7 @@ async def choose_category(c: types.CallbackQuery, state: FSMContext):
     await state.update_data(category=category)
 
     await state.set_state(TXStates.amount)
-    await c.message.answer(
+    await c.message.edit_text(
         "Шаг 3 из 4.\n"
         "Введите сумму (например: 1500 или 1500.50):",
         reply_markup=cancel_kb
@@ -2053,7 +2053,10 @@ async def menu_charts(c: types.CallbackQuery):
         )
         os.remove(img_hist)
     else:
-        await c.message.answer(cap_text, parse_mode="Markdown")
+        await c.message.answer(cap_text, parse_mode="Markdown", reply_markup=await main_kb(user_id))
+    
+    # После всех отчетов показываем главное меню
+    await c.message.answer("📊 Отчет сгенерирован", reply_markup=await main_kb(user_id))
 
     await c.answer()
 # -----------------------------------------------------------------------------------------------------------------------
@@ -2073,8 +2076,9 @@ async def cb_menu_consult(c: types.CallbackQuery):
     
     try:
         ans = await generate_consultation(user_id)
-        # Редактируем сообщение с результатом
-        await status_msg.edit_text(ans, parse_mode="Markdown")
+        # Редактируем сообщение с результатом и добавляем главное меню
+        user_id = await get_or_create_user(c.from_user.id)
+        await status_msg.edit_text(ans, parse_mode="Markdown", reply_markup=await main_kb(user_id))
     except Exception as e:
         print(f"Ошибка при генерации консультации: {e}")
         await status_msg.edit_text(
@@ -2091,7 +2095,7 @@ async def cmd_consult(m: types.Message):
     
     try:
         ans = await generate_consultation(user_id)
-        await status_msg.edit_text(ans, parse_mode="Markdown")
+        await status_msg.edit_text(ans, parse_mode="Markdown", reply_markup=await main_kb(user_id))
     except Exception as e:
         print(f"Ошибка при генерации консультации: {e}")
         await status_msg.edit_text(
