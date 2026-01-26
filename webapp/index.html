@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>FinAdvisor</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Главное меню -->
+        <div id="main-menu" class="screen active">
+            <div class="header">
+                <h1>💰 FinAdvisor</h1>
+                <p class="subtitle">Ваш финансовый помощник</p>
+            </div>
+            
+            <div class="stats-card" id="stats-card">
+                <div class="stats-loading">Загрузка статистики...</div>
+            </div>
+            
+            <div class="menu-grid">
+                <button class="menu-btn" onclick="showScreen('transactions')">
+                    <span class="icon">➕</span>
+                    <span>Транзакции</span>
+                </button>
+                <button class="menu-btn" onclick="showScreen('goals')">
+                    <span class="icon">🎯</span>
+                    <span>Мои цели</span>
+                </button>
+                <button class="menu-btn" onclick="showScreen('capital')">
+                    <span class="icon">💼</span>
+                    <span>Капитал</span>
+                </button>
+                <button class="menu-btn" onclick="showScreen('reports')">
+                    <span class="icon">📈</span>
+                    <span>Отчеты</span>
+                </button>
+                <button class="menu-btn" onclick="showScreen('consultation')">
+                    <span class="icon">💡</span>
+                    <span>Консультация</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Транзакции -->
+        <div id="transactions" class="screen">
+            <div class="header">
+                <button class="back-btn" onclick="showScreen('main-menu')">← Назад</button>
+                <h2>Транзакции</h2>
+            </div>
+            
+            <div class="tabs">
+                <button class="tab active" onclick="switchTab('income')">Доходы</button>
+                <button class="tab" onclick="switchTab('expense')">Расходы</button>
+            </div>
+            
+            <div id="transaction-form" class="form">
+                <select id="category-select" class="input"></select>
+                <input type="number" id="amount-input" class="input" placeholder="Сумма" step="0.01">
+                <input type="text" id="description-input" class="input" placeholder="Описание (необязательно)">
+                <button class="btn-primary" onclick="addTransaction()">Добавить</button>
+            </div>
+            
+            <div id="transactions-list" class="list"></div>
+        </div>
+
+        <!-- Цели -->
+        <div id="goals" class="screen">
+            <div class="header">
+                <button class="back-btn" onclick="showScreen('main-menu')">← Назад</button>
+                <h2>Мои цели</h2>
+            </div>
+            
+            <button class="btn-primary" onclick="showAddGoalForm()">➕ Новая цель</button>
+            
+            <div id="add-goal-form" class="form" style="display: none;">
+                <input type="text" id="goal-title" class="input" placeholder="Название цели">
+                <input type="number" id="goal-target" class="input" placeholder="Целевая сумма" step="0.01">
+                <input type="text" id="goal-description" class="input" placeholder="Описание (необязательно)">
+                <button class="btn-primary" onclick="addGoal()">Создать</button>
+                <button class="btn-secondary" onclick="hideAddGoalForm()">Отмена</button>
+            </div>
+            
+            <div id="goals-list" class="list"></div>
+        </div>
+
+        <!-- Капитал -->
+        <div id="capital" class="screen">
+            <div class="header">
+                <button class="back-btn" onclick="showScreen('main-menu')">← Назад</button>
+                <h2>Капитал</h2>
+            </div>
+            
+            <div class="tabs">
+                <button class="tab active" onclick="switchCapitalTab('assets')">Активы</button>
+                <button class="tab" onclick="switchCapitalTab('liabilities')">Долги</button>
+            </div>
+            
+            <div id="capital-content"></div>
+        </div>
+
+        <!-- Отчеты -->
+        <div id="reports" class="screen">
+            <div class="header">
+                <button class="back-btn" onclick="showScreen('main-menu')">← Назад</button>
+                <h2>Отчеты</h2>
+            </div>
+            
+            <div id="reports-content" class="content">
+                <p>Генерация отчетов...</p>
+            </div>
+        </div>
+
+        <!-- Консультация -->
+        <div id="consultation" class="screen">
+            <div class="header">
+                <button class="back-btn" onclick="showScreen('main-menu')">← Назад</button>
+                <h2>Личная консультация</h2>
+            </div>
+            
+            <div id="consultation-content" class="content">
+                <p>Анализирую ваши финансы...</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

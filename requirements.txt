@@ -6,3 +6,5 @@ matplotlib
 apscheduler
 numpy
 pandas
+fastapi
+uvicorn

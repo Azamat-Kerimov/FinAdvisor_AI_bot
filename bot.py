@@ -277,6 +277,7 @@ async def cmd_start(m: types.Message):
 
 async def main_kb(user_id: int = None):
     """Главное меню с последними транзакциями"""
+    web_app_url = os.getenv("WEB_APP_URL", "https://finadvisor-ai.ru")
     kb = [
         [InlineKeyboardButton(text="➕ Транзакция", callback_data="menu_add_tx"),
          InlineKeyboardButton(text="🎯 Мои цели", callback_data="menu_goals")],
