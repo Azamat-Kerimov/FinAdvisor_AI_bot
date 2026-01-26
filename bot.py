@@ -57,6 +57,7 @@ G_CLIENT_SECRET = os.getenv("GIGACHAT_CLIENT_SECRET")
 G_SCOPE = os.getenv("GIGACHAT_SCOPE")
 G_AUTH_URL = os.getenv("GIGACHAT_AUTH_URL")
 G_API_URL = os.getenv("GIGACHAT_API_URL")
+GIGACHAT_MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat:2.0.28.2")
 
 
 # ----------------------------
@@ -134,6 +135,55 @@ now = datetime.now()
 # Формат чисел
 def format_amount(amount: float) -> str:
     return f"{int(amount):,}".replace(",", " ") + " ₽"
+
+# Получить последние транзакции
+async def get_recent_transactions(user_id: int, limit: int = 10):
+    """Получить последние транзакции пользователя"""
+    rows = await db.fetch(
+        """
+        SELECT id, amount, category, description, created_at
+        FROM transactions
+        WHERE user_id=$1
+        ORDER BY created_at DESC
+        LIMIT $2
+        """,
+        user_id, limit
+    )
+    return rows
+
+# Форматирование истории транзакций для отображения
+async def format_recent_transactions_text(user_id: int, limit: int = 10) -> str:
+    """Форматирует последние транзакции в текст"""
+    rows = await get_recent_transactions(user_id, limit)
+    if not rows:
+        return "📜 *История транзакций:*\nНет транзакций.\n"
+    
+    text = "📜 *Последние транзакции:*\n\n"
+    for r in rows:
+        emoji = "💰" if r["amount"] >= 0 else "💸"
+        date = r["created_at"].strftime("%d.%m.%Y")
+        cat = r["category"] or "—"
+        desc = f" — {r['description']}" if r['description'] else ""
+        text += f"{emoji} {format_amount(r['amount'])} | {cat}{desc}\n"
+        text += f"   📅 {date}\n\n"
+    return text
+
+# Получить страницу транзакций для пагинации
+async def get_transactions_page(user_id: int, page: int = 0, per_page: int = 10):
+    """Получить страницу транзакций с пагинацией"""
+    offset = page * per_page
+    rows = await db.fetch(
+        """
+        SELECT id, amount, category, description, created_at
+        FROM transactions
+        WHERE user_id=$1
+        ORDER BY created_at DESC
+        LIMIT $2 OFFSET $3
+        """,
+        user_id, per_page, offset
+    )
+    total = await db.fetchval("SELECT COUNT(*) FROM transactions WHERE user_id=$1", user_id)
+    return rows, total
 
 # Клавиатура отмены
 cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -218,6 +268,10 @@ async def cmd_start(m: types.Message):
     u = await db.fetchrow("SELECT id FROM users WHERE tg_id=$1", m.from_user.id)
     if not u:
         await db.execute("INSERT INTO users (tg_id, username, created_at) VALUES ($1,$2,NOW())", m.from_user.id, m.from_user.username)
+    
+    user_id = await get_or_create_user(m.from_user.id)
+    recent_tx_text = await format_recent_transactions_text(user_id, limit=5)
+    
     await m.answer(
         "Привет! Я FinAdvisor — твой персональный финансовый помощник.\n"
         "Вот что я могу:\n"
@@ -225,47 +279,68 @@ async def cmd_start(m: types.Message):
         "• Показывать статистику\n"
         "• Счёт активов и долгов\n"
         "• Вести цели\n"
-        "• Давать рекомендации\n"
-        "Используй меню ниже.",
-        reply_markup=main()
+        "• Давать рекомендации\n\n"
+        + recent_tx_text,
+        parse_mode="Markdown",
+        reply_markup=await main_kb(user_id)
     )
 
+async def main_kb(user_id: int = None):
+    """Главное меню с последними транзакциями"""
+    kb = [
+        [InlineKeyboardButton(text="➕ Транзакция", callback_data="menu_add_tx"),
+         InlineKeyboardButton(text="🎯 Мои цели", callback_data="menu_goals")],
+        [InlineKeyboardButton(text="💼 Капитал", callback_data="menu_capital"),
+         InlineKeyboardButton(text="📈 Отчеты", callback_data="menu_charts")],
+        [InlineKeyboardButton(text="📜 История транзакций", callback_data="menu_tx_history")],
+        [InlineKeyboardButton(text="💡 Личная консультация", callback_data="menu_consult")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
 def main():
+    """Простое главное меню (для обратной совместимости)"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Транзакция", callback_data="menu_add_tx"),
          InlineKeyboardButton(text="🎯 Мои цели", callback_data="menu_goals")],
         [InlineKeyboardButton(text="💼 Капитал", callback_data="menu_capital"),
          InlineKeyboardButton(text="📈 Отчеты", callback_data="menu_charts")],
-        # [InlineKeyboardButton(text="📊 Статистика", callback_data="menu_stats"),
-         # InlineKeyboardButton(text="📈 График", callback_data="menu_chart")],
+        [InlineKeyboardButton(text="📜 История транзакций", callback_data="menu_tx_history")],
         [InlineKeyboardButton(text="💡 Личная консультация", callback_data="menu_consult")]
-        # [InlineKeyboardButton(text="📁 Экспорт CSV", callback_data="menu_export"),
-        # InlineKeyboardButton(text="📁 Импорт ", callback_data="menu_import")]
     ])
 
 #Вывод главного меню 
 @dp.callback_query(F.data == "cancel_fsm")
 async def cb_cancel_fsm(c: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await c.message.answer("Отменено.", reply_markup=main())
+    user_id = await get_or_create_user(c.from_user.id)
+    await c.message.answer("Отменено.", reply_markup=await main_kb(user_id))
     await c.answer()
 
 # Команда главного меню
 @dp.message(Command("main"))
 async def cmd_help(message: types.Message):
-    await message.answer("Главное меню:", reply_markup=main())
+    user_id = await get_or_create_user(message.from_user.id)
+    recent_tx_text = await format_recent_transactions_text(user_id, limit=5)
+    await message.answer(
+        "Главное меню:\n\n" + recent_tx_text,
+        parse_mode="Markdown",
+        reply_markup=await main_kb(user_id)
+    )
 
 # Команда Help
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
+    user_id = await get_or_create_user(message.from_user.id)
     await message.answer(
-    "Вот что я могу:\n"
-    "• Добавлять доходы/расходы\n"
-    "• Показывать статистику\n"
-    "• Счёт активов и долгов\n"
-    "• Вести цели\n"
-    "• Давать рекомендации\n"
-    "Используй меню ниже:", reply_markup=main())
+        "Вот что я могу:\n"
+        "• Добавлять доходы/расходы\n"
+        "• Показывать статистику\n"
+        "• Счёт активов и долгов\n"
+        "• Вести цели\n"
+        "• Давать рекомендации\n"
+        "Используй меню ниже:",
+        reply_markup=await main_kb(user_id)
+    )
     
 # -----------------------------------------------------------------------------------------------------------------------
 # ➕ Добавить транзакцию
@@ -294,19 +369,31 @@ def build_categories_kb(categories: dict):
     )
 
 # Выбор типа транзакции
-kb_tx_type = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="💰 Доход", callback_data="tx_type_income")],
-    [InlineKeyboardButton(text="💸 Расход", callback_data="tx_type_expense")],
-    [InlineKeyboardButton(text="↩️ Назад", callback_data="cancel_fsm")]
-])
+def build_tx_type_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Доход", callback_data="tx_type_income")],
+        [InlineKeyboardButton(text="💸 Расход", callback_data="tx_type_expense")],
+        [InlineKeyboardButton(text="📜 История транзакций", callback_data="menu_tx_history")],
+        [InlineKeyboardButton(text="↩️ Назад", callback_data="cancel_fsm")]
+    ])
 
 # handler на “Добавить транзакцию”
 @dp.callback_query(F.data == "menu_add_tx")
 async def cb_menu_add_tx(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(TXStates.choose_type)
+    user_id = await get_or_create_user(c.from_user.id)
+    
+    # Показываем последние транзакции перед выбором типа
+    recent_tx_text = await format_recent_transactions_text(user_id, limit=10)
+    
     await c.message.answer(
-    "Шаг 1 из 4.\n"
-    "Выберите тип транзакции:", reply_markup=kb_tx_type)
+        recent_tx_text + "\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Шаг 1 из 4.\n"
+        "Выберите тип транзакции:",
+        parse_mode="Markdown",
+        reply_markup=build_tx_type_kb()
+    )
     await c.answer()
 
 # Обработчик выбора типа (Доход / Расход)
@@ -340,8 +427,10 @@ async def choose_category(c: types.CallbackQuery, state: FSMContext):
 
     await state.set_state(TXStates.amount)
     await c.message.answer(
-    "Шаг 3 из 4.\n"
-    "Введите сумму:", reply_markup=cancel_kb)
+        "Шаг 3 из 4.\n"
+        "Введите сумму (например: 1500 или 1500.50):",
+        reply_markup=cancel_kb
+    )
     await c.answer()
 
 # Обработчик ввода суммы транзакции
@@ -350,13 +439,25 @@ async def tx_enter_amount(msg: types.Message, state: FSMContext):
     text = msg.text.strip()
     if text.lower() in ("↩️ Назад", "cancel_fsm"):
         await state.clear()
-        await msg.answer("Отменено.", reply_markup=main())
+        user_id = await get_or_create_user(msg.from_user.id)
+        await msg.answer("Отменено.", reply_markup=await main_kb(user_id))
         return
 
     try:
         amount = float(text.replace(",", "."))
+        if amount <= 0:
+            await msg.answer(
+                "❌ Сумма должна быть положительным числом.\n"
+                "Пример: 1500 или 1500.50",
+                reply_markup=cancel_kb
+            )
+            return
     except ValueError:
-        await msg.answer("Введите корректное число, например: 1500 или -2500")
+        await msg.answer(
+            "❌ Неверный формат суммы.\n"
+            "Введите корректное число (например: 1500 или 1500.50):",
+            reply_markup=cancel_kb
+        )
         return
 
     data = await state.get_data()
@@ -385,7 +486,8 @@ async def tx_enter_description(msg: types.Message, state: FSMContext):
     text = msg.text.strip()
     if text.lower() in ("↩️ Назад", "cancel_fsm"):
         await state.clear()
-        await msg.answer("Отменено.", reply_markup=main())
+        user_id = await get_or_create_user(msg.from_user.id)
+        await msg.answer("Отменено.", reply_markup=await main_kb(user_id))
         return
 
     description = None if text == "-" else text
@@ -409,10 +511,252 @@ async def tx_enter_description(msg: types.Message, state: FSMContext):
         f"✅ Транзакция добавлена:\n"
         f"{emoji or ''} {cat}: {format_amount(data['amount'])}\n"
         f"{'Описание: ' + description if description else ''}",
-        reply_markup=main()
+        reply_markup=await main_kb(user_id)
     )
 
     await state.clear()
+
+# -----------------------------------------------------------------------------------------------------------------------
+# 📜 История транзакций
+# -----------------------------------------------------------------------------------------------------------------------
+class TXEditStates(StatesGroup):
+    edit_amount = State()
+    edit_category = State()
+    edit_description = State()
+
+# Меню истории транзакций
+@dp.callback_query(F.data == "menu_tx_history")
+async def menu_tx_history(c: types.CallbackQuery):
+    user_id = await get_or_create_user(c.from_user.id)
+    await show_transactions_history(c, user_id, 0)
+
+# Показать историю транзакций с пагинацией
+@dp.callback_query(F.data.startswith("tx_history:"))
+async def show_transactions_history_cb(c: types.CallbackQuery):
+    page = int(c.data.split(":")[1])
+    user_id = await get_or_create_user(c.from_user.id)
+    await show_transactions_history(c, user_id, page)
+
+async def show_transactions_history(c: types.CallbackQuery, user_id: int, page: int = 0):
+    """Показать страницу истории транзакций"""
+    rows, total = await get_transactions_page(user_id, page, per_page=10)
+    
+    if not rows:
+        await c.message.edit_text("📜 История транзакций пуста.", reply_markup=await main_kb(user_id))
+        await c.answer()
+        return
+    
+    text = "📜 *История транзакций*\n\n"
+    for r in rows:
+        emoji = "💰" if r["amount"] >= 0 else "💸"
+        date = r["created_at"].strftime("%d.%m.%Y %H:%M")
+        cat = r["category"] or "—"
+        desc = f"\n   _{r['description']}_" if r['description'] else ""
+        text += f"{emoji} {format_amount(r['amount'])} | {cat}{desc}\n"
+        text += f"   📅 {date}\n"
+        text += f"   [ID: {r['id']}]\n\n"
+    
+    total_pages = (total + 9) // 10 if total > 0 else 1
+    kb_buttons = []
+    
+    # Кнопки для каждой транзакции
+    for r in rows[:5]:  # Показываем кнопки только для первых 5 на странице
+        tx_id = r["id"]
+        tx_preview = f"{format_amount(r['amount'])[:15]}..." if len(format_amount(r['amount'])) > 15 else format_amount(r['amount'])
+        kb_buttons.append([
+            InlineKeyboardButton(
+                text=f"✏️ {tx_preview}",
+                callback_data=f"tx_edit:{tx_id}"
+            )
+        ])
+    
+    # Навигация
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"tx_history:{page-1}"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"tx_history:{page+1}"))
+    if nav_buttons:
+        kb_buttons.append(nav_buttons)
+    
+    kb_buttons.append([InlineKeyboardButton(text="↩️ Главное меню", callback_data="cancel_fsm")])
+    
+    text += f"*Страница {page+1} из {total_pages}*"
+    await c.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+    )
+    await c.answer()
+
+# Редактирование транзакции
+@dp.callback_query(F.data.startswith("tx_edit:"))
+async def tx_edit_menu(c: types.CallbackQuery):
+    tx_id = int(c.data.split(":")[1])
+    row = await db.fetchrow(
+        "SELECT id, amount, category, description, created_at FROM transactions WHERE id=$1",
+        tx_id
+    )
+    
+    if not row:
+        await c.answer("Транзакция не найдена")
+        return
+    
+    emoji = "💰" if row["amount"] >= 0 else "💸"
+    date = row["created_at"].strftime("%d.%m.%Y %H:%M")
+    text = (
+        f"✏️ *Редактирование транзакции*\n\n"
+        f"{emoji} {format_amount(row['amount'])}\n"
+        f"Категория: {row['category'] or '—'}\n"
+        f"Описание: {row['description'] or '—'}\n"
+        f"Дата: {date}\n\n"
+        f"Что хотите изменить?"
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Изменить сумму", callback_data=f"tx_edit_amount:{tx_id}")],
+        [InlineKeyboardButton(text="📁 Изменить категорию", callback_data=f"tx_edit_cat:{tx_id}")],
+        [InlineKeyboardButton(text="📝 Изменить описание", callback_data=f"tx_edit_desc:{tx_id}")],
+        [InlineKeyboardButton(text="🗑 Удалить транзакцию", callback_data=f"tx_delete:{tx_id}")],
+        [InlineKeyboardButton(text="↩️ Назад к истории", callback_data="menu_tx_history")]
+    ])
+    
+    await c.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    await c.answer()
+
+# Удаление транзакции с подтверждением
+@dp.callback_query(F.data.startswith("tx_delete:"))
+async def tx_delete(c: types.CallbackQuery):
+    tx_id = int(c.data.split(":")[1])
+    row = await db.fetchrow(
+        "SELECT amount, category, description FROM transactions WHERE id=$1",
+        tx_id
+    )
+    
+    if not row:
+        await c.answer("Транзакция не найдена")
+        return
+    
+    emoji = "💰" if row["amount"] >= 0 else "💸"
+    text = (
+        f"⚠️ *Подтверждение удаления*\n\n"
+        f"Вы уверены, что хотите удалить транзакцию:\n"
+        f"{emoji} {format_amount(row['amount'])} | {row['category'] or '—'}\n"
+        f"{'Описание: ' + row['description'] if row['description'] else ''}\n\n"
+        f"Это действие нельзя отменить."
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"tx_delete_confirm:{tx_id}")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"tx_edit:{tx_id}")]
+    ])
+    
+    await c.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    await c.answer()
+
+@dp.callback_query(F.data.startswith("tx_delete_confirm:"))
+async def tx_delete_confirm(c: types.CallbackQuery):
+    tx_id = int(c.data.split(":")[1])
+    await db.execute("DELETE FROM transactions WHERE id=$1", tx_id)
+    await c.message.edit_text("✅ Транзакция удалена.", reply_markup=await main_kb(await get_or_create_user(c.from_user.id)))
+    await c.answer()
+
+# Изменение суммы транзакции
+@dp.callback_query(F.data.startswith("tx_edit_amount:"))
+async def tx_edit_amount_start(c: types.CallbackQuery, state: FSMContext):
+    tx_id = int(c.data.split(":")[1])
+    await state.update_data(tx_id=tx_id)
+    await state.set_state(TXEditStates.edit_amount)
+    await c.message.answer(
+        "Введите новую сумму (например: 1500 или 1500.50):",
+        reply_markup=cancel_kb
+    )
+    await c.answer()
+
+@dp.message(TXEditStates.edit_amount)
+async def tx_edit_amount_finish(msg: types.Message, state: FSMContext):
+    try:
+        amount = float(msg.text.replace(",", "."))
+    except ValueError:
+        await msg.answer(
+            "❌ Неверный формат суммы.\n"
+            "Введите корректное число (например: 1500 или 1500.50):",
+            reply_markup=cancel_kb
+        )
+        return
+    
+    data = await state.get_data()
+    tx_id = data["tx_id"]
+    
+    # Определяем знак на основе текущей транзакции
+    current = await db.fetchrow("SELECT amount FROM transactions WHERE id=$1", tx_id)
+    if current:
+        # Сохраняем знак
+        if current["amount"] < 0:
+            amount = -abs(amount)
+        else:
+            amount = abs(amount)
+    
+    await db.execute("UPDATE transactions SET amount=$1 WHERE id=$2", amount, tx_id)
+    await msg.answer("✅ Сумма обновлена.", reply_markup=await main_kb(await get_or_create_user(msg.from_user.id)))
+    await state.clear()
+
+# Изменение описания транзакции
+@dp.callback_query(F.data.startswith("tx_edit_desc:"))
+async def tx_edit_desc_start(c: types.CallbackQuery, state: FSMContext):
+    tx_id = int(c.data.split(":")[1])
+    await state.update_data(tx_id=tx_id)
+    await state.set_state(TXEditStates.edit_description)
+    await c.message.answer(
+        "Введите новое описание (или '-' для удаления):",
+        reply_markup=cancel_kb
+    )
+    await c.answer()
+
+@dp.message(TXEditStates.edit_description)
+async def tx_edit_desc_finish(msg: types.Message, state: FSMContext):
+    data = await state.get_data()
+    tx_id = data["tx_id"]
+    description = None if msg.text.strip() == "-" else msg.text.strip()
+    
+    await db.execute("UPDATE transactions SET description=$1 WHERE id=$2", description, tx_id)
+    await msg.answer("✅ Описание обновлено.", reply_markup=await main_kb(await get_or_create_user(msg.from_user.id)))
+    await state.clear()
+
+# Изменение категории транзакции
+@dp.callback_query(F.data.startswith("tx_edit_cat:"))
+async def tx_edit_cat_start(c: types.CallbackQuery, state: FSMContext):
+    tx_id = int(c.data.split(":")[1])
+    row = await db.fetchrow("SELECT amount FROM transactions WHERE id=$1", tx_id)
+    
+    if not row:
+        await c.answer("Транзакция не найдена")
+        return
+    
+    await state.update_data(tx_id=tx_id)
+    
+    # Определяем тип транзакции
+    if row["amount"] >= 0:
+        kb = build_categories_kb(income_emojis)
+        text = "Выберите новую категорию дохода:"
+    else:
+        kb = build_categories_kb(expense_emojis)
+        text = "Выберите новую категорию расхода:"
+    
+    await c.message.answer(text, reply_markup=kb)
+    await state.set_state(TXEditStates.edit_category)
+    await c.answer()
+
+@dp.callback_query(TXEditStates.edit_category, F.data.startswith("tx_cat:"))
+async def tx_edit_cat_finish(c: types.CallbackQuery, state: FSMContext):
+    category = c.data.split("tx_cat:")[1]
+    data = await state.get_data()
+    tx_id = data["tx_id"]
+    
+    await db.execute("UPDATE transactions SET category=$1 WHERE id=$2", category, tx_id)
+    await c.message.answer("✅ Категория обновлена.", reply_markup=await main_kb(await get_or_create_user(c.from_user.id)))
+    await state.clear()
+    await c.answer()
 
 # -----------------------------------------------------------------------------------------------------------------------
 # 🎯 Мои цели
@@ -560,7 +904,8 @@ async def goal_description(msg: types.Message, state: FSMContext):
         user_id, data["target"], data["title"], msg.text.strip()
     )
 
-    await msg.answer("🎯 Цель успешно создана!", reply_markup=main())
+    user_id = await get_or_create_user(msg.from_user.id)
+    await msg.answer("🎯 Цель успешно создана!", reply_markup=await main_kb(user_id))
     await state.clear()
 
 # Кнопка "Обновить цели"
@@ -652,7 +997,8 @@ async def goal_edit_title_finish(msg: types.Message, state: FSMContext):
     gid = (await state.get_data())["goal_id"]
     await db.execute("UPDATE goals SET title=$1, updated_at=NOW() WHERE id=$2",
                      msg.text.strip(), gid)
-    await msg.answer("Название обновлено!", reply_markup=main())
+    user_id = await get_or_create_user(msg.from_user.id)
+    await msg.answer("Название обновлено!", reply_markup=await main_kb(user_id))
     await state.clear()    
     
 # Изменить сумму 
@@ -675,7 +1021,8 @@ async def goal_edit_target_finish(msg: types.Message, state: FSMContext):
     gid = (await state.get_data())["goal_id"]
     await db.execute("UPDATE goals SET target=$1, updated_at=NOW() WHERE id=$2",
                      target, gid)
-    await msg.answer("Сумма цели обновлена.", reply_markup=main())
+    user_id = await get_or_create_user(msg.from_user.id)
+    await msg.answer("Сумма цели обновлена.", reply_markup=await main_kb(user_id))
     await state.clear()
 
 # Изменить описание    
@@ -692,15 +1039,40 @@ async def goal_edit_desc_finish(msg: types.Message, state: FSMContext):
     gid = (await state.get_data())["goal_id"]
     await db.execute("UPDATE goals SET description=$1, updated_at=NOW() WHERE id=$2",
                      msg.text.strip(), gid)
-    await msg.answer("Описание обновлено.", reply_markup=main())
+    user_id = await get_or_create_user(msg.from_user.id)
+    await msg.answer("Описание обновлено.", reply_markup=await main_kb(user_id))
     await state.clear()
 
-# Удаление цели
+# Удаление цели с подтверждением
 @dp.callback_query(F.data.startswith("goal_delete:"))
 async def goal_delete(c: types.CallbackQuery):
     gid = int(c.data.split(":")[1])
+    row = await db.fetchrow("SELECT title FROM goals WHERE id=$1", gid)
+    
+    if not row:
+        await c.answer("Цель не найдена")
+        return
+    
+    # Показываем подтверждение
+    await c.message.edit_text(
+        f"⚠️ *Подтверждение удаления*\n\n"
+        f"Вы уверены, что хотите удалить цель:\n"
+        f"*{row['title']}*?\n\n"
+        f"Это действие нельзя отменить.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"goal_delete_confirm:{gid}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"goal_edit:{gid}")]
+        ])
+    )
+    await c.answer()
+
+@dp.callback_query(F.data.startswith("goal_delete_confirm:"))
+async def goal_delete_confirm(c: types.CallbackQuery):
+    gid = int(c.data.split(":")[1])
     await db.execute("DELETE FROM goals WHERE id=$1", gid)
-    await c.message.answer("Цель удалена.", reply_markup=main())
+    user_id = await get_or_create_user(c.from_user.id)
+    await c.message.edit_text("✅ Цель удалена.", reply_markup=await main_kb(user_id))
     await c.answer() 
  
  
@@ -734,7 +1106,7 @@ async def goal_title(message: types.Message, state: FSMContext):
         user_id, data["target"], message.text
     )
 
-    await message.answer("Цель добавлена.", reply_markup=main())
+    await message.answer("Цель добавлена.", reply_markup=await main_kb(user_id))
     await state.clear()
 
 async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
@@ -749,7 +1121,8 @@ async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
         text = (m.text or "").strip()
         if text.lower() in ("отмена", "cancel"):
             await state.clear()
-            await m.answer("Отменено.", reply_markup=main())
+            user_id = await get_or_create_user(m.from_user.id)
+            await m.answer("Отменено.", reply_markup=await main_kb(user_id))
             return True
         try:
             target = float(text.replace(",", "."))
@@ -765,7 +1138,8 @@ async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
         text = (m.text or "").strip()
         if text.lower() in ("отмена", "cancel"):
             await state.clear()
-            await m.answer("Отменено.", reply_markup=main())
+            user_id = await get_or_create_user(m.from_user.id)
+            await m.answer("Отменено.", reply_markup=await main_kb(user_id))
             return True
         data = await state.get_data()
         target = data.get("target")
@@ -774,7 +1148,7 @@ async def handle_stateful_message(m: types.Message, state: FSMContext) -> bool:
         await db.execute("INSERT INTO goals (user_id, target, current, title, created_at) VALUES ($1,$2,0,$3,NOW())",
                          user_id, target, title)
         await save_message(user_id, "system", f"Создана цель: {title} на {target}₽")
-        await m.answer("Цель добавлена ✅", reply_markup=main())
+        await m.answer("Цель добавлена ✅", reply_markup=await main_kb(user_id))
         await state.clear()
         return True
 
@@ -979,7 +1353,7 @@ async def add_asset_title(msg: types.Message, state: FSMContext):
 
     await msg.answer(
         f"Актив добавлен:\n{data['type']} — {msg.text}: {int(data['amount']):,} ₽",
-        reply_markup=main()
+        reply_markup=await main_kb(user_id)
     )
 
     await state.clear()
@@ -993,7 +1367,7 @@ async def asset_update_list(c: types.CallbackQuery, state: FSMContext):
     assets = await get_assets_list(user_id)
 
     if not assets:
-        await c.message.answer("Активов нет. Добавьте актив.", reply_markup=main())
+        await c.message.answer("Активов нет. Добавьте актив.", reply_markup=await main_kb(user_id))
         return
 
     kb = InlineKeyboardMarkup(
@@ -1032,9 +1406,10 @@ async def asset_update_amount(msg: types.Message, state: FSMContext):
     data = await state.get_data()
     await add_asset_value(data["asset_id"], amount)
 
+    user_id = await get_or_create_user(msg.from_user.id)
     await msg.answer(
         f"Стоимость обновлена: {int(amount):,} ₽",
-        reply_markup=main()
+        reply_markup=await main_kb(user_id)
     )
     await state.clear()
 
@@ -1160,7 +1535,7 @@ async def liab_title(msg: types.Message, state: FSMContext):
         monthly_payment=data["monthly"]
     )
 
-    await msg.answer("Долг добавлен.", reply_markup=main())
+    await msg.answer("Долг добавлен.", reply_markup=await main_kb(user_id))
     await state.clear()
 
 
@@ -1207,9 +1582,10 @@ async def liab_update_amount(msg: types.Message, state: FSMContext):
     data = await state.get_data()
     await add_liability_value(data["liability_id"], amount)
 
+    user_id = await get_or_create_user(msg.from_user.id)
     await msg.answer(
         f"Сумма долга обновлена: {int(amount):,} ₽",
-        reply_markup=main()
+        reply_markup=await main_kb(user_id)
     )
     await state.clear()
 
@@ -1836,6 +2212,10 @@ async def create_portfolio_history_chart(user_id: int, weeks: int = 26):
 @dp.callback_query(F.data == "menu_charts")
 async def menu_charts(c: types.CallbackQuery):
     user_id = await get_or_create_user(c.from_user.id)
+    
+    # Показываем индикатор прогресса
+    await c.message.answer("⏳ Генерирую отчет...")
+    await bot.send_chat_action(c.message.chat.id, "typing")
 
     # 1. Статистика + donut
     stats_text = await build_text_stats(user_id)
@@ -1889,7 +2269,8 @@ async def menu_charts(c: types.CallbackQuery):
 @dp.callback_query(F.data == "menu_consult")
 async def cb_menu_consult(c: types.CallbackQuery):
     user_id = await get_or_create_user(c.from_user.id)
-    await c.message.answer("Готовлю консультацию... (короткий план из шагов).")
+    await c.message.answer("🤔 Анализирую ваши финансы... (это займет несколько секунд)")
+    await bot.send_chat_action(c.message.chat.id, "typing")
     ans = await generate_consultation(user_id)
     await c.message.answer(ans)
     await c.answer()
@@ -1897,7 +2278,8 @@ async def cb_menu_consult(c: types.CallbackQuery):
 @dp.message(Command("consult"))
 async def cmd_consult(m: types.Message):
     user_id = await get_or_create_user(m.from_user.id)
-    await m.answer("Готовлю консультацию...")
+    await m.answer("🤔 Анализирую ваши финансы... (это займет несколько секунд)")
+    await bot.send_chat_action(m.chat.id, "typing")
     ans = await generate_consultation(user_id)
     await m.answer(ans)    
     
@@ -2118,7 +2500,8 @@ async def catchall_private(m: types.Message, state: FSMContext):
 
     # Otherwise: глушилка
     user_id = await get_or_create_user(m.from_user.id)
-    await m.answer("Неверная команда", reply_markup=main())
+    user_id = await get_or_create_user(m.from_user.id)
+    await m.answer("Неверная команда", reply_markup=await main_kb(user_id))
     
     # # Otherwise: pass to AI assistant (generate reply)
     # user_id = await get_or_create_user(m.from_user.id)
