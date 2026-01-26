@@ -76,7 +76,7 @@ async def get_gigachat_token():
     Request access token (client_credentials).
     Use async httpx to avoid blocking.
     """
-    auth_str = f"{GIGACHAT_CLIENT_ID}:{GIGACHAT_CLIENT_SECRET}"
+    auth_str = f"{G_CLIENT_ID}:{G_CLIENT_SECRET}"
     b64 = base64.b64encode(auth_str.encode()).decode()
     headers = {
         "Authorization": f"Basic {b64}",
@@ -84,9 +84,9 @@ async def get_gigachat_token():
         "Accept": "application/json",
         "RqUID": str(uuid.uuid4())
     }
-    data = {"scope": GIGACHAT_SCOPE}
+    data = {"scope": G_SCOPE}
     async with httpx.AsyncClient(verify=False, timeout=20.0) as client:
-        r = await client.post(GIGACHAT_AUTH_URL, headers=headers, data=data)
+        r = await client.post(G_AUTH_URL, headers=headers, data=data)
         r.raise_for_status()
         return r.json().get("access_token")
 
@@ -106,7 +106,7 @@ async def gigachat_request(messages):
         "temperature": 0.3
     }
     async with httpx.AsyncClient(verify=False, timeout=40.0) as client:
-        r = await client.post(GIGACHAT_API_URL, headers=headers, json=payload)
+        r = await client.post(G_API_URL, headers=headers, json=payload)
         r.raise_for_status()
         j = r.json()
         if "choices" in j and j["choices"]:
