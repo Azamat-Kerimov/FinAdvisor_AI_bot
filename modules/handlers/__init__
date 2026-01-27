@@ -1,6 +1,0 @@
-# Импортируем все обработчики из отдельных файлов
-from .tx import *
-from .goals import *
-from .assets import *
-from .reports import *
-from .ai_handlers import *
