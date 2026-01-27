@@ -140,7 +140,17 @@ async def read_root():
 @app.get("/static/{file_path:path}")
 async def static_files(file_path: str):
     """Статические файлы"""
-    return FileResponse(f"webapp/static/{file_path}")
+    file_path_clean = file_path.split('?')[0]  # Убираем query параметры для версионирования
+    full_path = f"webapp/static/{file_path_clean}"
+    
+    # Устанавливаем заголовки для предотвращения кэширования в разработке
+    headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0"
+    }
+    
+    return FileResponse(full_path, headers=headers)
 
 # Статистика
 @app.get("/api/stats")
