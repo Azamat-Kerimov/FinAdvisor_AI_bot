@@ -4,13 +4,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
-from fastapi import Header
 import asyncpg
 import os
 from dotenv import load_dotenv
 import hmac
 import hashlib
-import base64
 import json
 
 load_dotenv()
@@ -83,7 +81,7 @@ def validate_telegram_webapp(init_data: str) -> dict:
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Validation error: {str(e)}")
 
-async def get_user_id(init_data: Optional[str] = Header(None)) -> int:
+async def get_user_id(init_data: Optional[str] = Header(None, alias="init-data")) -> int:
     """Получить user_id из Telegram Web App"""
     if not init_data:
         raise HTTPException(status_code=401, detail="Missing initData")
@@ -365,12 +363,13 @@ async def create_liability(liability: LiabilityCreate, user_id: int = Depends(ge
 @app.get("/api/consultation")
 async def get_consultation(user_id: int = Depends(get_user_id)):
     """Получить AI консультацию"""
-    # Импортируем функцию из bot.py
-    import sys
-    sys.path.append('.')
-    from bot import generate_consultation
+    # Импортируем функции из bot.py
+    import bot
     
-    consultation = await generate_consultation(user_id)
+    # Устанавливаем db для bot модуля
+    bot.db = await get_db()
+    
+    consultation = await bot.generate_consultation(user_id)
     return {"consultation": consultation}
 
 if __name__ == "__main__":
