@@ -1,0 +1,22 @@
+[Unit]
+Description=FinAdvisor Telegram Web App API Server
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/FinAdvisor_AI_bot
+Environment="PATH=/root/FinAdvisor_AI_bot/venv/bin"
+EnvironmentFile=/root/FinAdvisor_AI_bot/.env
+# Вариант 1: Через Python (если в api.py есть if __name__ == "__main__")
+# ExecStart=/root/FinAdvisor_AI_bot/venv/bin/python3 /root/FinAdvisor_AI_bot/api.py
+
+# Вариант 2: Через uvicorn напрямую (рекомендуется)
+ExecStart=/root/FinAdvisor_AI_bot/venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

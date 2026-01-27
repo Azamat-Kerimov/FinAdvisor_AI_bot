@@ -2046,11 +2046,10 @@ async def menu_charts(c: types.CallbackQuery):
             caption="Динамика чистого капитала по неделям",
         )
         os.remove(img_hist)
+        # После всех отчетов показываем главное меню
+        await c.message.answer("📊 Отчет сгенерирован", reply_markup=await main_kb(user_id))
     else:
         await c.message.answer(cap_text, parse_mode="Markdown", reply_markup=await main_kb(user_id))
-    
-    # После всех отчетов показываем главное меню
-    await c.message.answer("📊 Отчет сгенерирован", reply_markup=await main_kb(user_id))
 
     await c.answer()
 # -----------------------------------------------------------------------------------------------------------------------
