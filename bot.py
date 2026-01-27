@@ -2017,7 +2017,10 @@ async def menu_charts(c: types.CallbackQuery):
             types.FSInputFile(img_donut),
             caption="Траты за месяц",
         )
-        os.remove(img_donut)
+        try:
+            os.remove(img_donut)
+        except:
+            pass
     else:
         await c.message.answer(stats_text, parse_mode="Markdown")
 
@@ -2031,7 +2034,10 @@ async def menu_charts(c: types.CallbackQuery):
             types.FSInputFile(img_goals),
             caption="Прогресс целей",
         )
-        os.remove(img_goals)
+        try:
+            os.remove(img_goals)
+        except:
+            pass
     else:
         await c.message.answer(goals_text, parse_mode="Markdown")
 
@@ -2045,7 +2051,10 @@ async def menu_charts(c: types.CallbackQuery):
             types.FSInputFile(img_hist),
             caption="Динамика чистого капитала по неделям",
         )
-        os.remove(img_hist)
+        try:
+            os.remove(img_hist)
+        except:
+            pass
         # После всех отчетов показываем главное меню
         await c.message.answer("📊 Отчет сгенерирован", reply_markup=await main_kb(user_id))
     else:
