@@ -131,8 +131,11 @@ class LiabilityCreate(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     """Главная страница Web App"""
-    with open("webapp/index.html", "r", encoding="utf-8") as f:
-        return HTMLResponse(content=f.read())
+    try:
+        with open("webapp/index.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>Web App не найден</h1><p>Проверьте путь к файлу webapp/index.html</p>", status_code=500)
 
 @app.get("/static/{file_path:path}")
 async def static_files(file_path: str):
@@ -363,14 +366,34 @@ async def create_liability(liability: LiabilityCreate, user_id: int = Depends(ge
 @app.get("/api/consultation")
 async def get_consultation(user_id: int = Depends(get_user_id)):
     """Получить AI консультацию"""
-    # Импортируем функции из bot.py
-    import bot
-    
-    # Устанавливаем db для bot модуля
-    bot.db = await get_db()
-    
-    consultation = await bot.generate_consultation(user_id)
-    return {"consultation": consultation}
+    # Импортируем функции из bot.py только когда нужно (ленивый импорт)
+    # Используем условный импорт, чтобы избежать проблем при старте API
+    try:
+        # Импортируем только нужные функции, избегая инициализации Bot/Dispatcher
+        import sys
+        import importlib.util
+        
+        # Загружаем bot.py как модуль
+        spec = importlib.util.spec_from_file_location("bot_module", "bot.py")
+        if spec is None or spec.loader is None:
+            raise ImportError("Cannot load bot.py")
+        
+        bot_module = importlib.util.module_from_spec(spec)
+        
+        # Устанавливаем db перед выполнением модуля
+        bot_module.db = await get_db()
+        
+        # Выполняем модуль
+        spec.loader.exec_module(bot_module)
+        
+        # Вызываем функцию консультации
+        consultation = await bot_module.generate_consultation(user_id)
+        return {"consultation": consultation}
+    except Exception as e:
+        print(f"Error generating consultation: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"consultation": "Извините, консультация временно недоступна. Используйте команду /consult в боте."}
 
 if __name__ == "__main__":
     import uvicorn
