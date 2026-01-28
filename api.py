@@ -16,7 +16,7 @@ import uuid
 import base64
 import asyncio
 import httpx
-from datetime import datetime
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -239,14 +239,16 @@ async def auth_telegram(request: Request):
         if not tg_id:
             raise HTTPException(status_code=401, detail="Invalid user")
         
-        # Получаем или создаем пользователя
+        # Получаем или создаем пользователя с 2 бесплатными месяцами
         db = await get_db()
         async with db.acquire() as conn:
             row = await conn.fetchrow("SELECT id, premium_until FROM users WHERE tg_id=$1", tg_id)
             if not row:
+                # Новый пользователь - даем 2 бесплатных месяца
+                free_months_until = datetime.now() + timedelta(days=60)
                 await conn.execute(
-                    "INSERT INTO users (tg_id, username, created_at) VALUES ($1, $2, NOW())",
-                    tg_id, user.get('username')
+                    "INSERT INTO users (tg_id, username, created_at, premium_until) VALUES ($1, $2, NOW(), $3)",
+                    tg_id, user.get('username'), free_months_until
                 )
                 row = await conn.fetchrow("SELECT id, premium_until FROM users WHERE tg_id=$1", tg_id)
             
@@ -802,7 +804,7 @@ async def generate_consultation(user_id: int) -> str:
         if not answer or len(answer.strip()) == 0:
             return "Извините, не удалось сгенерировать консультацию. Попробуйте позже."
         
-        await save_message(user_id, "assistant", "Consultation generated")
+        await save_message(user_id, "assistant", f"CONSULTATION: {answer}")
         await save_ai_cache(user_id, "CONSULT_REQUEST", finance_snapshot, answer)
         return answer
         
@@ -817,18 +819,189 @@ async def generate_consultation(user_id: int) -> str:
         )
 
 
+# Отчеты
+@app.get("/api/reports")
+async def get_reports(user_id: int = Depends(require_premium)):
+    """Получить отчеты (3 графика с пояснениями)"""
+    db = await get_db()
+    async with db.acquire() as conn:
+        # График 1: Расходы по категориям за текущий месяц
+        now = datetime.now()
+        since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        
+        expense_rows = await conn.fetch(
+            """
+            SELECT category, SUM(ABS(amount)) as total
+            FROM transactions
+            WHERE user_id=$1 AND created_at >= $2 AND amount < 0
+            GROUP BY category
+            ORDER BY total DESC
+            LIMIT 10
+            """,
+            user_id, since
+        )
+        
+        expense_by_cat = {r['category'] or 'Прочее': float(r['total']) for r in expense_rows}
+        total_expenses = sum(expense_by_cat.values())
+        
+        # График 2: Прогресс по целям
+        goals_rows = await conn.fetch(
+            """
+            SELECT title, target, current
+            FROM goals
+            WHERE user_id=$1
+            ORDER BY id
+            """,
+            user_id
+        )
+        
+        goals_data = [
+            {
+                'title': g['title'],
+                'target': float(g['target']),
+                'current': float(g['current']),
+                'progress': min(100, (float(g['current']) / float(g['target']) * 100) if g['target'] > 0 else 0)
+            }
+            for g in goals_rows
+        ]
+        
+        # График 3: Динамика капитала за последние 12 недель
+        weeks_data = []
+        for i in range(11, -1, -1):
+            week_end = now - timedelta(weeks=i)
+            # Находим воскресенье недели
+            days_since_monday = (week_end.weekday()) % 7
+            sunday = week_end - timedelta(days=days_since_monday) + timedelta(days=6)
+            sunday = sunday.replace(hour=23, minute=59, second=59)
+            
+            # Получаем активы на эту дату
+            assets_rows = await conn.fetch(
+                """
+                SELECT a.id, COALESCE(
+                    (SELECT amount FROM asset_values 
+                     WHERE asset_id = a.id AND created_at <= $2 
+                     ORDER BY created_at DESC LIMIT 1), 0
+                ) as amount
+                FROM assets a
+                WHERE a.user_id = $1
+                """,
+                user_id, sunday
+            )
+            total_assets = sum(float(r['amount']) for r in assets_rows)
+            
+            # Получаем долги на эту дату
+            liabs_rows = await conn.fetch(
+                """
+                SELECT l.id, COALESCE(
+                    (SELECT amount FROM liability_values 
+                     WHERE liability_id = l.id AND created_at <= $2 
+                     ORDER BY created_at DESC LIMIT 1), 0
+                ) as amount
+                FROM liabilities l
+                WHERE l.user_id = $1
+                """,
+                user_id, sunday
+            )
+            total_liabs = sum(float(r['amount']) for r in liabs_rows)
+            
+            net_capital = total_assets - total_liabs
+            weeks_data.append({
+                'week': sunday.strftime('%d.%m'),
+                'assets': total_assets,
+                'liabilities': total_liabs,
+                'net_capital': net_capital
+            })
+        
+        return {
+            "chart1": {
+                "title": "Расходы по категориям за текущий месяц",
+                "description": f"Общая сумма расходов: {total_expenses:,.0f} ₽".replace(',', ' '),
+                "data": expense_by_cat
+            },
+            "chart2": {
+                "title": "Прогресс по финансовым целям",
+                "description": f"Всего целей: {len(goals_data)}",
+                "data": goals_data
+            },
+            "chart3": {
+                "title": "Динамика чистого капитала за последние 12 недель",
+                "description": f"Текущий чистый капитал: {weeks_data[-1]['net_capital']:,.0f} ₽".replace(',', ' ') if weeks_data else "Нет данных",
+                "data": weeks_data
+            }
+        }
+
+
+# Консультация - история
+@app.get("/api/consultation/history")
+async def get_consultation_history(user_id: int = Depends(require_premium)):
+    """Получить историю консультаций"""
+    db = await get_db()
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT content, created_at
+            FROM ai_context
+            WHERE user_id=$1 AND role='assistant' AND content LIKE 'CONSULTATION:%'
+            ORDER BY created_at DESC
+            LIMIT 10
+            """,
+            user_id
+        )
+        return [{"content": r['content'].replace('CONSULTATION: ', ''), "date": r['created_at'].isoformat()} for r in rows]
+
+
+# Консультация - проверка лимита
+async def check_consultation_limit(user_id: int) -> tuple[bool, int]:
+    """Проверить лимит консультаций (5 в месяц)
+    
+    Returns:
+        tuple[bool, int]: (can_request, requests_used)
+    """
+    db = await get_db()
+    now = datetime.now()
+    since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    async with db.acquire() as conn:
+        count = await conn.fetchval(
+            """
+            SELECT COUNT(*) 
+            FROM ai_context
+            WHERE user_id=$1 AND role='assistant' 
+            AND content LIKE 'CONSULTATION:%'
+            AND created_at >= $2
+            """,
+            user_id, since
+        )
+        return count < 5, count
+
+
 # Консультация
 @app.get("/api/consultation")
 async def get_consultation(user_id: int = Depends(require_premium)):
-    """Получить AI консультацию"""
+    """Получить AI консультацию (лимит 5 в месяц)"""
+    # Проверяем лимит
+    can_request, requests_used = await check_consultation_limit(user_id)
+    
+    if not can_request:
+        return {
+            "consultation": None,
+            "error": f"Лимит консультаций исчерпан. Использовано: {requests_used}/5 в этом месяце.",
+            "limit_reached": True,
+            "requests_used": requests_used
+        }
+    
     try:
-        logging.info(f"Consultation request received for user_id={user_id}")
+        logging.info(f"Consultation request received for user_id={user_id} ({requests_used + 1}/5)")
         consultation = await asyncio.wait_for(
             generate_consultation(user_id),
             timeout=60.0
         )
         logging.info("Consultation request completed successfully")
-        return {"consultation": consultation}
+        return {
+            "consultation": consultation,
+            "requests_used": requests_used + 1,
+            "limit_reached": False
+        }
     except asyncio.TimeoutError:
         logging.error("Consultation generation timeout (60s)")
         return {
