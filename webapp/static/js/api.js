@@ -20,12 +20,16 @@ function getInitData() {
 async function apiRequest(endpoint, options = {}) {
     const initData = getInitData();
     
-    // Public endpoints don't require auth
-    const publicEndpoints = ['/api/stats'];
+    // Note: /api/stats requires auth, but we'll handle 401 gracefully
+    // Public endpoints (if any) would be listed here
+    const publicEndpoints = [];
     const isPublic = publicEndpoints.some(ep => endpoint.includes(ep));
     
     if (!initData && !isPublic) {
-        throw new Error('Требуется авторизация. Откройте приложение через Telegram.');
+        // For browser testing, we'll let the request go through and handle 401 on response
+        if (!AppState?.isTelegram) {
+            console.warn('Открыто в браузере. Некоторые функции могут не работать.');
+        }
     }
     
     const headers = {
@@ -41,6 +45,10 @@ async function apiRequest(endpoint, options = {}) {
         });
         
         if (!response.ok) {
+            // Handle 401 (Unauthorized) gracefully
+            if (response.status === 401) {
+                throw new Error('Требуется авторизация. Откройте приложение через Telegram.');
+            }
             const errorText = await response.text();
             throw new Error(`API error: ${response.status} - ${errorText}`);
         }
