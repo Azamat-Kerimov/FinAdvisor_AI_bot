@@ -8,9 +8,19 @@ const API_URL = window.location.origin;
  * Get Telegram initData for authentication
  */
 function getInitData() {
+    // Проверяем несколько способов получения initData
     if (window.Telegram?.WebApp?.initData) {
-        return window.Telegram.WebApp.initData;
+        const initData = window.Telegram.WebApp.initData;
+        console.log('initData получен из window.Telegram.WebApp.initData, длина:', initData.length);
+        return initData;
     }
+    
+    // Альтернативный способ через initDataUnsafe (для отладки)
+    if (window.Telegram?.WebApp?.initDataUnsafe) {
+        console.warn('initData не найден, но initDataUnsafe доступен');
+    }
+    
+    console.warn('initData не найден. Проверьте, что приложение открыто через Telegram.');
     return '';
 }
 
@@ -25,11 +35,15 @@ async function apiRequest(endpoint, options = {}) {
     const publicEndpoints = [];
     const isPublic = publicEndpoints.some(ep => endpoint.includes(ep));
     
+    // Логируем для отладки
     if (!initData && !isPublic) {
-        // For browser testing, we'll let the request go through and handle 401 on response
-        if (!AppState?.isTelegram) {
+        if (AppState?.isTelegram) {
+            console.warn('Telegram Web App открыт, но initData отсутствует. Проверьте, что приложение открыто через Telegram.');
+        } else {
             console.warn('Открыто в браузере. Некоторые функции могут не работать.');
         }
+    } else if (initData) {
+        console.log('initData найден, длина:', initData.length);
     }
     
     const headers = {
@@ -37,6 +51,13 @@ async function apiRequest(endpoint, options = {}) {
         ...(initData && { 'init-data': initData }),
         ...options.headers
     };
+    
+    // Логируем заголовки для отладки (без самого initData для безопасности)
+    if (initData) {
+        console.log('Отправка запроса с init-data заголовком');
+    } else {
+        console.log('Отправка запроса БЕЗ init-data заголовка');
+    }
     
     try {
         const response = await fetch(`${API_URL}${endpoint}`, {
@@ -47,6 +68,8 @@ async function apiRequest(endpoint, options = {}) {
         if (!response.ok) {
             // Handle 401 (Unauthorized) gracefully
             if (response.status === 401) {
+                const errorText = await response.text();
+                console.error('401 Unauthorized:', errorText);
                 throw new Error('Требуется авторизация. Откройте приложение через Telegram.');
             }
             const errorText = await response.text();
