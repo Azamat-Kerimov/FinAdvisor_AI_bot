@@ -157,13 +157,25 @@ async function loadStats() {
         `;
     } catch (error) {
         console.error('Error loading stats:', error);
-        statsCard.innerHTML = `
-            <div class="empty-state">
-                <div class="empty-state-icon">⚠️</div>
-                <div class="empty-state-title">Ошибка загрузки</div>
-                <div class="empty-state-text">${AppState.isTelegram ? 'Попробуйте обновить страницу' : 'Откройте приложение через Telegram'}</div>
-            </div>
-        `;
+        
+        // Если ошибка авторизации и открыто через Telegram, показываем более понятное сообщение
+        if (error.message && error.message.includes('авторизация')) {
+            statsCard.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">🔐</div>
+                    <div class="empty-state-title">Требуется авторизация</div>
+                    <div class="empty-state-text">Откройте приложение через Telegram для доступа к вашей статистике</div>
+                </div>
+            `;
+        } else {
+            statsCard.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">⚠️</div>
+                    <div class="empty-state-title">Ошибка загрузки</div>
+                    <div class="empty-state-text">${AppState.isTelegram ? 'Попробуйте обновить страницу' : 'Откройте приложение через Telegram'}</div>
+                </div>
+            `;
+        }
     }
 }
 
@@ -601,35 +613,51 @@ if (typeof AppState === 'undefined') {
 document.addEventListener('DOMContentLoaded', () => {
     console.log('DOM загружен, инициализация приложения...');
     
-    // Re-initialize Telegram Web App to ensure it's ready
-    if (typeof AppState !== 'undefined' && AppState.initTelegram) {
-        AppState.initTelegram();
-    }
+    // Ждем загрузки Telegram Web App скрипта
+    const checkTelegram = () => {
+        if (window.Telegram?.WebApp) {
+            console.log('Telegram Web App обнаружен');
+            console.log('initData доступен:', !!window.Telegram.WebApp.initData);
+            console.log('initData длина:', window.Telegram.WebApp.initData?.length || 0);
+            
+            // Re-initialize Telegram Web App to ensure it's ready
+            if (typeof AppState !== 'undefined' && AppState.initTelegram) {
+                AppState.initTelegram();
+            }
+            
+            // Initialize Telegram Web App
+            if (AppState?.tg?.ready) {
+                AppState.tg.ready();
+                AppState.tg.expand();
+            }
+            
+            // Load initial data
+            const mainMenu = document.getElementById('main-menu');
+            if (mainMenu && mainMenu.classList.contains('active')) {
+                console.log('Загрузка статистики...');
+                loadStats();
+            }
+        } else {
+            console.warn('Telegram Web App не обнаружен. Приложение открыто в браузере.');
+            // Для тестирования в браузере можно добавить тестовые данные
+            const mainMenu = document.getElementById('main-menu');
+            if (mainMenu && mainMenu.classList.contains('active')) {
+                console.log('Попытка загрузки статистики (может не работать без Telegram)...');
+                loadStats();
+            }
+        }
+        
+        // Hide FAB initially
+        const fab = document.getElementById('fab-add-transaction');
+        if (fab) {
+            fab.style.display = 'none';
+        }
+        
+        console.log('Инициализация завершена. Текущий экран:', AppState?.currentScreen || 'main-menu');
+        console.log('isTelegram:', AppState?.isTelegram || false);
+    };
     
-    // Initialize Telegram Web App
-    if (AppState?.tg?.ready) {
-        AppState.tg.ready();
-        AppState.tg.expand();
-    }
-    
-    // Load initial data
-    const mainMenu = document.getElementById('main-menu');
-    if (mainMenu && mainMenu.classList.contains('active')) {
-        console.log('Загрузка статистики...');
-        loadStats();
-    }
-    
-    // Warning for browser users
-    if (!AppState.isTelegram) {
-        console.warn('Приложение открыто в браузере. Для полного функционала откройте через Telegram.');
-        // Для тестирования в браузере можно добавить тестовые данные
-    }
-    
-    // Hide FAB initially
-    const fab = document.getElementById('fab-add-transaction');
-    if (fab) {
-        fab.style.display = 'none';
-    }
-    
-    console.log('Инициализация завершена. Текущий экран:', AppState?.currentScreen || 'main-menu');
+    // Проверяем сразу и через небольшую задержку (на случай, если скрипт еще загружается)
+    checkTelegram();
+    setTimeout(checkTelegram, 100);
 });

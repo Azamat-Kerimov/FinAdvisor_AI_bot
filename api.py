@@ -92,25 +92,35 @@ def validate_telegram_webapp(init_data: str) -> dict:
 async def get_user_id(init_data: Optional[str] = Header(None, alias="init-data")) -> int:
     """Получить user_id из Telegram Web App"""
     if not init_data:
-        raise HTTPException(status_code=401, detail="Missing initData")
+        # Логируем для отладки
+        import logging
+        logging.warning("Missing init-data header in request")
+        raise HTTPException(status_code=401, detail="Missing initData. Откройте приложение через Telegram.")
     
-    user = validate_telegram_webapp(init_data)
-    tg_id = user.get('id')
-    
-    if not tg_id:
-        raise HTTPException(status_code=401, detail="Invalid user")
-    
-    # Получаем или создаем пользователя
-    db = await get_db()
-    async with db.acquire() as conn:
-        row = await conn.fetchrow("SELECT id FROM users WHERE tg_id=$1", tg_id)
-        if not row:
-            await conn.execute(
-                "INSERT INTO users (tg_id, username, created_at) VALUES ($1, $2, NOW())",
-                tg_id, user.get('username')
-            )
+    try:
+        user = validate_telegram_webapp(init_data)
+        tg_id = user.get('id')
+        
+        if not tg_id:
+            raise HTTPException(status_code=401, detail="Invalid user")
+        
+        # Получаем или создаем пользователя
+        db = await get_db()
+        async with db.acquire() as conn:
             row = await conn.fetchrow("SELECT id FROM users WHERE tg_id=$1", tg_id)
-        return row['id']
+            if not row:
+                await conn.execute(
+                    "INSERT INTO users (tg_id, username, created_at) VALUES ($1, $2, NOW())",
+                    tg_id, user.get('username')
+                )
+                row = await conn.fetchrow("SELECT id FROM users WHERE tg_id=$1", tg_id)
+            return row['id']
+    except HTTPException:
+        raise
+    except Exception as e:
+        import logging
+        logging.error(f"Error in get_user_id: {e}")
+        raise HTTPException(status_code=401, detail=f"Authentication error: {str(e)}")
 
 # Pydantic models
 class TransactionCreate(BaseModel):
