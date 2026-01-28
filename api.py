@@ -133,24 +133,51 @@ async def read_root():
     """Главная страница Web App"""
     try:
         with open("webapp/index.html", "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
+            content = f.read()
+            # Добавляем заголовки для предотвращения кэширования
+            headers = {
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+            return HTMLResponse(content=content, headers=headers)
     except FileNotFoundError:
         return HTMLResponse(content="<h1>Web App не найден</h1><p>Проверьте путь к файлу webapp/index.html</p>", status_code=500)
 
 @app.get("/static/{file_path:path}")
 async def static_files(file_path: str):
     """Статические файлы"""
+    import mimetypes
+    
     file_path_clean = file_path.split('?')[0]  # Убираем query параметры для версионирования
     full_path = f"webapp/static/{file_path_clean}"
+    
+    # Проверяем существование файла
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {full_path}")
+    
+    # Определяем MIME-тип
+    mime_type, _ = mimetypes.guess_type(full_path)
+    if not mime_type:
+        # Определяем по расширению
+        if full_path.endswith('.css'):
+            mime_type = 'text/css; charset=utf-8'
+        elif full_path.endswith('.js'):
+            mime_type = 'application/javascript; charset=utf-8'
+        elif full_path.endswith('.html'):
+            mime_type = 'text/html; charset=utf-8'
+        else:
+            mime_type = 'application/octet-stream'
     
     # Устанавливаем заголовки для предотвращения кэширования в разработке
     headers = {
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "Pragma": "no-cache",
-        "Expires": "0"
+        "Expires": "0",
+        "Content-Type": mime_type
     }
     
-    return FileResponse(full_path, headers=headers)
+    return FileResponse(full_path, headers=headers, media_type=mime_type)
 
 # Статистика
 @app.get("/api/stats")
