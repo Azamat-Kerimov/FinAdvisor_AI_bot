@@ -153,18 +153,18 @@ async function loadStats() {
         const balance = income - expense;
         
         statsCard.innerHTML = `
-            <div style="margin-bottom: 12px;">
-                <div style="display: flex; justify-content: space-between; margin-bottom: 8px; align-items: center;">
-                    <span style="font-size: 14px;">Доходы:</span>
-                    <strong style="color: #2ecc71; font-size: 16px;">${formatMoney(income)} ₽</strong>
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 20px;">
+                <div style="text-align: center; padding: 16px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(16, 185, 129, 0.05) 100%); border-radius: 12px;">
+                    <div style="font-size: 13px; color: #6B7280; margin-bottom: 8px; font-weight: 500;">Доходы</div>
+                    <div style="font-size: 24px; font-weight: 700; color: #10B981;">${formatMoney(income)} ₽</div>
                 </div>
-                <div style="display: flex; justify-content: space-between; margin-bottom: 8px; align-items: center;">
-                    <span style="font-size: 14px;">Расходы:</span>
-                    <strong style="color: #e74c3c; font-size: 16px;">${formatMoney(expense)} ₽</strong>
+                <div style="text-align: center; padding: 16px; background: linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(239, 68, 68, 0.05) 100%); border-radius: 12px;">
+                    <div style="font-size: 13px; color: #6B7280; margin-bottom: 8px; font-weight: 500;">Расходы</div>
+                    <div style="font-size: 24px; font-weight: 700; color: #EF4444;">${formatMoney(expense)} ₽</div>
                 </div>
-                <div style="display: flex; justify-content: space-between; margin-top: 12px; padding-top: 12px; border-top: 2px solid rgba(0,0,0,0.1); align-items: center;">
-                    <span style="font-weight: 600; font-size: 16px;">Остаток:</span>
-                    <strong style="color: ${balance >= 0 ? '#2ecc71' : '#e74c3c'}; font-size: 18px;">${formatMoney(balance)} ₽</strong>
+                <div style="text-align: center; padding: 16px; background: linear-gradient(135deg, rgba(79, 70, 229, 0.1) 0%, rgba(79, 70, 229, 0.05) 100%); border-radius: 12px;">
+                    <div style="font-size: 13px; color: #6B7280; margin-bottom: 8px; font-weight: 500;">Остаток</div>
+                    <div style="font-size: 24px; font-weight: 700; color: ${balance >= 0 ? '#10B981' : '#EF4444'};">${formatMoney(balance)} ₽</div>
                 </div>
             </div>
         `;
@@ -214,7 +214,13 @@ async function loadTransactions() {
         const transactions = await apiRequest('/api/transactions?limit=20');
         
         if (transactions.length === 0) {
-            list.innerHTML = '<div style="text-align: center; color: var(--tg-theme-hint-color); padding: 40px 20px;">📝 Нет транзакций</div>';
+            list.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">📝</div>
+                    <div class="empty-state-text">Нет транзакций</div>
+                    <div class="empty-state-subtext">Добавьте первую транзакцию</div>
+                </div>
+            `;
             return;
         }
         
@@ -304,7 +310,13 @@ async function loadGoals() {
         const goals = await apiRequest('/api/goals');
         
         if (goals.length === 0) {
-            list.innerHTML = '<div style="text-align: center; color: var(--tg-theme-hint-color); padding: 40px 20px;">🎯 Нет целей<br><small style="font-size: 12px;">Создайте первую цель</small></div>';
+            list.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">🎯</div>
+                    <div class="empty-state-text">Нет целей</div>
+                    <div class="empty-state-subtext">Создайте первую финансовую цель</div>
+                </div>
+            `;
             return;
         }
         
@@ -433,7 +445,13 @@ async function loadCapital() {
                             </div>
                             <div class="list-item-meta">${asset.type || '—'}</div>
                         </div>
-                    `).join('') : '<div style="text-align: center; padding: 20px; color: var(--tg-theme-hint-color);">Нет активов</div>'}
+                    `).join('') : `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">💼</div>
+                            <div class="empty-state-text">Нет активов</div>
+                            <div class="empty-state-subtext">Добавьте информацию о ваших активах</div>
+                        </div>
+                    `}
                 </div>
             `;
         } else {
@@ -457,7 +475,13 @@ async function loadCapital() {
                             </div>
                             <div class="list-item-meta">${liab.type || '—'} | Платеж: ${formatMoney(liab.monthly_payment || 0)} ₽/мес</div>
                         </div>
-                    `).join('') : '<div style="text-align: center; padding: 20px; color: var(--tg-theme-hint-color);">Нет долгов</div>'}
+                    `).join('') : `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📋</div>
+                            <div class="empty-state-text">Нет долгов</div>
+                            <div class="empty-state-subtext">Отлично! У вас нет задолженностей</div>
+                        </div>
+                    `}
                 </div>
             `;
         }
