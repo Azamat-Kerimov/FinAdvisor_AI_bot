@@ -1,5 +1,5 @@
 # FastAPI сервер для Telegram Web App
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -54,47 +54,78 @@ async def get_db():
 # Telegram Web App validation
 def validate_telegram_webapp(init_data: str) -> dict:
     """Проверка подписи Telegram Web App"""
+    import urllib.parse
+    
     try:
+        # URL декодируем init_data (на случай, если он пришел закодированным)
+        init_data_decoded = urllib.parse.unquote(init_data)
+        
         # Парсим initData
         params = {}
-        for item in init_data.split('&'):
+        for item in init_data_decoded.split('&'):
             if '=' in item:
                 key, value = item.split('=', 1)
-                params[key] = value
+                # Декодируем значение (может быть закодировано несколько раз)
+                params[key] = urllib.parse.unquote(value)
         
         # Проверяем hash
         hash_value = params.pop('hash', '')
+        if not hash_value:
+            raise HTTPException(status_code=401, detail="Missing hash in initData")
+        
+        # Создаем строку для проверки (важно: сортировка по ключам)
         data_check_string = '\n'.join(f"{k}={v}" for k, v in sorted(params.items()))
         
+        # Создаем секретный ключ
         secret_key = hmac.new(
             "WebAppData".encode(), 
             BOT_TOKEN.encode(), 
             hashlib.sha256
         ).digest()
         
+        # Вычисляем хеш
         calculated_hash = hmac.new(
             secret_key,
             data_check_string.encode(),
             hashlib.sha256
         ).hexdigest()
         
+        # Сравниваем хеши
         if calculated_hash != hash_value:
+            import logging
+            logging.error(f"Hash mismatch. Expected: {hash_value}, Got: {calculated_hash}")
+            logging.error(f"Data check string: {data_check_string[:100]}...")
             raise HTTPException(status_code=401, detail="Invalid hash")
         
         # Парсим user
         user_str = params.get('user', '')
+        if not user_str:
+            raise HTTPException(status_code=401, detail="Missing user in initData")
+        
         user = json.loads(user_str) if user_str else {}
         
         return user
+    except HTTPException:
+        raise
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid user JSON: {str(e)}")
     except Exception as e:
+        import logging
+        logging.error(f"Validation error: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         raise HTTPException(status_code=401, detail=f"Validation error: {str(e)}")
 
-async def get_user_id(init_data: Optional[str] = Header(None, alias="init-data")) -> int:
+async def get_user_id(request: Request) -> int:
     """Получить user_id из Telegram Web App"""
+    # Пробуем получить init-data из заголовков (nginx может передавать как init-data или init_data)
+    init_data = request.headers.get("init-data") or request.headers.get("init_data")
+    
     if not init_data:
-        # Логируем для отладки
+        # Логируем для отладки все заголовки (безопасно)
         import logging
         logging.warning("Missing init-data header in request")
+        logging.warning(f"Available headers: {list(request.headers.keys())}")
         raise HTTPException(status_code=401, detail="Missing initData. Откройте приложение через Telegram.")
     
     try:
