@@ -575,10 +575,17 @@ async function loadConsultation() {
     const content = document.getElementById('consultation-content');
     if (!content) return;
     
-    showLoading('consultation-content', '🤔 Анализирую ваши финансы...');
+    showLoading('consultation-content', '🤔 Анализирую ваши финансы... (это займет несколько секунд)');
     
     try {
-        const result = await apiRequest('/api/consultation');
+        // Добавляем таймаут 90 секунд для запроса консультации
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Таймаут запроса. Генерация консультации заняла слишком много времени.')), 90000);
+        });
+        
+        const requestPromise = apiRequest('/api/consultation');
+        
+        const result = await Promise.race([requestPromise, timeoutPromise]);
         const consultation = result.consultation || 'Консультация недоступна';
         
         content.innerHTML = `
@@ -590,11 +597,20 @@ async function loadConsultation() {
         `;
     } catch (error) {
         console.error('Error loading consultation:', error);
+        
+        let errorMessage = 'Попробуйте позже';
+        if (error.message && error.message.includes('Таймаут')) {
+            errorMessage = 'Генерация консультации заняла слишком много времени. Попробуйте позже или используйте команду /consult в боте.';
+        } else if (error.message && error.message.includes('авторизация')) {
+            errorMessage = 'Откройте приложение через Telegram';
+        }
+        
         content.innerHTML = `
             <div class="empty-state">
                 <div class="empty-state-icon">⚠️</div>
                 <div class="empty-state-title">Ошибка загрузки</div>
-                <div class="empty-state-text">${AppState.isTelegram ? 'Попробуйте позже' : 'Откройте приложение через Telegram'}</div>
+                <div class="empty-state-text">${errorMessage}</div>
+                ${AppState.isTelegram ? '<div class="empty-state-subtext" style="margin-top: 12px;">Вы также можете использовать команду /consult в Telegram боте</div>' : ''}
             </div>
         `;
     }
