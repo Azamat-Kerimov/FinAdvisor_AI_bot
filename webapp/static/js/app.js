@@ -35,6 +35,8 @@ function showScreen(screenId) {
         fab.style.display = screenId === 'transactions' ? 'flex' : 'none';
     }
 }
+// Export immediately
+window.showScreen = showScreen;
 
 /**
  * Load data for specific screen
@@ -92,6 +94,8 @@ function switchTab(type) {
     loadCategories();
     loadTransactions();
 }
+// Export immediately
+window.switchTab = switchTab;
 
 function switchCapitalTab(tab) {
     AppState.currentCapitalTab = tab;
@@ -106,6 +110,8 @@ function switchCapitalTab(tab) {
     
     loadCapital();
 }
+// Export immediately
+window.switchCapitalTab = switchCapitalTab;
 
 // ========== Stats / Main Menu ==========
 
@@ -261,6 +267,8 @@ function showAddTransactionForm(type) {
         }
     }, 100);
 }
+// Export immediately
+window.showAddTransactionForm = showAddTransactionForm;
 
 async function addTransaction() {
     const category = document.getElementById('category-select')?.value;
@@ -306,6 +314,8 @@ async function addTransaction() {
         setButtonLoading(btn, false);
     }
 }
+// Export immediately
+window.addTransaction = addTransaction;
 
 // ========== Goals ==========
 
@@ -366,6 +376,8 @@ function showAddGoalForm() {
         AppState.hapticFeedback('light');
     }
 }
+// Export immediately
+window.showAddGoalForm = showAddGoalForm;
 
 function hideAddGoalForm() {
     const form = document.getElementById('add-goal-form');
@@ -376,6 +388,8 @@ function hideAddGoalForm() {
         document.getElementById('goal-description').value = '';
     }
 }
+// Export immediately
+window.hideAddGoalForm = hideAddGoalForm;
 
 async function addGoal() {
     const title = document.getElementById('goal-title')?.value?.trim();
@@ -415,6 +429,8 @@ async function addGoal() {
         setButtonLoading(btn, false);
     }
 }
+// Export immediately
+window.addGoal = addGoal;
 
 // ========== Capital ==========
 
@@ -572,32 +588,41 @@ async function loadConsultation() {
     }
 }
 
-// Make functions globally available for inline handlers
-window.showScreen = showScreen;
-window.switchTab = switchTab;
-window.switchCapitalTab = switchCapitalTab;
-window.showAddTransactionForm = showAddTransactionForm;
-window.addTransaction = addTransaction;
-window.showAddGoalForm = showAddGoalForm;
-window.hideAddGoalForm = hideAddGoalForm;
-window.addGoal = addGoal;
+// Functions are exported immediately after definition above
+// This ensures they're available as soon as the script loads
 
 // ========== Initialization ==========
 
+// Ensure AppState is initialized
+if (typeof AppState === 'undefined') {
+    console.error('AppState не загружен! Проверьте порядок загрузки скриптов.');
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOM загружен, инициализация приложения...');
+    
+    // Re-initialize Telegram Web App to ensure it's ready
+    if (typeof AppState !== 'undefined' && AppState.initTelegram) {
+        AppState.initTelegram();
+    }
+    
     // Initialize Telegram Web App
-    if (AppState.tg?.ready) {
+    if (AppState?.tg?.ready) {
         AppState.tg.ready();
+        AppState.tg.expand();
     }
     
     // Load initial data
-    if (document.getElementById('main-menu')?.classList.contains('active')) {
+    const mainMenu = document.getElementById('main-menu');
+    if (mainMenu && mainMenu.classList.contains('active')) {
+        console.log('Загрузка статистики...');
         loadStats();
     }
     
     // Warning for browser users
     if (!AppState.isTelegram) {
         console.warn('Приложение открыто в браузере. Для полного функционала откройте через Telegram.');
+        // Для тестирования в браузере можно добавить тестовые данные
     }
     
     // Hide FAB initially
@@ -605,4 +630,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (fab) {
         fab.style.display = 'none';
     }
+    
+    console.log('Инициализация завершена. Текущий экран:', AppState?.currentScreen || 'main-menu');
 });
