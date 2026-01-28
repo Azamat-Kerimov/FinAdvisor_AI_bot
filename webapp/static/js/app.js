@@ -119,19 +119,49 @@ async function loadStats() {
     const statsCard = document.getElementById('stats-card');
     if (!statsCard) return;
     
-    showSkeleton('stats-card', 1);
+    showSkeleton('stats-card', 3);
     
     try {
-        const stats = await apiRequest('/api/stats');
+        const [stats, goals, assets, liabilities] = await Promise.all([
+            apiRequest('/api/stats'),
+            apiRequest('/api/goals'),
+            apiRequest('/api/assets'),
+            apiRequest('/api/liabilities')
+        ]);
+        
         AppState.stats = stats;
+        AppState.goals = goals;
+        AppState.assets = assets;
+        AppState.liabilities = liabilities;
         
         const income = stats.total_income || 0;
         const expense = stats.total_expense || 0;
         const balance = income - expense;
         
+        // Капитал
+        const totalAssets = assets.reduce((sum, a) => sum + (parseFloat(a.amount) || 0), 0);
+        const totalLiabs = liabilities.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0);
+        const netCapital = totalAssets - totalLiabs;
+        
+        // Цели (первые 3)
+        const goalsHtml = goals.slice(0, 3).map(g => {
+            const progress = g.target > 0 ? Math.min(100, (g.current / g.target) * 100) : 0;
+            return `
+                <div class="goal-item">
+                    <div class="goal-title">${escapeHtml(g.title)}</div>
+                    <div class="goal-progress">
+                        <div class="goal-progress-bar">
+                            <div class="goal-progress-fill" style="width: ${progress}%"></div>
+                        </div>
+                        <div class="goal-progress-text">${formatMoney(g.current)} / ${formatMoney(g.target)} ₽</div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        
         statsCard.innerHTML = `
             <div class="balance-card">
-                <div class="balance-label">Ваш баланс</div>
+                <div class="balance-label">Баланс за месяц</div>
                 <div class="balance-value">${formatMoney(balance)} ₽</div>
                 <div class="balance-stats">
                     <div class="balance-stat-item">
@@ -144,6 +174,39 @@ async function loadStats() {
                     </div>
                 </div>
             </div>
+            
+            ${goals.length > 0 ? `
+            <div class="card stat-card">
+                <div class="card-header">
+                    <h3>🎯 Цели</h3>
+                    ${goals.length > 3 ? `<a href="#" onclick="showScreen('goals'); return false;" style="color: #4F46E5; text-decoration: none; font-size: 14px;">Все цели</a>` : ''}
+                </div>
+                <div class="goals-preview">
+                    ${goalsHtml}
+                </div>
+            </div>
+            ` : ''}
+            
+            <div class="card stat-card">
+                <div class="card-header">
+                    <h3>💼 Капитал</h3>
+                </div>
+                <div class="capital-summary">
+                    <div class="capital-item">
+                        <div class="capital-label">Активы</div>
+                        <div class="capital-value" style="color: #10B981;">${formatMoney(totalAssets)} ₽</div>
+                    </div>
+                    <div class="capital-item">
+                        <div class="capital-label">Долги</div>
+                        <div class="capital-value" style="color: #EF4444;">${formatMoney(totalLiabs)} ₽</div>
+                    </div>
+                    <div class="capital-item" style="border-top: 1px solid #E5E7EB; padding-top: 12px; margin-top: 12px;">
+                        <div class="capital-label" style="font-weight: 600;">Чистый капитал</div>
+                        <div class="capital-value" style="font-weight: 600; color: ${netCapital >= 0 ? '#10B981' : '#EF4444'};">${formatMoney(netCapital)} ₽</div>
+                    </div>
+                </div>
+            </div>
+            
             <div class="quick-actions">
                 <button class="quick-action-btn" onclick="showAddTransactionForm('income')">
                     <span class="quick-action-icon">💰</span>
@@ -559,62 +622,253 @@ async function loadReports() {
     const content = document.getElementById('reports-content');
     if (!content) return;
     
-    content.innerHTML = `
-        <div class="empty-state">
-            <div class="empty-state-icon">📊</div>
-            <div class="empty-state-title">Отчеты</div>
-            <div class="empty-state-text">Функция отчетов доступна в Telegram боте</div>
-            <div class="empty-state-subtext">Используйте команду /reports в боте для получения детальных отчетов</div>
-        </div>
-    `;
+    showSkeleton('reports-content', 3);
+    
+    try {
+        const reports = await apiRequest('/api/reports');
+        
+        // График 1: Расходы по категориям
+        const chart1Data = reports.chart1.data;
+        const chart1Items = Object.entries(chart1Data)
+            .sort((a, b) => b[1] - a[1])
+            .map(([cat, amount]) => `
+                <div class="report-item">
+                    <div class="report-item-label">${escapeHtml(cat)}</div>
+                    <div class="report-item-value">${formatMoney(amount)} ₽</div>
+                </div>
+            `).join('');
+        
+        // График 2: Прогресс по целям
+        const chart2Items = reports.chart2.data.map(g => {
+            const progress = Math.round(g.progress);
+            return `
+                <div class="goal-item">
+                    <div class="goal-title">${escapeHtml(g.title)}</div>
+                    <div class="goal-progress">
+                        <div class="goal-progress-bar">
+                            <div class="goal-progress-fill" style="width: ${progress}%"></div>
+                        </div>
+                        <div class="goal-progress-text">${formatMoney(g.current)} / ${formatMoney(g.target)} ₽ (${progress}%)</div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        
+        // График 3: Динамика капитала
+        const chart3Data = reports.chart3.data;
+        const maxCapital = Math.max(...chart3Data.map(d => Math.max(d.assets, d.liabilities, Math.abs(d.net_capital))));
+        const chart3Items = chart3Data.map(d => {
+            const assetsPercent = (d.assets / maxCapital) * 100;
+            const liabsPercent = (d.liabilities / maxCapital) * 100;
+            return `
+                <div class="capital-history-item">
+                    <div class="capital-history-week">${d.week}</div>
+                    <div class="capital-history-bars">
+                        <div class="capital-bar" style="width: ${assetsPercent}%; background: #10B981;" title="Активы: ${formatMoney(d.assets)} ₽"></div>
+                        <div class="capital-bar" style="width: ${liabsPercent}%; background: #EF4444; margin-left: 4px;" title="Долги: ${formatMoney(d.liabilities)} ₽"></div>
+                    </div>
+                    <div class="capital-history-value" style="color: ${d.net_capital >= 0 ? '#10B981' : '#EF4444'}">
+                        ${formatMoney(d.net_capital)} ₽
+                    </div>
+                </div>
+            `;
+        }).join('');
+        
+        content.innerHTML = `
+            <div class="report-section">
+                <div class="report-header">
+                    <h3>${reports.chart1.title}</h3>
+                    <p class="report-description">${reports.chart1.description}</p>
+                </div>
+                <div class="report-chart">
+                    ${chart1Items || '<div class="empty-state-text">Нет данных</div>'}
+                </div>
+            </div>
+            
+            <div class="report-section">
+                <div class="report-header">
+                    <h3>${reports.chart2.title}</h3>
+                    <p class="report-description">${reports.chart2.description}</p>
+                </div>
+                <div class="report-chart">
+                    ${chart2Items || '<div class="empty-state-text">Нет целей</div>'}
+                </div>
+            </div>
+            
+            <div class="report-section">
+                <div class="report-header">
+                    <h3>${reports.chart3.title}</h3>
+                    <p class="report-description">${reports.chart3.description}</p>
+                </div>
+                <div class="report-chart">
+                    ${chart3Items || '<div class="empty-state-text">Нет данных</div>'}
+                </div>
+            </div>
+        `;
+    } catch (error) {
+        console.error('Error loading reports:', error);
+        content.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">⚠️</div>
+                <div class="empty-state-title">Ошибка загрузки</div>
+                <div class="empty-state-text">${error.message}</div>
+            </div>
+        `;
+    }
 }
 
 // ========== Consultation ==========
+
+let consultationHistory = [];
+let consultationLimit = { used: 0, limit: 5 };
 
 async function loadConsultation() {
     const content = document.getElementById('consultation-content');
     if (!content) return;
     
-    showLoading('consultation-content', '🤔 Анализирую ваши финансы... (это займет несколько секунд)');
-    
+    // Загружаем историю и лимит
     try {
-        // Добавляем таймаут 90 секунд для запроса консультации
-        const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('Таймаут запроса. Генерация консультации заняла слишком много времени.')), 90000);
-        });
+        const [history, currentConsultation] = await Promise.all([
+            apiRequest('/api/consultation/history').catch(() => []),
+            apiRequest('/api/consultation').catch(() => null)
+        ]);
         
-        const requestPromise = apiRequest('/api/consultation');
+        consultationHistory = history || [];
         
-        const result = await Promise.race([requestPromise, timeoutPromise]);
-        const consultation = result.consultation || 'Консультация недоступна';
-        
-        content.innerHTML = `
-            <div class="consultation-card">
-                <div class="consultation-content">
-                    ${markdownToHtml(consultation)}
+        // Если есть текущая консультация, показываем её
+        if (currentConsultation && currentConsultation.consultation) {
+            consultationLimit.used = currentConsultation.requests_used || 0;
+            consultationLimit.limit = 5;
+            
+            content.innerHTML = `
+                <div class="consultation-controls">
+                    <button class="btn btn-primary" onclick="requestNewConsultation()">
+                        💡 Новая консультация
+                    </button>
+                    <div class="consultation-limit">
+                        Использовано: ${consultationLimit.used}/${consultationLimit.limit} в этом месяце
+                    </div>
                 </div>
-            </div>
-        `;
+                <div class="consultation-card">
+                    <div class="consultation-content">
+                        ${markdownToHtml(currentConsultation.consultation)}
+                    </div>
+                </div>
+                ${consultationHistory.length > 0 ? `
+                <div class="consultation-history">
+                    <h3>📜 История консультаций</h3>
+                    ${consultationHistory.map((item, idx) => `
+                        <div class="consultation-history-item">
+                            <div class="consultation-history-date">${formatDate(item.date)}</div>
+                            <div class="consultation-history-content">${markdownToHtml(item.content.substring(0, 200))}${item.content.length > 200 ? '...' : ''}</div>
+                        </div>
+                    `).join('')}
+                </div>
+                ` : ''}
+            `;
+        } else if (currentConsultation && currentConsultation.limit_reached) {
+            consultationLimit.used = currentConsultation.requests_used || 5;
+            consultationLimit.limit = 5;
+            
+            content.innerHTML = `
+                <div class="consultation-controls">
+                    <button class="btn btn-primary" disabled>
+                        💡 Новая консультация
+                    </button>
+                    <div class="consultation-limit" style="color: #EF4444;">
+                        Лимит исчерпан: ${consultationLimit.used}/${consultationLimit.limit}
+                    </div>
+                </div>
+                <div class="empty-state">
+                    <div class="empty-state-icon">⏰</div>
+                    <div class="empty-state-title">Лимит консультаций</div>
+                    <div class="empty-state-text">${currentConsultation.error || 'Вы использовали все консультации в этом месяце'}</div>
+                </div>
+                ${consultationHistory.length > 0 ? `
+                <div class="consultation-history">
+                    <h3>📜 История консультаций</h3>
+                    ${consultationHistory.map((item, idx) => `
+                        <div class="consultation-history-item">
+                            <div class="consultation-history-date">${formatDate(item.date)}</div>
+                            <div class="consultation-history-content">${markdownToHtml(item.content.substring(0, 200))}${item.content.length > 200 ? '...' : ''}</div>
+                        </div>
+                    `).join('')}
+                </div>
+                ` : ''}
+            `;
+        } else {
+            // Нет текущей консультации, показываем форму запроса
+            content.innerHTML = `
+                <div class="consultation-controls">
+                    <button class="btn btn-primary" onclick="requestNewConsultation()">
+                        💡 Получить консультацию
+                    </button>
+                    <div class="consultation-limit">
+                        Использовано: ${consultationLimit.used}/${consultationLimit.limit} в этом месяце
+                    </div>
+                </div>
+                ${consultationHistory.length > 0 ? `
+                <div class="consultation-history">
+                    <h3>📜 История консультаций</h3>
+                    ${consultationHistory.map((item, idx) => `
+                        <div class="consultation-history-item">
+                            <div class="consultation-history-date">${formatDate(item.date)}</div>
+                            <div class="consultation-history-content">${markdownToHtml(item.content.substring(0, 200))}${item.content.length > 200 ? '...' : ''}</div>
+                        </div>
+                    `).join('')}
+                </div>
+                ` : '<div class="empty-state"><div class="empty-state-icon">💡</div><div class="empty-state-title">Нет консультаций</div><div class="empty-state-text">Нажмите кнопку выше, чтобы получить первую консультацию</div></div>'}
+            `;
+        }
     } catch (error) {
         console.error('Error loading consultation:', error);
-        
-        let errorMessage = 'Попробуйте позже';
-        if (error.message && error.message.includes('Таймаут')) {
-            errorMessage = 'Генерация консультации заняла слишком много времени. Попробуйте позже или используйте команду /consult в боте.';
-        } else if (error.message && error.message.includes('авторизация')) {
-            errorMessage = 'Откройте приложение через Telegram';
-        }
-        
         content.innerHTML = `
             <div class="empty-state">
                 <div class="empty-state-icon">⚠️</div>
                 <div class="empty-state-title">Ошибка загрузки</div>
-                <div class="empty-state-text">${errorMessage}</div>
-                ${AppState.isTelegram ? '<div class="empty-state-subtext" style="margin-top: 12px;">Вы также можете использовать команду /consult в Telegram боте</div>' : ''}
+                <div class="empty-state-text">${error.message}</div>
             </div>
         `;
     }
 }
+
+async function requestNewConsultation() {
+    const content = document.getElementById('consultation-content');
+    if (!content) return;
+    
+    showLoading('consultation-content', '🤔 Анализирую ваши финансы... (это займет несколько секунд)');
+    AppState.hapticFeedback('light');
+    
+    try {
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Таймаут запроса')), 90000);
+        });
+        
+        const result = await Promise.race([
+            apiRequest('/api/consultation'),
+            timeoutPromise
+        ]);
+        
+        if (result.limit_reached) {
+            consultationLimit.used = result.requests_used || 5;
+            await loadConsultation(); // Перезагружаем для показа истории
+            showNotification('Лимит консультаций исчерпан', 'error');
+            return;
+        }
+        
+        consultationLimit.used = result.requests_used || 0;
+        await loadConsultation(); // Перезагружаем для показа новой консультации и истории
+        showNotification('✅ Консультация получена!');
+        AppState.hapticFeedback('medium');
+    } catch (error) {
+        console.error('Error requesting consultation:', error);
+        showNotification('❌ Ошибка при получении консультации', 'error');
+        AppState.hapticFeedback('heavy');
+        await loadConsultation(); // Перезагружаем для показа ошибки
+    }
+}
+// Export immediately
+window.requestNewConsultation = requestNewConsultation;
 
 // Functions are exported immediately after definition above
 // This ensures they're available as soon as the script loads
