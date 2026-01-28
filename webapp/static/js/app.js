@@ -1,199 +1,173 @@
-// Telegram Web App инициализация с fallback для браузера
-let tg = null;
-let isTelegram = false;
+/* ============================================
+   Main Application - Screen Management & Data Loading
+   ============================================ */
 
-if (window.Telegram && window.Telegram.WebApp) {
-    tg = window.Telegram.WebApp;
-    isTelegram = true;
-    tg.ready();
-    tg.expand();
-} else {
-    // Fallback для работы в обычном браузере
-    tg = {
-        ready: () => {},
-        expand: () => {},
-        showAlert: (message) => alert(message),
-        initData: ''
-    };
-    isTelegram = false;
-}
+// Import modules (in browser, they're loaded via script tags)
+// In production, use a bundler or load them in order
 
-// API базовый URL
-const API_URL = window.location.origin;
-
-// Получить initData для аутентификации
-function getInitData() {
-    if (isTelegram && tg.initData) {
-        return tg.initData;
-    }
-    // Для тестирования в браузере - можно использовать mock данные
-    // В продакшене это должно быть только через Telegram
-    return '';
-}
-
-// Показ уведомлений
-function showNotification(message, type = 'info') {
-    if (isTelegram && tg.showAlert) {
-        tg.showAlert(message);
-    } else {
-        alert(message);
-    }
-}
-
-// API запросы с обработкой ошибок
-async function apiRequest(endpoint, options = {}) {
-    const initData = getInitData();
-    
-    // Если нет initData и это не публичный endpoint, возвращаем ошибку
-    if (!initData && !endpoint.includes('/api/stats')) {
-        throw new Error('Требуется авторизация. Откройте приложение через Telegram.');
-    }
-    
-    const headers = {
-        'Content-Type': 'application/json',
-        ...(initData && { 'init-data': initData }),
-        ...options.headers
-    };
-    
-    try {
-        const response = await fetch(`${API_URL}${endpoint}`, {
-            ...options,
-            headers
-        });
-        
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`API error: ${response.status} - ${errorText}`);
-        }
-        
-        return await response.json();
-    } catch (error) {
-        console.error('API Request Error:', error);
-        throw error;
-    }
-}
-
-// Категории
-const INCOME_CATEGORIES = {
-    'Заработная плата': '💼',
-    'Дивиденды и купоны': '📈',
-    'Прочие доходы': '💰'
-};
-
-const EXPENSE_CATEGORIES = {
-    'Супермаркеты': '🛒',
-    'Рестораны и кафе': '🍽️',
-    'Транспорт': '🚗',
-    'Аренда жилья': '🏠',
-    'Коммунальные платежи': '💡',
-    'Здоровье и красота': '💊',
-    'Развлечения': '🎬',
-    'Прочие расходы': '📦'
-};
-
-let currentTab = 'income';
-
-// Индикатор загрузки
-function showLoading(elementId, message = 'Загрузка...') {
-    const element = document.getElementById(elementId);
-    if (element) {
-        element.innerHTML = `
-            <div style="text-align: center; padding: 20px;">
-                <div class="spinner"></div>
-                <p style="margin-top: 12px; color: var(--tg-theme-hint-color);">${message}</p>
-            </div>
-        `;
-    }
-}
-
-function hideLoading(elementId) {
-    const element = document.getElementById(elementId);
-    if (element && element.innerHTML.includes('spinner')) {
-        // Loading будет заменен контентом
-    }
-}
-
-// Навигация
+/**
+ * Show screen with animation
+ */
 function showScreen(screenId) {
+    AppState.hapticFeedback('light');
+    
+    // Hide all screens
     document.querySelectorAll('.screen').forEach(screen => {
         screen.classList.remove('active');
     });
+    
+    // Show target screen
     const targetScreen = document.getElementById(screenId);
     if (targetScreen) {
         targetScreen.classList.add('active');
+        AppState.currentScreen = screenId;
+        
+        // Load data when screen is shown
+        loadScreenData(screenId);
     }
     
-    // Загружаем данные при открытии экрана
-    if (screenId === 'main-menu') {
-        loadStats();
-    } else if (screenId === 'transactions') {
-        loadTransactions();
-        loadCategories();
-    } else if (screenId === 'goals') {
-        loadGoals();
-    } else if (screenId === 'capital') {
-        loadCapital();
-    } else if (screenId === 'consultation') {
-        loadConsultation();
-    } else if (screenId === 'reports') {
-        loadReports();
+    // Update bottom navigation
+    updateBottomNav(screenId);
+    
+    // Show/hide FAB button
+    const fab = document.getElementById('fab-add-transaction');
+    if (fab) {
+        fab.style.display = screenId === 'transactions' ? 'flex' : 'none';
     }
 }
 
-// Статистика
+/**
+ * Load data for specific screen
+ */
+function loadScreenData(screenId) {
+    switch (screenId) {
+        case 'main-menu':
+            loadStats();
+            break;
+        case 'transactions':
+            loadTransactions();
+            loadCategories();
+            break;
+        case 'goals':
+            loadGoals();
+            break;
+        case 'capital':
+            loadCapital();
+            break;
+        case 'consultation':
+            loadConsultation();
+            break;
+        case 'reports':
+            loadReports();
+            break;
+    }
+}
+
+/**
+ * Update bottom navigation active state
+ */
+function updateBottomNav(screenId) {
+    document.querySelectorAll('.nav-item').forEach(item => {
+        item.classList.remove('active');
+        if (item.dataset.screen === screenId) {
+            item.classList.add('active');
+        }
+    });
+}
+
+/**
+ * Switch tab (income/expense, assets/liabilities)
+ */
+function switchTab(type) {
+    AppState.currentTab = type;
+    AppState.hapticFeedback('light');
+    
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.classList.remove('active');
+        if (tab.dataset.tab === type) {
+            tab.classList.add('active');
+        }
+    });
+    
+    loadCategories();
+    loadTransactions();
+}
+
+function switchCapitalTab(tab) {
+    AppState.currentCapitalTab = tab;
+    AppState.hapticFeedback('light');
+    
+    document.querySelectorAll('#capital .tab').forEach(t => {
+        t.classList.remove('active');
+        if (t.dataset.tab === tab) {
+            t.classList.add('active');
+        }
+    });
+    
+    loadCapital();
+}
+
+// ========== Stats / Main Menu ==========
+
 async function loadStats() {
     const statsCard = document.getElementById('stats-card');
-    showLoading('stats-card', 'Загрузка статистики...');
+    if (!statsCard) return;
+    
+    showSkeleton('stats-card', 1);
     
     try {
         const stats = await apiRequest('/api/stats');
+        AppState.stats = stats;
         
         const income = stats.total_income || 0;
         const expense = stats.total_expense || 0;
         const balance = income - expense;
         
         statsCard.innerHTML = `
-            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 20px;">
-                <div style="text-align: center; padding: 16px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(16, 185, 129, 0.05) 100%); border-radius: 12px;">
-                    <div style="font-size: 13px; color: #6B7280; margin-bottom: 8px; font-weight: 500;">Доходы</div>
-                    <div style="font-size: 24px; font-weight: 700; color: #10B981;">${formatMoney(income)} ₽</div>
+            <div class="balance-card">
+                <div class="balance-label">Ваш баланс</div>
+                <div class="balance-value">${formatMoney(balance)} ₽</div>
+                <div class="balance-stats">
+                    <div class="balance-stat-item">
+                        <div class="balance-stat-label">Доходы</div>
+                        <div class="balance-stat-value" style="color: #10B981;">+${formatMoney(income)} ₽</div>
+                    </div>
+                    <div class="balance-stat-item">
+                        <div class="balance-stat-label">Расходы</div>
+                        <div class="balance-stat-value" style="color: #EF4444;">-${formatMoney(expense)} ₽</div>
+                    </div>
                 </div>
-                <div style="text-align: center; padding: 16px; background: linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(239, 68, 68, 0.05) 100%); border-radius: 12px;">
-                    <div style="font-size: 13px; color: #6B7280; margin-bottom: 8px; font-weight: 500;">Расходы</div>
-                    <div style="font-size: 24px; font-weight: 700; color: #EF4444;">${formatMoney(expense)} ₽</div>
-                </div>
-                <div style="text-align: center; padding: 16px; background: linear-gradient(135deg, rgba(79, 70, 229, 0.1) 0%, rgba(79, 70, 229, 0.05) 100%); border-radius: 12px;">
-                    <div style="font-size: 13px; color: #6B7280; margin-bottom: 8px; font-weight: 500;">Остаток</div>
-                    <div style="font-size: 24px; font-weight: 700; color: ${balance >= 0 ? '#10B981' : '#EF4444'};">${formatMoney(balance)} ₽</div>
-                </div>
+            </div>
+            <div class="quick-actions">
+                <button class="quick-action-btn" onclick="showAddTransactionForm('income')">
+                    <span class="quick-action-icon">💰</span>
+                    <span class="quick-action-label">Добавить доход</span>
+                </button>
+                <button class="quick-action-btn" onclick="showAddTransactionForm('expense')">
+                    <span class="quick-action-icon">💸</span>
+                    <span class="quick-action-label">Добавить расход</span>
+                </button>
             </div>
         `;
     } catch (error) {
         console.error('Error loading stats:', error);
         statsCard.innerHTML = `
-            <div style="text-align: center; padding: 20px; color: #e74c3c;">
-                <p>⚠️ Ошибка загрузки статистики</p>
-                <p style="font-size: 12px; margin-top: 8px; color: var(--tg-theme-hint-color);">
-                    ${!isTelegram ? 'Откройте приложение через Telegram для доступа к данным' : 'Попробуйте обновить страницу'}
-                </p>
+            <div class="empty-state">
+                <div class="empty-state-icon">⚠️</div>
+                <div class="empty-state-title">Ошибка загрузки</div>
+                <div class="empty-state-text">${AppState.isTelegram ? 'Попробуйте обновить страницу' : 'Откройте приложение через Telegram'}</div>
             </div>
         `;
     }
 }
 
-// Транзакции
-function switchTab(type) {
-    currentTab = type;
-    document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-    event.target.classList.add('active');
-    loadCategories();
-}
+// ========== Transactions ==========
 
 function loadCategories() {
     const select = document.getElementById('category-select');
     if (!select) return;
     
-    const categories = currentTab === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+    const categories = AppState.getCategories();
     
     select.innerHTML = '<option value="">Выберите категорию</option>';
     for (const [cat, emoji] of Object.entries(categories)) {
@@ -208,53 +182,84 @@ async function loadTransactions() {
     const list = document.getElementById('transactions-list');
     if (!list) return;
     
-    showLoading('transactions-list', 'Загрузка транзакций...');
+    showSkeleton('transactions-list', 5);
     
     try {
-        const transactions = await apiRequest('/api/transactions?limit=20');
+        const transactions = await apiRequest('/api/transactions?limit=50');
+        AppState.transactions = transactions;
         
-        if (transactions.length === 0) {
-            list.innerHTML = `
-                <div class="empty-state">
-                    <div class="empty-state-icon">📝</div>
-                    <div class="empty-state-text">Нет транзакций</div>
-                    <div class="empty-state-subtext">Добавьте первую транзакцию</div>
-                </div>
-            `;
+        // Filter by current tab
+        const filtered = transactions.filter(tx => {
+            const amount = parseFloat(tx.amount);
+            if (AppState.currentTab === 'income') {
+                return amount >= 0;
+            } else {
+                return amount < 0;
+            }
+        });
+        
+        if (filtered.length === 0) {
+            showEmptyState(
+                'transactions-list',
+                '📝',
+                'Нет транзакций',
+                `Добавьте первую ${AppState.currentTab === 'income' ? 'доход' : 'расход'}`
+            );
             return;
         }
         
-        list.innerHTML = transactions.map(tx => {
+        list.innerHTML = filtered.map(tx => {
             const amount = parseFloat(tx.amount);
             const isPositive = amount >= 0;
-            const date = new Date(tx.created_at).toLocaleDateString('ru-RU', {
-                day: '2-digit',
-                month: '2-digit',
-                year: 'numeric'
-            });
+            const absAmount = Math.abs(amount);
+            const categories = AppState.getCategories();
+            const emoji = categories[tx.category] || '💰';
             
             return `
-                <div class="list-item">
-                    <div class="list-item-header">
-                        <span class="list-item-title">${tx.category || '—'}</span>
-                        <span class="list-item-amount ${isPositive ? 'positive' : 'negative'}">
-                            ${isPositive ? '+' : ''}${formatMoney(Math.abs(amount))} ₽
-                        </span>
+                <div class="transaction-card slide-up">
+                    <div class="transaction-icon ${isPositive ? 'income' : 'expense'}">
+                        ${emoji}
                     </div>
-                    ${tx.description ? `<div style="margin-top: 6px; color: var(--tg-theme-hint-color); font-size: 14px;">${escapeHtml(tx.description)}</div>` : ''}
-                    <div class="list-item-meta">📅 ${date}</div>
+                    <div class="transaction-content">
+                        <div class="transaction-title">${escapeHtml(tx.category || '—')}</div>
+                        <div class="transaction-meta">${formatDate(tx.created_at)}</div>
+                        ${tx.description ? `<div class="transaction-meta" style="margin-top: 4px;">${escapeHtml(tx.description)}</div>` : ''}
+                    </div>
+                    <div class="transaction-amount ${isPositive ? 'positive' : 'negative'}">
+                        ${isPositive ? '+' : ''}${formatMoney(absAmount)} ₽
+                    </div>
                 </div>
             `;
         }).join('');
     } catch (error) {
         console.error('Error loading transactions:', error);
         list.innerHTML = `
-            <div style="text-align: center; padding: 20px; color: #e74c3c;">
-                <p>⚠️ Ошибка загрузки транзакций</p>
-                <p style="font-size: 12px; margin-top: 8px; color: var(--tg-theme-hint-color);">${error.message}</p>
+            <div class="empty-state">
+                <div class="empty-state-icon">⚠️</div>
+                <div class="empty-state-title">Ошибка загрузки</div>
+                <div class="empty-state-text">${error.message}</div>
             </div>
         `;
     }
+}
+
+function showAddTransactionForm(type) {
+    AppState.currentTab = type;
+    showScreen('transactions');
+    
+    // Switch to correct tab
+    setTimeout(() => {
+        const tab = document.querySelector(`.tab[data-tab="${type}"]`);
+        if (tab) {
+            tab.click();
+        }
+        
+        // Scroll to form
+        const form = document.getElementById('transaction-form');
+        if (form) {
+            form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    }, 100);
 }
 
 async function addTransaction() {
@@ -262,20 +267,20 @@ async function addTransaction() {
     const amountInput = document.getElementById('amount-input');
     const descriptionInput = document.getElementById('description-input');
     const amount = parseFloat(amountInput?.value);
-    const description = descriptionInput?.value || '';
+    const description = descriptionInput?.value?.trim() || '';
     
     if (!category || !amount || amount <= 0) {
         showNotification('Заполните все обязательные поля', 'error');
+        AppState.hapticFeedback('medium');
         return;
     }
     
     const btn = event.target;
-    const originalText = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Добавление...';
+    setButtonLoading(btn, true);
+    AppState.hapticFeedback('light');
     
     try {
-        const finalAmount = currentTab === 'expense' ? -amount : amount;
+        const finalAmount = AppState.currentTab === 'expense' ? -amount : amount;
         await apiRequest('/api/transactions', {
             method: 'POST',
             body: JSON.stringify({
@@ -286,37 +291,41 @@ async function addTransaction() {
         });
         
         showNotification('✅ Транзакция добавлена!');
+        AppState.hapticFeedback('medium');
+        
         amountInput.value = '';
         descriptionInput.value = '';
+        
         loadTransactions();
         loadStats();
     } catch (error) {
         showNotification('❌ Ошибка при добавлении транзакции', 'error');
+        AppState.hapticFeedback('heavy');
         console.error(error);
     } finally {
-        btn.disabled = false;
-        btn.textContent = originalText;
+        setButtonLoading(btn, false);
     }
 }
 
-// Цели
+// ========== Goals ==========
+
 async function loadGoals() {
     const list = document.getElementById('goals-list');
     if (!list) return;
     
-    showLoading('goals-list', 'Загрузка целей...');
+    showSkeleton('goals-list', 3);
     
     try {
         const goals = await apiRequest('/api/goals');
+        AppState.goals = goals;
         
         if (goals.length === 0) {
-            list.innerHTML = `
-                <div class="empty-state">
-                    <div class="empty-state-icon">🎯</div>
-                    <div class="empty-state-text">Нет целей</div>
-                    <div class="empty-state-subtext">Создайте первую финансовую цель</div>
-                </div>
-            `;
+            showEmptyState(
+                'goals-list',
+                '🎯',
+                'Нет целей',
+                'Создайте первую финансовую цель'
+            );
             return;
         }
         
@@ -325,28 +334,27 @@ async function loadGoals() {
             const progressPercent = Math.min(progress, 100);
             
             return `
-                <div class="goal-item">
-                    <div class="list-item-header">
-                        <span class="list-item-title">${escapeHtml(goal.title)}</span>
-                        <span class="list-item-amount">${formatMoney(goal.current)} / ${formatMoney(goal.target)} ₽</span>
-                    </div>
-                    <div style="margin-top: 8px; font-size: 12px; color: var(--tg-theme-hint-color);">
-                        Прогресс: ${Math.round(progressPercent)}%
+                <div class="goal-card slide-up">
+                    <div class="goal-header">
+                        <div class="goal-title">${escapeHtml(goal.title)}</div>
+                        <div class="goal-amount">${formatMoney(goal.current)} / ${formatMoney(goal.target)} ₽</div>
                     </div>
                     <div class="goal-progress">
                         <div class="goal-progress-bar" style="width: ${progressPercent}%"></div>
                     </div>
-                    ${goal.description ? `<div style="margin-top: 8px; color: var(--tg-theme-hint-color); font-size: 14px;">${escapeHtml(goal.description)}</div>` : ''}
+                    <div class="goal-progress-text">Прогресс: ${Math.round(progressPercent)}%</div>
+                    ${goal.description ? `<div style="margin-top: 12px; color: var(--text-secondary); font-size: 14px;">${escapeHtml(goal.description)}</div>` : ''}
                 </div>
             `;
         }).join('');
     } catch (error) {
         console.error('Error loading goals:', error);
-        list.innerHTML = `
-            <div style="text-align: center; padding: 20px; color: #e74c3c;">
-                <p>⚠️ Ошибка загрузки целей</p>
-            </div>
-        `;
+        showEmptyState(
+            'goals-list',
+            '⚠️',
+            'Ошибка загрузки',
+            error.message
+        );
     }
 }
 
@@ -355,6 +363,7 @@ function showAddGoalForm() {
     if (form) {
         form.style.display = 'block';
         form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        AppState.hapticFeedback('light');
     }
 }
 
@@ -362,7 +371,6 @@ function hideAddGoalForm() {
     const form = document.getElementById('add-goal-form');
     if (form) {
         form.style.display = 'none';
-        // Очищаем поля
         document.getElementById('goal-title').value = '';
         document.getElementById('goal-target').value = '';
         document.getElementById('goal-description').value = '';
@@ -370,19 +378,19 @@ function hideAddGoalForm() {
 }
 
 async function addGoal() {
-    const title = document.getElementById('goal-title')?.value;
+    const title = document.getElementById('goal-title')?.value?.trim();
     const target = parseFloat(document.getElementById('goal-target')?.value);
-    const description = document.getElementById('goal-description')?.value || '';
+    const description = document.getElementById('goal-description')?.value?.trim() || '';
     
     if (!title || !target || target <= 0) {
         showNotification('Заполните все обязательные поля', 'error');
+        AppState.hapticFeedback('medium');
         return;
     }
     
     const btn = event.target;
-    const originalText = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Создание...';
+    setButtonLoading(btn, true);
+    AppState.hapticFeedback('light');
     
     try {
         await apiRequest('/api/goals', {
@@ -395,125 +403,146 @@ async function addGoal() {
         });
         
         showNotification('✅ Цель создана!');
+        AppState.hapticFeedback('medium');
+        
         hideAddGoalForm();
         loadGoals();
     } catch (error) {
         showNotification('❌ Ошибка при создании цели', 'error');
+        AppState.hapticFeedback('heavy');
         console.error(error);
     } finally {
-        btn.disabled = false;
-        btn.textContent = originalText;
+        setButtonLoading(btn, false);
     }
 }
 
-// Капитал
-let currentCapitalTab = 'assets';
-
-function switchCapitalTab(tab) {
-    currentCapitalTab = tab;
-    const tabs = document.querySelectorAll('#capital .tab');
-    tabs.forEach(t => t.classList.remove('active'));
-    event.target.classList.add('active');
-    loadCapital();
-}
+// ========== Capital ==========
 
 async function loadCapital() {
     const content = document.getElementById('capital-content');
     if (!content) return;
     
-    showLoading('capital-content', 'Загрузка данных...');
+    showSkeleton('capital-content', 3);
     
     try {
-        if (currentCapitalTab === 'assets') {
+        if (AppState.currentCapitalTab === 'assets') {
             const assets = await apiRequest('/api/assets');
+            AppState.assets = assets;
             
             const total = assets.reduce((sum, a) => sum + (parseFloat(a.amount) || 0), 0);
             
-            content.innerHTML = `
-                <div class="capital-summary">
-                    <div class="capital-summary-item">
-                        <span>Всего активов:</span>
-                        <strong style="color: #2ecc71; font-size: 18px;">${formatMoney(total)} ₽</strong>
-                    </div>
-                </div>
-                <div class="list">
-                    ${assets.length > 0 ? assets.map(asset => `
-                        <div class="list-item">
-                            <div class="list-item-header">
-                                <span class="list-item-title">${escapeHtml(asset.title)}</span>
-                                <span class="list-item-amount positive">${formatMoney(asset.amount || 0)} ₽</span>
-                            </div>
-                            <div class="list-item-meta">${asset.type || '—'}</div>
+            if (assets.length === 0) {
+                content.innerHTML = `
+                    <div class="capital-summary">
+                        <div class="capital-summary-item">
+                            <span>Всего активов:</span>
+                            <strong style="color: var(--accent); font-size: 18px;">${formatMoney(total)} ₽</strong>
                         </div>
-                    `).join('') : `
+                    </div>
+                    <div class="list">
                         <div class="empty-state">
                             <div class="empty-state-icon">💼</div>
-                            <div class="empty-state-text">Нет активов</div>
-                            <div class="empty-state-subtext">Добавьте информацию о ваших активах</div>
+                            <div class="empty-state-title">Нет активов</div>
+                            <div class="empty-state-text">Добавьте информацию о ваших активах</div>
                         </div>
-                    `}
-                </div>
-            `;
+                    </div>
+                `;
+            } else {
+                content.innerHTML = `
+                    <div class="capital-summary">
+                        <div class="capital-summary-item">
+                            <span>Всего активов:</span>
+                            <strong style="color: var(--accent); font-size: 18px;">${formatMoney(total)} ₽</strong>
+                        </div>
+                    </div>
+                    <div class="list">
+                        ${assets.map(asset => `
+                            <div class="transaction-card slide-up">
+                                <div class="transaction-icon income">💼</div>
+                                <div class="transaction-content">
+                                    <div class="transaction-title">${escapeHtml(asset.title)}</div>
+                                    <div class="transaction-meta">${escapeHtml(asset.type || '—')}</div>
+                                </div>
+                                <div class="transaction-amount positive">${formatMoney(asset.amount || 0)} ₽</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
         } else {
             const liabilities = await apiRequest('/api/liabilities');
+            AppState.liabilities = liabilities;
             
             const total = liabilities.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0);
             
-            content.innerHTML = `
-                <div class="capital-summary">
-                    <div class="capital-summary-item">
-                        <span>Всего долгов:</span>
-                        <strong style="color: #e74c3c; font-size: 18px;">${formatMoney(total)} ₽</strong>
-                    </div>
-                </div>
-                <div class="list">
-                    ${liabilities.length > 0 ? liabilities.map(liab => `
-                        <div class="list-item">
-                            <div class="list-item-header">
-                                <span class="list-item-title">${escapeHtml(liab.title)}</span>
-                                <span class="list-item-amount negative">${formatMoney(liab.amount || 0)} ₽</span>
-                            </div>
-                            <div class="list-item-meta">${liab.type || '—'} | Платеж: ${formatMoney(liab.monthly_payment || 0)} ₽/мес</div>
+            if (liabilities.length === 0) {
+                content.innerHTML = `
+                    <div class="capital-summary">
+                        <div class="capital-summary-item">
+                            <span>Всего долгов:</span>
+                            <strong style="color: var(--danger); font-size: 18px;">${formatMoney(total)} ₽</strong>
                         </div>
-                    `).join('') : `
+                    </div>
+                    <div class="list">
                         <div class="empty-state">
                             <div class="empty-state-icon">📋</div>
-                            <div class="empty-state-text">Нет долгов</div>
-                            <div class="empty-state-subtext">Отлично! У вас нет задолженностей</div>
+                            <div class="empty-state-title">Нет долгов</div>
+                            <div class="empty-state-text">Отлично! У вас нет задолженностей</div>
                         </div>
-                    `}
-                </div>
-            `;
+                    </div>
+                `;
+            } else {
+                content.innerHTML = `
+                    <div class="capital-summary">
+                        <div class="capital-summary-item">
+                            <span>Всего долгов:</span>
+                            <strong style="color: var(--danger); font-size: 18px;">${formatMoney(total)} ₽</strong>
+                        </div>
+                    </div>
+                    <div class="list">
+                        ${liabilities.map(liab => `
+                            <div class="transaction-card slide-up">
+                                <div class="transaction-icon expense">📋</div>
+                                <div class="transaction-content">
+                                    <div class="transaction-title">${escapeHtml(liab.title)}</div>
+                                    <div class="transaction-meta">${escapeHtml(liab.type || '—')} | Платеж: ${formatMoney(liab.monthly_payment || 0)} ₽/мес</div>
+                                </div>
+                                <div class="transaction-amount negative">${formatMoney(liab.amount || 0)} ₽</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
         }
     } catch (error) {
         console.error('Error loading capital:', error);
-        content.innerHTML = `
-            <div style="text-align: center; padding: 20px; color: #e74c3c;">
-                <p>⚠️ Ошибка загрузки данных</p>
-            </div>
-        `;
+        showEmptyState(
+            'capital-content',
+            '⚠️',
+            'Ошибка загрузки',
+            error.message
+        );
     }
 }
 
-// Отчеты
+// ========== Reports ==========
+
 async function loadReports() {
     const content = document.getElementById('reports-content');
     if (!content) return;
     
     content.innerHTML = `
-        <div style="text-align: center; padding: 40px 20px;">
-            <p style="font-size: 18px; margin-bottom: 12px;">📊 Отчеты</p>
-            <p style="color: var(--tg-theme-hint-color); font-size: 14px;">
-                Функция отчетов доступна в Telegram боте
-            </p>
-            <p style="margin-top: 20px; font-size: 12px; color: var(--tg-theme-hint-color);">
-                Используйте команду /reports в боте для получения детальных отчетов
-            </p>
+        <div class="empty-state">
+            <div class="empty-state-icon">📊</div>
+            <div class="empty-state-title">Отчеты</div>
+            <div class="empty-state-text">Функция отчетов доступна в Telegram боте</div>
+            <div class="empty-state-subtext">Используйте команду /reports в боте для получения детальных отчетов</div>
         </div>
     `;
 }
 
-// Консультация
+// ========== Consultation ==========
+
 async function loadConsultation() {
     const content = document.getElementById('consultation-content');
     if (!content) return;
@@ -524,60 +553,56 @@ async function loadConsultation() {
         const result = await apiRequest('/api/consultation');
         const consultation = result.consultation || 'Консультация недоступна';
         
-        // Конвертируем Markdown в HTML (простая версия)
-        const html = consultation
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')
-            .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-            .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-            .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-            .replace(/^• (.*$)/gim, '<li>$1</li>')
-            .replace(/^(\d+)️⃣ (.*$)/gim, '<h3>$1. $2</h3>')
-            .replace(/\n/g, '<br>');
-        
         content.innerHTML = `
-            <div style="white-space: pre-wrap; line-height: 1.8; font-size: 15px;">
-                ${html}
+            <div class="consultation-card">
+                <div class="consultation-content">
+                    ${markdownToHtml(consultation)}
+                </div>
             </div>
         `;
     } catch (error) {
         console.error('Error loading consultation:', error);
         content.innerHTML = `
-            <div style="text-align: center; padding: 20px; color: #e74c3c;">
-                <p>⚠️ Ошибка при загрузке консультации</p>
-                <p style="font-size: 12px; margin-top: 8px; color: var(--tg-theme-hint-color);">
-                    ${!isTelegram ? 'Откройте приложение через Telegram' : 'Попробуйте позже'}
-                </p>
+            <div class="empty-state">
+                <div class="empty-state-icon">⚠️</div>
+                <div class="empty-state-title">Ошибка загрузки</div>
+                <div class="empty-state-text">${AppState.isTelegram ? 'Попробуйте позже' : 'Откройте приложение через Telegram'}</div>
             </div>
         `;
     }
 }
 
-// Утилиты
-function formatMoney(amount) {
-    return new Intl.NumberFormat('ru-RU').format(Math.round(amount));
-}
+// Make functions globally available for inline handlers
+window.showScreen = showScreen;
+window.switchTab = switchTab;
+window.switchCapitalTab = switchCapitalTab;
+window.showAddTransactionForm = showAddTransactionForm;
+window.addTransaction = addTransaction;
+window.showAddGoalForm = showAddGoalForm;
+window.hideAddGoalForm = hideAddGoalForm;
+window.addGoal = addGoal;
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
+// ========== Initialization ==========
 
-// Инициализация при загрузке страницы
 document.addEventListener('DOMContentLoaded', () => {
-    // Загружаем статистику при загрузке главной страницы
+    // Initialize Telegram Web App
+    if (AppState.tg?.ready) {
+        AppState.tg.ready();
+    }
+    
+    // Load initial data
     if (document.getElementById('main-menu')?.classList.contains('active')) {
         loadStats();
     }
     
-    // Предупреждение для пользователей, открывших в браузере
-    if (!isTelegram) {
+    // Warning for browser users
+    if (!AppState.isTelegram) {
         console.warn('Приложение открыто в браузере. Для полного функционала откройте через Telegram.');
     }
+    
+    // Hide FAB initially
+    const fab = document.getElementById('fab-add-transaction');
+    if (fab) {
+        fab.style.display = 'none';
+    }
 });
-
-// Инициализация Telegram Web App
-if (tg && tg.ready) {
-    tg.ready();
-}

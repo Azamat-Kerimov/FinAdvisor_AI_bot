@@ -1,0 +1,89 @@
+/* ============================================
+   Base Styles - Reset & Typography
+   ============================================ */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+    font-family: var(--font-family);
+    font-size: var(--font-size-base);
+    line-height: 1.6;
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+/* Typography */
+h1, h2, h3, h4, h5, h6 {
+    font-weight: var(--font-weight-bold);
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+}
+
+h1 {
+    font-size: var(--font-size-3xl);
+}
+
+h2 {
+    font-size: var(--font-size-2xl);
+}
+
+h3 {
+    font-size: var(--font-size-xl);
+}
+
+p {
+    margin-bottom: var(--space-md);
+    color: var(--text-secondary);
+}
+
+/* Links */
+a {
+    color: var(--primary);
+    text-decoration: none;
+    transition: color var(--transition-fast);
+}
+
+a:hover {
+    color: var(--primary-hover);
+}
+
+/* Focus states for accessibility */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+a:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+/* App container */
+#app {
+    max-width: 100%;
+    margin: 0 auto;
+    padding: var(--space-md);
+    padding-bottom: 100px; /* Space for bottom nav */
+    min-height: 100vh;
+}
+
+@media (min-width: 768px) {
+    #app {
+        max-width: 1200px;
+        padding: var(--space-xl);
+        padding-bottom: var(--space-xl);
+    }
+}
