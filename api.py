@@ -2,6 +2,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
 import asyncpg
@@ -14,6 +15,13 @@ import json
 load_dotenv()
 
 app = FastAPI()
+
+# Подключаем статические файлы через встроенный StaticFiles
+# Это должно решить проблему с 403 Forbidden
+try:
+    app.mount("/static", StaticFiles(directory="webapp/static"), name="static")
+except Exception as e:
+    print(f"Warning: Could not mount static files: {e}")
 
 # CORS для Telegram Web App
 app.add_middleware(
@@ -144,9 +152,11 @@ async def read_root():
     except FileNotFoundError:
         return HTMLResponse(content="<h1>Web App не найден</h1><p>Проверьте путь к файлу webapp/index.html</p>", status_code=500)
 
+# Статические файлы теперь обрабатываются через app.mount("/static", ...) выше
+# Этот endpoint больше не нужен, но оставляем как fallback на случай проблем
 @app.get("/static/{file_path:path}")
-async def static_files(file_path: str):
-    """Статические файлы"""
+async def static_files_fallback(file_path: str):
+    """Fallback для статических файлов (если mount не работает)"""
     import mimetypes
     
     file_path_clean = file_path.split('?')[0]  # Убираем query параметры для версионирования
