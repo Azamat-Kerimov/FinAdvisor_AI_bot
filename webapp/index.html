@@ -6,44 +6,52 @@
     <meta name="description" content="FinAdvisor - ваш персональный финансовый помощник">
     <title>FinAdvisor - Финансовый помощник</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="/static/css/style.css?v=3.0">
+    
+    <!-- CSS Modules -->
+    <link rel="stylesheet" href="/static/css/style.css?v=4.0">
+    
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
 </head>
 <body>
     <div id="app">
-        <!-- Главное меню -->
+        <!-- Главный экран -->
         <div id="main-menu" class="screen active">
             <div class="header">
                 <h1>FinAdvisor</h1>
                 <p class="subtitle">Ваш персональный финансовый помощник</p>
             </div>
             
-            <div class="stats-card" id="stats-card">
-                <div class="stats-loading">Загрузка статистики...</div>
+            <!-- Баланс карточка -->
+            <div id="stats-card">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Загрузка статистики...</p>
+                </div>
             </div>
             
-            <div class="menu-grid">
+            <!-- Главное меню -->
+            <div class="main-menu-grid">
                 <button class="menu-btn" onclick="showScreen('transactions')">
-                    <span class="icon">💰</span>
-                    <span>Транзакции</span>
+                    <span class="menu-btn-icon">💰</span>
+                    <span class="menu-btn-text">Транзакции</span>
                 </button>
                 <button class="menu-btn" onclick="showScreen('goals')">
-                    <span class="icon">🎯</span>
-                    <span>Мои цели</span>
+                    <span class="menu-btn-icon">🎯</span>
+                    <span class="menu-btn-text">Мои цели</span>
                 </button>
                 <button class="menu-btn" onclick="showScreen('capital')">
-                    <span class="icon">💼</span>
-                    <span>Капитал</span>
+                    <span class="menu-btn-icon">💼</span>
+                    <span class="menu-btn-text">Капитал</span>
                 </button>
                 <button class="menu-btn" onclick="showScreen('reports')">
-                    <span class="icon">📊</span>
-                    <span>Отчеты</span>
+                    <span class="menu-btn-icon">📊</span>
+                    <span class="menu-btn-text">Отчеты</span>
                 </button>
                 <button class="menu-btn" onclick="showScreen('consultation')">
-                    <span class="icon">🤖</span>
-                    <span>Консультация</span>
+                    <span class="menu-btn-icon">🤖</span>
+                    <span class="menu-btn-text">Консультация</span>
                 </button>
             </div>
         </div>
@@ -55,18 +63,30 @@
                 <h2>Транзакции</h2>
             </div>
             
+            <!-- Tabs -->
             <div class="tabs">
-                <button class="tab active" onclick="switchTab('income')">Доходы</button>
-                <button class="tab" onclick="switchTab('expense')">Расходы</button>
+                <button class="tab active" data-tab="income" onclick="switchTab('income')">Доходы</button>
+                <button class="tab" data-tab="expense" onclick="switchTab('expense')">Расходы</button>
             </div>
             
+            <!-- Форма добавления транзакции -->
             <div id="transaction-form" class="form">
-                <select id="category-select" class="input"></select>
-                <input type="number" id="amount-input" class="input" placeholder="Сумма" step="0.01">
-                <input type="text" id="description-input" class="input" placeholder="Описание (необязательно)">
-                <button class="btn-primary" onclick="addTransaction()">Добавить</button>
+                <div class="form-group">
+                    <label class="form-label">Категория</label>
+                    <select id="category-select" class="input"></select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Сумма</label>
+                    <input type="number" id="amount-input" class="input" placeholder="Введите сумму (например: 1500)" step="0.01" min="0" onkeypress="if(event.key==='Enter') addTransaction()">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Описание (необязательно)</label>
+                    <input type="text" id="description-input" class="input" placeholder="Добавьте описание" onkeypress="if(event.key==='Enter') addTransaction()">
+                </div>
+                <button class="btn btn-primary" onclick="addTransaction()">Добавить</button>
             </div>
             
+            <!-- Список транзакций -->
             <div id="transactions-list" class="list"></div>
         </div>
 
@@ -77,16 +97,27 @@
                 <h2>Мои цели</h2>
             </div>
             
-            <button class="btn-primary" onclick="showAddGoalForm()">➕ Новая цель</button>
+            <button class="btn btn-primary" onclick="showAddGoalForm()" style="margin-bottom: 24px;">➕ Новая цель</button>
             
+            <!-- Форма добавления цели -->
             <div id="add-goal-form" class="form" style="display: none;">
-                <input type="text" id="goal-title" class="input" placeholder="Название цели">
-                <input type="number" id="goal-target" class="input" placeholder="Целевая сумма" step="0.01">
-                <input type="text" id="goal-description" class="input" placeholder="Описание (необязательно)">
-                <button class="btn-primary" onclick="addGoal()">Создать</button>
-                <button class="btn-secondary" onclick="hideAddGoalForm()">Отмена</button>
+                <div class="form-group">
+                    <label class="form-label">Название цели</label>
+                    <input type="text" id="goal-title" class="input" placeholder="Например: Новая машина">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Целевая сумма</label>
+                    <input type="number" id="goal-target" class="input" placeholder="Введите сумму (например: 1000000)" step="0.01" min="0" onkeypress="if(event.key==='Enter') addGoal()">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Описание (необязательно)</label>
+                    <input type="text" id="goal-description" class="input" placeholder="Добавьте описание" onkeypress="if(event.key==='Enter') addGoal()">
+                </div>
+                <button class="btn btn-primary" onclick="addGoal()">Создать</button>
+                <button class="btn btn-secondary" onclick="hideAddGoalForm()">Отмена</button>
             </div>
             
+            <!-- Список целей -->
             <div id="goals-list" class="list"></div>
         </div>
 
@@ -97,11 +128,13 @@
                 <h2>Капитал</h2>
             </div>
             
+            <!-- Tabs -->
             <div class="tabs">
-                <button class="tab active" onclick="switchCapitalTab('assets')">Активы</button>
-                <button class="tab" onclick="switchCapitalTab('liabilities')">Долги</button>
+                <button class="tab active" data-tab="assets" onclick="switchCapitalTab('assets')">Активы</button>
+                <button class="tab" data-tab="liabilities" onclick="switchCapitalTab('liabilities')">Долги</button>
             </div>
             
+            <!-- Контент капитала -->
             <div id="capital-content"></div>
         </div>
 
@@ -112,12 +145,7 @@
                 <h2>Отчеты</h2>
             </div>
             
-            <div id="reports-content" class="content">
-                <div style="text-align: center; padding: 20px;">
-                    <div class="spinner"></div>
-                    <p style="margin-top: 12px; color: var(--tg-theme-hint-color);">Загрузка...</p>
-                </div>
-            </div>
+            <div id="reports-content" class="content"></div>
         </div>
 
         <!-- Консультация -->
@@ -127,12 +155,43 @@
                 <h2>Личная консультация</h2>
             </div>
             
-            <div id="consultation-content" class="content">
-                <p>Анализирую ваши финансы...</p>
-            </div>
+            <div id="consultation-content" class="content"></div>
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=3.0"></script>
+    <!-- Floating Action Button для добавления транзакции -->
+    <button class="fab" onclick="showAddTransactionForm('expense')" title="Добавить транзакцию" id="fab-add-transaction" style="display: none;">
+        ➕
+    </button>
+
+    <!-- Bottom Navigation (Mobile) -->
+    <nav class="bottom-nav">
+        <button class="nav-item active" data-screen="main-menu" onclick="showScreen('main-menu')">
+            <span class="nav-item-icon">🏠</span>
+            <span class="nav-item-label">Главная</span>
+        </button>
+        <button class="nav-item" data-screen="transactions" onclick="showScreen('transactions')">
+            <span class="nav-item-icon">💰</span>
+            <span class="nav-item-label">Транзакции</span>
+        </button>
+        <button class="nav-item" data-screen="goals" onclick="showScreen('goals')">
+            <span class="nav-item-icon">🎯</span>
+            <span class="nav-item-label">Цели</span>
+        </button>
+        <button class="nav-item" data-screen="capital" onclick="showScreen('capital')">
+            <span class="nav-item-icon">💼</span>
+            <span class="nav-item-label">Капитал</span>
+        </button>
+        <button class="nav-item" data-screen="consultation" onclick="showScreen('consultation')">
+            <span class="nav-item-icon">🤖</span>
+            <span class="nav-item-label">ИИ</span>
+        </button>
+    </nav>
+
+    <!-- JavaScript Modules (load in order) -->
+    <script src="/static/js/state.js?v=4.0"></script>
+    <script src="/static/js/api.js?v=4.0"></script>
+    <script src="/static/js/ui.js?v=4.0"></script>
+    <script src="/static/js/app.js?v=4.0"></script>
 </body>
 </html>
