@@ -14,6 +14,13 @@ import json
 
 load_dotenv()
 
+# Настройка логирования
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
 app = FastAPI()
 
 # Подключаем статические файлы через встроенный StaticFiles
@@ -41,6 +48,9 @@ DB_PORT = os.getenv("DB_PORT")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 db_pool: Optional[asyncpg.Pool] = None
+
+# Кэш для bot_module, чтобы избежать повторного импорта
+_bot_module_cache = None
 
 async def get_db():
     global db_pool
@@ -450,38 +460,86 @@ async def create_liability(liability: LiabilityCreate, user_id: int = Depends(ge
         )
         return {"status": "ok", "liability_id": liability_id}
 
+# Кэш для bot_module, чтобы избежать повторного импорта
+_bot_module_cache = None
+
 # Консультация
 @app.get("/api/consultation")
 async def get_consultation(user_id: int = Depends(get_user_id)):
     """Получить AI консультацию"""
-    # Импортируем функции из bot.py только когда нужно (ленивый импорт)
-    # Используем условный импорт, чтобы избежать проблем при старте API
+    import asyncio
+    import importlib.util
+    import logging
+    
+    async def generate_consultation_with_timeout():
+        """Генерация консультации с обработкой ошибок"""
+        global _bot_module_cache
+        
+        try:
+            # Используем кэшированный модуль, если он уже загружен
+            if _bot_module_cache is None:
+                logging.info("Loading bot.py module (first time)...")
+                
+                # Загружаем bot.py как модуль
+                spec = importlib.util.spec_from_file_location("bot_module", "bot.py")
+                if spec is None or spec.loader is None:
+                    raise ImportError("Cannot load bot.py")
+                
+                bot_module = importlib.util.module_from_spec(spec)
+                
+                # Устанавливаем db перед выполнением модуля
+                bot_module.db = await get_db()
+                
+                # Выполняем модуль (это может занять время из-за инициализации Bot/Dispatcher)
+                logging.info("Executing bot.py module...")
+                spec.loader.exec_module(bot_module)
+                logging.info("bot.py module loaded successfully")
+                
+                _bot_module_cache = bot_module
+            else:
+                logging.info("Using cached bot.py module")
+                # Обновляем db в кэшированном модуле
+                _bot_module_cache.db = await get_db()
+            
+            # Вызываем функцию консультации
+            logging.info(f"Generating consultation for user_id={user_id}...")
+            consultation = await _bot_module_cache.generate_consultation(user_id)
+            logging.info("Consultation generated successfully")
+            return consultation
+        except Exception as e:
+            logging.error(f"Error generating consultation: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            raise
+    
     try:
-        # Импортируем только нужные функции, избегая инициализации Bot/Dispatcher
-        import sys
-        import importlib.util
-        
-        # Загружаем bot.py как модуль
-        spec = importlib.util.spec_from_file_location("bot_module", "bot.py")
-        if spec is None or spec.loader is None:
-            raise ImportError("Cannot load bot.py")
-        
-        bot_module = importlib.util.module_from_spec(spec)
-        
-        # Устанавливаем db перед выполнением модуля
-        bot_module.db = await get_db()
-        
-        # Выполняем модуль
-        spec.loader.exec_module(bot_module)
-        
-        # Вызываем функцию консультации
-        consultation = await bot_module.generate_consultation(user_id)
+        logging.info(f"Consultation request received for user_id={user_id}")
+        # Устанавливаем таймаут 60 секунд для генерации консультации
+        consultation = await asyncio.wait_for(
+            generate_consultation_with_timeout(),
+            timeout=60.0
+        )
+        logging.info("Consultation request completed successfully")
         return {"consultation": consultation}
+    except asyncio.TimeoutError:
+        logging.error("Consultation generation timeout (60s)")
+        return {
+            "consultation": (
+                "⏱️ Генерация консультации заняла слишком много времени.\n\n"
+                "Попробуйте позже или используйте команду /consult в боте Telegram."
+            )
+        }
     except Exception as e:
-        print(f"Error generating consultation: {e}")
+        logging.error(f"Error in consultation endpoint: {e}")
         import traceback
-        traceback.print_exc()
-        return {"consultation": "Извините, консультация временно недоступна. Используйте команду /consult в боте."}
+        logging.error(traceback.format_exc())
+        return {
+            "consultation": (
+                "❌ Произошла ошибка при генерации консультации.\n\n"
+                "Попробуйте позже или используйте команду /consult в боте Telegram.\n\n"
+                f"Ошибка: {str(e)[:100]}"
+            )
+        }
 
 if __name__ == "__main__":
     import uvicorn
