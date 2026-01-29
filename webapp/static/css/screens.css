@@ -652,6 +652,10 @@
     padding: 0;
     line-height: 1;
 }
+.modal-body {
+    padding: var(--space-md);
+    overflow-y: auto;
+}
 .import-preview-list {
     padding: var(--space-md);
     overflow-y: auto;

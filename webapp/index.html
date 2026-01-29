@@ -55,6 +55,12 @@
                 <h2>Операции</h2>
             </div>
             
+            <!-- Кнопка загрузки файла (ТЗ 2.2.2) -->
+            <div class="import-bar">
+                <input type="file" id="import-file-input" accept=".pdf,.png,.jpg,.jpeg,.xlsx,.xls" style="display:none">
+                <button type="button" class="btn btn-secondary" onclick="document.getElementById('import-file-input').click()">📁 Загрузить файл</button>
+            </div>
+            
             <!-- Фильтры -->
             <div class="filters-bar">
                 <select id="filter-month" class="filter-select" onchange="applyTransactionFilters()">
@@ -138,6 +144,36 @@
             </div>
             
             <div id="consultation-content" class="content"></div>
+        </div>
+    </div>
+    
+    <!-- Модальное окно редактирования транзакции -->
+    <div id="edit-transaction-modal" class="modal" style="display:none;">
+        <div class="modal-backdrop" onclick="closeEditTransactionModal()"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Редактировать транзакцию</h3>
+                <button type="button" class="modal-close" onclick="closeEditTransactionModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="edit-tx-id" value="">
+                <div class="form-group">
+                    <label class="form-label">Категория</label>
+                    <select id="edit-tx-category" class="input"></select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Сумма (₽)</label>
+                    <input type="number" id="edit-tx-amount" class="input" step="0.01" placeholder="Положительное — доход, отрицательное — расход">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Описание</label>
+                    <input type="text" id="edit-tx-description" class="input" placeholder="Описание">
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeEditTransactionModal()">Отмена</button>
+                <button type="button" class="btn btn-primary" onclick="saveEditTransaction()">Сохранить</button>
+            </div>
         </div>
     </div>
     
