@@ -83,8 +83,29 @@ async function apiRequest(endpoint, options = {}) {
     }
 }
 
+/**
+ * Upload file (multipart/form-data). Не устанавливает Content-Type — браузер задаст boundary.
+ */
+async function uploadFile(endpoint, file) {
+    const initData = getInitData();
+    const formData = new FormData();
+    formData.append('file', file);
+    const headers = { ...(initData && { 'init-data': initData }) };
+    const response = await fetch(`${API_URL}${endpoint}`, {
+        method: 'POST',
+        headers,
+        body: formData
+    });
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`API error: ${response.status} - ${text}`);
+    }
+    return await response.json();
+}
+
 // Make functions globally available
 window.apiRequest = apiRequest;
+window.uploadFile = uploadFile;
 window.getInitData = getInitData;
 
 // Export for use in other modules

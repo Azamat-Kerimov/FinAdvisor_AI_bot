@@ -1,11 +1,12 @@
 # FastAPI сервер для Telegram Web App
 # v_01.28.26 - Рефакторинг: полная бизнес-логика, проверка подписки, AI
-from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi import FastAPI, HTTPException, Depends, Header, Request, Query, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
+import tempfile
 import asyncpg
 import os
 from dotenv import load_dotenv
@@ -205,6 +206,11 @@ class TransactionCreate(BaseModel):
     category: str
     description: Optional[str] = None
 
+class TransactionUpdate(BaseModel):
+    amount: Optional[float] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+
 class GoalCreate(BaseModel):
     title: str
     target: float
@@ -215,11 +221,40 @@ class AssetCreate(BaseModel):
     type: str
     amount: float
 
+class AssetUpdate(BaseModel):
+    title: Optional[str] = None
+    type: Optional[str] = None
+    amount: Optional[float] = None
+
 class LiabilityCreate(BaseModel):
     title: str
     type: str
     amount: float
     monthly_payment: float
+
+class LiabilityUpdate(BaseModel):
+    title: Optional[str] = None
+    type: Optional[str] = None
+    amount: Optional[float] = None
+    monthly_payment: Optional[float] = None
+
+
+class TransactionImportItem(BaseModel):
+    """Один элемент из AI-парсера импорта"""
+    date: str  # YYYY-MM-DD
+    amount: float
+    category: str
+    description: Optional[str] = None
+
+
+class ImportApplyRequest(BaseModel):
+    mode: str  # "add" | "replace"
+    transactions: List[TransactionImportItem]
+
+
+class ConsultationMessageRequest(BaseModel):
+    message: str
+
 
 # API Endpoints
 
@@ -364,20 +399,45 @@ async def get_stats(user_id: int = Depends(require_premium)):
 
 # Транзакции
 @app.get("/api/transactions")
-async def get_transactions(limit: int = 10, user_id: int = Depends(require_premium)):
-    """Получить список транзакций"""
+async def get_transactions(
+    limit: int = 100,
+    month: Optional[int] = None,
+    year: Optional[int] = None,
+    category: Optional[str] = None,
+    type_: Optional[str] = Query(None, alias="type"),  # "income" | "expense"
+    user_id: int = Depends(require_premium)
+):
+    """Получить список транзакций с фильтрами (месяц, год, категория, тип)"""
     db = await get_db()
     async with db.acquire() as conn:
-        rows = await conn.fetch(
-            """
+        conditions = ["user_id = $1"]
+        params: List = [user_id]
+        n = 2
+        if month is not None and year is not None:
+            from datetime import date
+            start = date(year, month, 1)
+            end = date(year, month + 1, 1) if month < 12 else date(year + 1, 1, 1)
+            conditions.append(f"created_at >= ${n}::timestamp")
+            conditions.append(f"created_at < ${n + 1}::timestamp")
+            params.extend([start, end])
+            n += 2
+        if category:
+            conditions.append(f"category = ${n}")
+            params.append(category)
+            n += 1
+        if type_ == "income":
+            conditions.append("amount >= 0")
+        elif type_ == "expense":
+            conditions.append("amount < 0")
+        params.append(limit)
+        q = f"""
             SELECT id, amount, category, description, created_at
             FROM transactions
-            WHERE user_id=$1
+            WHERE {" AND ".join(conditions)}
             ORDER BY created_at DESC
-            LIMIT $2
-            """,
-            user_id, limit
-        )
+            LIMIT ${n}
+            """
+        rows = await conn.fetch(q, *params)
         return [dict(r) for r in rows]
 
 @app.post("/api/transactions")
@@ -394,6 +454,32 @@ async def create_transaction(transaction: TransactionCreate, user_id: int = Depe
         )
         return {"status": "ok"}
 
+@app.put("/api/transactions/{tx_id}")
+async def update_transaction(
+    tx_id: int,
+    body: TransactionUpdate,
+    user_id: int = Depends(require_premium)
+):
+    """Редактировать транзакцию"""
+    db = await get_db()
+    async with db.acquire() as conn:
+        if body.amount is not None:
+            await conn.execute(
+                "UPDATE transactions SET amount=$1 WHERE id=$2 AND user_id=$3",
+                body.amount, tx_id, user_id
+            )
+        if body.category is not None:
+            await conn.execute(
+                "UPDATE transactions SET category=$1 WHERE id=$2 AND user_id=$3",
+                body.category, tx_id, user_id
+            )
+        if body.description is not None:
+            await conn.execute(
+                "UPDATE transactions SET description=$1 WHERE id=$2 AND user_id=$3",
+                body.description, tx_id, user_id
+            )
+        return {"status": "ok"}
+
 @app.delete("/api/transactions/{tx_id}")
 async def delete_transaction(tx_id: int, user_id: int = Depends(require_premium)):
     """Удалить транзакцию"""
@@ -404,6 +490,172 @@ async def delete_transaction(tx_id: int, user_id: int = Depends(require_premium)
             tx_id, user_id
         )
         return {"status": "ok"}
+
+
+# --- Импорт транзакций из файла (PDF, Excel, изображения) + AI-парсер ---
+
+def _extract_text_from_file(file_path: str, content_type: str, filename: str) -> str:
+    """Извлечь текст из файла для передачи в AI-парсер."""
+    ext = (filename or "").lower().split(".")[-1] if "." in (filename or "") else ""
+    text_parts = []
+
+    # Excel
+    if content_type and ("spreadsheet" in content_type or "excel" in content_type) or ext in ("xlsx", "xls"):
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+            for sheet in wb.worksheets:
+                for row in sheet.iter_rows(values_only=True):
+                    text_parts.append("\t".join(str(c) if c is not None else "" for c in row))
+            wb.close()
+            return "\n".join(text_parts)
+        except Exception as e:
+            logging.warning(f"openpyxl read failed: {e}")
+            return f"Таблица (ошибка чтения): {e}"
+
+    # PDF
+    if content_type and "pdf" in content_type or ext == "pdf":
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(file_path)
+            for page in reader.pages:
+                t = page.extract_text()
+                if t:
+                    text_parts.append(t)
+            return "\n".join(text_parts)
+        except Exception as e:
+            logging.warning(f"PDF read failed: {e}")
+            return f"PDF (ошибка чтения): {e}"
+
+    # Изображения — возвращаем заглушку; для OCR нужна отдельная библиотека
+    if content_type and "image" in content_type or ext in ("png", "jpg", "jpeg"):
+        return "[Изображение загружено. Распознавание изображений пока не поддерживается — загрузите PDF или Excel.]"
+
+    return "\n".join(text_parts) if text_parts else "[Не удалось извлечь текст]"
+
+
+async def _parse_transactions_with_ai(raw_text: str) -> tuple[list[dict], list[str]]:
+    """Вызвать GigaChat для извлечения списка транзакций из текста. Возвращает (transactions, errors)."""
+    if not raw_text or len(raw_text.strip()) < 10:
+        return [], ["Мало данных для распознавания"]
+
+    prompt = (
+        "Из следующего текста (выписка, таблица, список операций) извлеки транзакции.\n"
+        "Для каждой транзакции определи: дата (YYYY-MM-DD), сумма (число: положительное — доход, отрицательное — расход), "
+        "категория (одно слово на русском: Еда, Транспорт, Зарплата, Развлечения, Здоровье, Жильё, Прочее и т.д.), описание (кратко).\n\n"
+        "Ответь ТОЛЬКО валидным JSON-массивом объектов без комментариев, в формате:\n"
+        '[{"date":"YYYY-MM-DD","amount":число,"category":"категория","description":"описание"}]\n'
+        "Если транзакций нет или не удалось распознать — верни [].\n"
+        "Нормализуй категории к одному из: Еда, Транспорт, Зарплата, Развлечения, Здоровье, Жильё, Маркетплейсы, Прочее (если не подходит — Прочее).\n\n"
+        "Текст:\n" + raw_text[:15000]
+    )
+    try:
+        messages = [
+            {"role": "system", "content": "Ты парсер финансовых транзакций. Отвечай только JSON-массивом."},
+            {"role": "user", "content": prompt}
+        ]
+        answer = await gigachat_request(messages)
+        answer = (answer or "").strip()
+        # Выделить JSON из ответа (на случай обёртки в markdown)
+        if "```" in answer:
+            start = answer.find("[")
+            end = answer.rfind("]") + 1
+            if start >= 0 and end > start:
+                answer = answer[start:end]
+        import re
+        json_match = re.search(r"\[[\s\S]*\]", answer)
+        if not json_match:
+            return [], [f"AI не вернул список транзакций: {answer[:200]}"]
+        data = json.loads(json_match.group())
+        transactions = []
+        errors = []
+        for i, item in enumerate(data):
+            if not isinstance(item, dict):
+                errors.append(f"Строка {i+1}: не объект")
+                continue
+            try:
+                date_str = str(item.get("date", ""))[:10]
+                amount = float(item.get("amount", 0))
+                category = (item.get("category") or "Прочее").strip() or "Прочее"
+                description = (item.get("description") or "").strip() or None
+                if not date_str or len(date_str) < 10:
+                    errors.append(f"Строка {i+1}: некорректная дата")
+                    continue
+                transactions.append({
+                    "date": date_str,
+                    "amount": amount,
+                    "category": category,
+                    "description": description
+                })
+            except (TypeError, ValueError) as e:
+                errors.append(f"Строка {i+1}: {e}")
+        return transactions, errors
+    except json.JSONDecodeError as e:
+        return [], [f"Ошибка разбора JSON: {e}"]
+    except Exception as e:
+        logging.exception("AI parse transactions")
+        return [], [str(e)]
+
+
+@app.post("/api/transactions/import")
+async def import_transactions_file(
+    file: UploadFile = File(...),
+    user_id: int = Depends(require_premium)
+):
+    """Загрузить файл (PDF, Excel, изображение), распознать транзакции через AI. Возвращает предпросмотр (transactions + errors)."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename")
+    content_type = file.content_type or ""
+    suffix = ".xlsx" if "xlsx" in file.filename.lower() else (".pdf" if "pdf" in file.filename.lower() else ".bin")
+    try:
+        body = await file.read()
+        if len(body) > 10 * 1024 * 1024:  # 10 MB
+            raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(body)
+            tmp_path = tmp.name
+        try:
+            text = _extract_text_from_file(tmp_path, content_type, file.filename)
+            transactions, errors = await _parse_transactions_with_ai(text)
+            return {"transactions": transactions, "errors": errors}
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("import_transactions_file")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/transactions/import/apply")
+async def import_transactions_apply(
+    body: ImportApplyRequest,
+    user_id: int = Depends(require_premium)
+):
+    """Применить импорт: добавить к текущим или заменить все транзакции."""
+    if body.mode not in ("add", "replace"):
+        raise HTTPException(status_code=400, detail="mode must be 'add' or 'replace'")
+    db = await get_db()
+    async with db.acquire() as conn:
+        if body.mode == "replace":
+            await conn.execute("DELETE FROM transactions WHERE user_id = $1", user_id)
+        for t in body.transactions:
+            try:
+                from datetime import datetime
+                dt = datetime.strptime(t.date[:10], "%Y-%m-%d")
+            except (ValueError, TypeError):
+                dt = datetime.now()
+            await conn.execute(
+                """
+                INSERT INTO transactions (user_id, amount, category, description, created_at)
+                VALUES ($1, $2, $3, $4, $5)
+                """,
+                user_id, t.amount, t.category, (t.description or "").strip() or None, dt
+            )
+    return {"status": "ok", "applied": len(body.transactions)}
 
 # Цели
 @app.get("/api/goals")
@@ -494,6 +746,49 @@ async def create_asset(asset: AssetCreate, user_id: int = Depends(require_premiu
         )
         return {"status": "ok", "asset_id": asset_id}
 
+@app.put("/api/assets/{asset_id}")
+async def update_asset(
+    asset_id: int,
+    body: AssetUpdate,
+    user_id: int = Depends(require_premium)
+):
+    """Редактировать актив (добавляет новую запись в asset_values при изменении суммы)"""
+    db = await get_db()
+    async with db.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id FROM assets WHERE id=$1 AND user_id=$2", asset_id, user_id
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        if body.title is not None:
+            await conn.execute(
+                "UPDATE assets SET title=$1 WHERE id=$2", body.title, asset_id
+            )
+        if body.type is not None:
+            await conn.execute(
+                "UPDATE assets SET type=$1 WHERE id=$2", body.type, asset_id
+            )
+        if body.amount is not None:
+            await conn.execute(
+                """
+                INSERT INTO asset_values (asset_id, amount, created_at)
+                VALUES ($1, $2, NOW())
+                """,
+                asset_id, body.amount
+            )
+        return {"status": "ok"}
+
+@app.delete("/api/assets/{asset_id}")
+async def delete_asset(asset_id: int, user_id: int = Depends(require_premium)):
+    """Удалить актив"""
+    db = await get_db()
+    async with db.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM assets WHERE id=$1 AND user_id=$2",
+            asset_id, user_id
+        )
+        return {"status": "ok"}
+
 # Долги
 @app.get("/api/liabilities")
 async def get_liabilities(user_id: int = Depends(require_premium)):
@@ -540,6 +835,60 @@ async def create_liability(liability: LiabilityCreate, user_id: int = Depends(re
             liability_id, liability.amount, liability.monthly_payment
         )
         return {"status": "ok", "liability_id": liability_id}
+
+@app.put("/api/liabilities/{liability_id}")
+async def update_liability(
+    liability_id: int,
+    body: LiabilityUpdate,
+    user_id: int = Depends(require_premium)
+):
+    """Редактировать долг"""
+    db = await get_db()
+    async with db.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id FROM liabilities WHERE id=$1 AND user_id=$2",
+            liability_id, user_id
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Liability not found")
+        if body.title is not None:
+            await conn.execute(
+                "UPDATE liabilities SET title=$1 WHERE id=$2", body.title, liability_id
+            )
+        if body.type is not None:
+            await conn.execute(
+                "UPDATE liabilities SET type=$1 WHERE id=$2", body.type, liability_id
+            )
+        if body.amount is not None or body.monthly_payment is not None:
+            r = await conn.fetchrow(
+                "SELECT amount, monthly_payment FROM liability_values WHERE liability_id=$1 ORDER BY created_at DESC LIMIT 1",
+                liability_id
+            )
+            amt = float(r["amount"]) if r else 0
+            mp = float(r.get("monthly_payment") or 0) if r else 0
+            if body.amount is not None:
+                amt = body.amount
+            if body.monthly_payment is not None:
+                mp = body.monthly_payment
+            await conn.execute(
+                """
+                INSERT INTO liability_values (liability_id, amount, monthly_payment, created_at)
+                VALUES ($1, $2, $3, NOW())
+                """,
+                liability_id, amt, mp
+            )
+        return {"status": "ok"}
+
+@app.delete("/api/liabilities/{liability_id}")
+async def delete_liability(liability_id: int, user_id: int = Depends(require_premium)):
+    """Удалить долг"""
+    db = await get_db()
+    async with db.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM liabilities WHERE id=$1 AND user_id=$2",
+            liability_id, user_id
+        )
+        return {"status": "ok"}
 
 # ============================================
 # AI Functions (GigaChat)
@@ -1021,6 +1370,77 @@ async def get_consultation(user_id: int = Depends(require_premium)):
                 f"Ошибка: {str(e)[:100]}"
             )
         }
+
+
+# Консультация — ввод целей через сообщение (AI извлекает цели и сохраняет в goals)
+async def _extract_goals_from_message(user_message: str) -> list[dict]:
+    """Вызвать GigaChat для извлечения финансовых целей из текста. Возвращает список { title, target, description }."""
+    prompt = (
+        "Пользователь написал сообщение о своих финансовых целях. Извлеки из текста цели.\n\n"
+        "Цель — это намерение с суммой и/или сроком, например: накопить 1 000 000 за 2 года, "
+        "пассивный доход 50 000 в месяц, погасить долг 200 000.\n\n"
+        "Ответь ТОЛЬКО валидным JSON-массивом объектов без комментариев:\n"
+        '[{"title":"краткое название цели","target":число_в_рублях,"description":"описание или срок"}]'
+        "\nЕсли целей нет — верни []. target — целевая сумма в рублях (число)."
+    )
+    try:
+        messages = [
+            {"role": "system", "content": "Ты извлекаешь финансовые цели из текста. Отвечай только JSON-массивом."},
+            {"role": "user", "content": prompt + "\n\nСообщение пользователя:\n" + (user_message or "")[:2000]}
+        ]
+        answer = await gigachat_request(messages)
+        answer = (answer or "").strip()
+        import re
+        json_match = re.search(r"\[[\s\S]*\]", answer)
+        if not json_match:
+            return []
+        data = json.loads(json_match.group())
+        result = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            try:
+                title = str(item.get("title") or "Цель").strip() or "Цель"
+                target = float(item.get("target", 0))
+                if target <= 0:
+                    continue
+                description = (item.get("description") or "").strip() or None
+                result.append({"title": title, "target": target, "description": description})
+            except (TypeError, ValueError):
+                continue
+        return result
+    except (json.JSONDecodeError, Exception):
+        return []
+
+
+@app.post("/api/consultation/message")
+async def consultation_message(
+    body: ConsultationMessageRequest,
+    user_id: int = Depends(require_premium)
+):
+    """Отправить сообщение в консультацию: AI извлекает цели и сохраняет в goals."""
+    message = (body.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+    await save_message(user_id, "user", message)
+    goals_added = []
+    try:
+        extracted = await _extract_goals_from_message(message)
+        db = await get_db()
+        async with db.acquire() as conn:
+            for g in extracted:
+                await conn.execute(
+                    "INSERT INTO goals (user_id, target, current, title, description, created_at) VALUES ($1, $2, 0, $3, $4, NOW())",
+                    user_id, g["target"], g["title"], g.get("description")
+                )
+                goals_added.append({"title": g["title"], "target": g["target"]})
+    except Exception as e:
+        logging.exception("consultation_message extract goals")
+    reply = "Сообщение принято."
+    if goals_added:
+        reply = f"Цели добавлены: {', '.join(g['title'] + ' — ' + str(int(g['target'])) + ' ₽' for g in goals_added)}."
+    return {"goals_added": goals_added, "reply": reply}
+
 
 if __name__ == "__main__":
     import uvicorn

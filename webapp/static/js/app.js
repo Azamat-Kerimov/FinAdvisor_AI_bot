@@ -50,17 +50,11 @@ function loadScreenData(screenId) {
             loadTransactions();
             loadCategories();
             break;
-        case 'goals':
-            loadGoals();
-            break;
         case 'capital':
             loadCapital();
             break;
         case 'consultation':
             loadConsultation();
-            break;
-        case 'reports':
-            loadReports();
             break;
     }
 }
@@ -113,7 +107,7 @@ function switchCapitalTab(tab) {
 // Export immediately
 window.switchCapitalTab = switchCapitalTab;
 
-// ========== Stats / Main Menu ==========
+// ========== Stats / Main Menu (ТЗ: только агрегаты, без форм) ==========
 
 async function loadStats() {
     const statsCard = document.getElementById('stats-card');
@@ -122,76 +116,35 @@ async function loadStats() {
     showSkeleton('stats-card', 3);
     
     try {
-        const [stats, goals, assets, liabilities] = await Promise.all([
+        const [stats, assets, liabilities] = await Promise.all([
             apiRequest('/api/stats'),
-            apiRequest('/api/goals'),
             apiRequest('/api/assets'),
             apiRequest('/api/liabilities')
         ]);
         
         AppState.stats = stats;
-        AppState.goals = goals;
         AppState.assets = assets;
         AppState.liabilities = liabilities;
         
-        const income = stats.total_income || 0;
-        const expense = stats.total_expense || 0;
-        const balance = income - expense;
-        
-        // Капитал
+        // Блок 1 — Капитал (активы, долги, чистая стоимость)
         const totalAssets = assets.reduce((sum, a) => sum + (parseFloat(a.amount) || 0), 0);
         const totalLiabs = liabilities.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0);
-        const netCapital = totalAssets - totalLiabs;
+        const netWorth = totalAssets - totalLiabs;
         
-        // Цели (первые 3)
-        const goalsHtml = goals.slice(0, 3).map(g => {
-            const progress = g.target > 0 ? Math.min(100, (g.current / g.target) * 100) : 0;
-            return `
-                <div class="goal-item">
-                    <div class="goal-title">${escapeHtml(g.title)}</div>
-                    <div class="goal-progress">
-                        <div class="goal-progress-bar">
-                            <div class="goal-progress-fill" style="width: ${progress}%"></div>
-                        </div>
-                        <div class="goal-progress-text">${formatMoney(g.current)} / ${formatMoney(g.target)} ₽</div>
-                    </div>
-                </div>
-            `;
-        }).join('');
+        // Блок 2 — Баланс по транзакциям (текущий месяц)
+        const income = stats.total_income || 0;
+        const expense = stats.total_expense || 0;
+        const balance = income + expense; // expense уже отрицательный в данных
+        if (typeof expense === 'number' && expense > 0) {
+            const balanceCorrect = income - expense;
+        }
+        const balanceMonth = income - Math.abs(expense);
         
         statsCard.innerHTML = `
-            <div class="balance-card">
-                <div class="balance-label">Баланс за месяц</div>
-                <div class="balance-value">${formatMoney(balance)} ₽</div>
-                <div class="balance-stats">
-                    <div class="balance-stat-item">
-                        <div class="balance-stat-label">Доходы</div>
-                        <div class="balance-stat-value" style="color: #10B981;">+${formatMoney(income)} ₽</div>
-                    </div>
-                    <div class="balance-stat-item">
-                        <div class="balance-stat-label">Расходы</div>
-                        <div class="balance-stat-value" style="color: #EF4444;">-${formatMoney(expense)} ₽</div>
-                    </div>
-                </div>
-            </div>
-            
-            ${goals.length > 0 ? `
-            <div class="card stat-card">
-                <div class="card-header">
-                    <h3>🎯 Цели</h3>
-                    ${goals.length > 3 ? `<a href="#" onclick="showScreen('goals'); return false;" style="color: #4F46E5; text-decoration: none; font-size: 14px;">Все цели</a>` : ''}
-                </div>
-                <div class="goals-preview">
-                    ${goalsHtml}
-                </div>
-            </div>
-            ` : ''}
-            
-            <div class="card stat-card">
-                <div class="card-header">
-                    <h3>💼 Капитал</h3>
-                </div>
-                <div class="capital-summary">
+            <!-- Блок 1: Капитал -->
+            <div class="card stat-card home-block">
+                <div class="card-header"><h3>💼 Капитал</h3></div>
+                <div class="capital-summary three-rows">
                     <div class="capital-item">
                         <div class="capital-label">Активы</div>
                         <div class="capital-value" style="color: #10B981;">${formatMoney(totalAssets)} ₽</div>
@@ -200,22 +153,30 @@ async function loadStats() {
                         <div class="capital-label">Долги</div>
                         <div class="capital-value" style="color: #EF4444;">${formatMoney(totalLiabs)} ₽</div>
                     </div>
-                    <div class="capital-item" style="border-top: 1px solid #E5E7EB; padding-top: 12px; margin-top: 12px;">
-                        <div class="capital-label" style="font-weight: 600;">Чистый капитал</div>
-                        <div class="capital-value" style="font-weight: 600; color: ${netCapital >= 0 ? '#10B981' : '#EF4444'};">${formatMoney(netCapital)} ₽</div>
+                    <div class="capital-item highlight">
+                        <div class="capital-label">Чистая стоимость</div>
+                        <div class="capital-value" style="font-weight: 600; color: ${netWorth >= 0 ? '#10B981' : '#EF4444'};">${formatMoney(netWorth)} ₽</div>
                     </div>
                 </div>
             </div>
             
-            <div class="quick-actions">
-                <button class="quick-action-btn" onclick="showAddTransactionForm('income')">
-                    <span class="quick-action-icon">💰</span>
-                    <span class="quick-action-label">Добавить доход</span>
-                </button>
-                <button class="quick-action-btn" onclick="showAddTransactionForm('expense')">
-                    <span class="quick-action-icon">💸</span>
-                    <span class="quick-action-label">Добавить расход</span>
-                </button>
+            <!-- Блок 2: Баланс по транзакциям (текущий месяц) -->
+            <div class="card stat-card home-block">
+                <div class="card-header"><h3>📊 Баланс за месяц</h3></div>
+                <div class="capital-summary three-rows">
+                    <div class="capital-item">
+                        <div class="capital-label">Начисления</div>
+                        <div class="capital-value" style="color: #10B981;">+${formatMoney(income)} ₽</div>
+                    </div>
+                    <div class="capital-item">
+                        <div class="capital-label">Расходы</div>
+                        <div class="capital-value" style="color: #EF4444;">-${formatMoney(expense)} ₽</div>
+                    </div>
+                    <div class="capital-item highlight">
+                        <div class="capital-label">Баланс месяца</div>
+                        <div class="capital-value" style="font-weight: 600; color: ${balanceMonth >= 0 ? '#10B981' : '#EF4444'};">${formatMoney(balanceMonth)} ₽</div>
+                    </div>
+                </div>
             </div>
         `;
     } catch (error) {
@@ -244,6 +205,8 @@ async function loadStats() {
 
 // ========== Transactions ==========
 
+AppState.transactionFilters = { month: null, year: null, category: '', type: '' };
+
 function loadCategories() {
     const select = document.getElementById('category-select');
     if (!select) return;
@@ -257,60 +220,224 @@ function loadCategories() {
         option.textContent = `${emoji} ${cat}`;
         select.appendChild(option);
     }
+    
+    const filterCat = document.getElementById('filter-category');
+    if (filterCat && filterCat.options.length <= 1) {
+        filterCat.innerHTML = '<option value="">Категория</option>';
+        for (const [cat, emoji] of Object.entries(categories)) {
+            const option = document.createElement('option');
+            option.value = cat;
+            option.textContent = `${emoji} ${cat}`;
+            filterCat.appendChild(option);
+        }
+    }
 }
+
+function fillYearFilter() {
+    const sel = document.getElementById('filter-year');
+    if (!sel) return;
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    sel.innerHTML = '<option value="">Год</option>';
+    for (let y = currentYear; y >= currentYear - 5; y--) {
+        const opt = document.createElement('option');
+        opt.value = y;
+        opt.textContent = y;
+        if (y === currentYear) opt.selected = true;
+        sel.appendChild(opt);
+    }
+}
+
+// Предпросмотр импорта транзакций (храним между открытием модалки и apply)
+let importPreviewData = { transactions: [], errors: [] };
+
+function getTransactionQuery() {
+    const month = document.getElementById('filter-month')?.value;
+    const year = document.getElementById('filter-year')?.value;
+    const category = document.getElementById('filter-category')?.value;
+    const type = document.getElementById('filter-type')?.value;
+    const params = new URLSearchParams();
+    params.set('limit', '200');
+    if (month) params.set('month', month);
+    if (year) params.set('year', year);
+    if (category) params.set('category', category);
+    if (type) params.set('type', type);
+    return params.toString();
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    const fileInput = document.getElementById('import-file-input');
+    if (fileInput) {
+        fileInput.addEventListener('change', async function() {
+            const file = this.files && this.files[0];
+            if (!file) return;
+            const list = document.getElementById('import-preview-list');
+            const errEl = document.getElementById('import-errors');
+            const modal = document.getElementById('import-modal');
+            if (!list || !modal) return;
+            list.innerHTML = '<div class="loading"><div class="spinner"></div><p>Распознавание файла...</p></div>';
+            errEl.innerHTML = '';
+            modal.style.display = 'flex';
+            try {
+                const result = await uploadFile('/api/transactions/import', file);
+                importPreviewData = { transactions: result.transactions || [], errors: result.errors || [] };
+                if (importPreviewData.transactions.length === 0) {
+                    list.innerHTML = '<div class="empty-state-text">Транзакций не распознано</div>';
+                } else {
+                    list.innerHTML = importPreviewData.transactions.slice(0, 50).map(t => `
+                        <div class="import-preview-item">
+                            <span>${escapeHtml(t.date)}</span>
+                            <span>${t.amount >= 0 ? '+' : ''}${formatMoney(t.amount)} ₽</span>
+                            <span>${escapeHtml(t.category)}</span>
+                            <span>${escapeHtml((t.description || '').slice(0, 30))}</span>
+                        </div>
+                    `).join('') + (importPreviewData.transactions.length > 50 ? `<p class="import-more">... и ещё ${importPreviewData.transactions.length - 50}</p>` : '');
+                }
+                if (importPreviewData.errors.length > 0) {
+                    errEl.innerHTML = '<strong>Предупреждения:</strong><ul>' + importPreviewData.errors.map(e => '<li>' + escapeHtml(e) + '</li>').join('') + '</ul>';
+                }
+            } catch (e) {
+                list.innerHTML = '<div class="empty-state-text">Ошибка: ' + escapeHtml(e.message) + '</div>';
+            }
+            this.value = '';
+        });
+    }
+});
+
+function closeImportModal() {
+    const modal = document.getElementById('import-modal');
+    if (modal) modal.style.display = 'none';
+}
+window.closeImportModal = closeImportModal;
+
+async function applyImport(mode) {
+    if (importPreviewData.transactions.length === 0) {
+        showNotification('Нет транзакций для применения', 'error');
+        return;
+    }
+    try {
+        const result = await apiRequest('/api/transactions/import/apply', {
+            method: 'POST',
+            body: JSON.stringify({ mode, transactions: importPreviewData.transactions })
+        });
+        showNotification('Добавлено транзакций: ' + (result.applied || 0));
+        closeImportModal();
+        loadTransactions();
+        loadStats();
+    } catch (e) {
+        showNotification('Ошибка: ' + e.message, 'error');
+    }
+}
+window.applyImport = applyImport;
+
+function applyTransactionFilters() {
+    AppState.hapticFeedback('light');
+    loadTransactions();
+}
+window.applyTransactionFilters = applyTransactionFilters;
 
 async function loadTransactions() {
     const list = document.getElementById('transactions-list');
+    const summaryEl = document.getElementById('transactions-summary');
     if (!list) return;
     
+    if (!document.getElementById('filter-year')?.options.length) fillYearFilter();
+    
+    const q = getTransactionQuery();
     showSkeleton('transactions-list', 5);
     
     try {
-        const transactions = await apiRequest('/api/transactions?limit=50');
+        const transactions = await apiRequest('/api/transactions?' + q);
         AppState.transactions = transactions;
         
-        // Filter by current tab
-        const filtered = transactions.filter(tx => {
+        const incomeByCat = {};
+        const expenseByCat = {};
+        let totalIncome = 0;
+        let totalExpense = 0;
+        transactions.forEach(tx => {
             const amount = parseFloat(tx.amount);
-            if (AppState.currentTab === 'income') {
-                return amount >= 0;
+            const cat = tx.category || '—';
+            if (amount >= 0) {
+                incomeByCat[cat] = (incomeByCat[cat] || 0) + amount;
+                totalIncome += amount;
             } else {
-                return amount < 0;
+                expenseByCat[cat] = (expenseByCat[cat] || 0) + Math.abs(amount);
+                totalExpense += Math.abs(amount);
             }
         });
         
-        if (filtered.length === 0) {
+        if (summaryEl) {
+            const totalExp = Object.values(expenseByCat).reduce((a, b) => a + b, 0);
+            const totalInc = Object.values(incomeByCat).reduce((a, b) => a + b, 0);
+            const maxBar = Math.max(totalExp, totalInc, 1);
+            const expWidth = (totalExp / maxBar) * 100;
+            const incWidth = (totalInc / maxBar) * 100;
+            const catEntries = Object.entries(expenseByCat).sort((a, b) => b[1] - a[1]).slice(0, 8);
+            const maxCat = Math.max(...catEntries.map(([, v]) => v), 1);
+            const catRows = catEntries.map(([cat, sum]) => {
+                const pct = (sum / maxCat) * 100;
+                return `<div class="report-cat-row"><span class="report-cat-name">${escapeHtml(cat)}</span><span class="report-cat-bar"><span class="report-cat-fill" style="width:${pct}%"></span></span><span class="report-cat-value">${formatMoney(sum)} ₽</span></div>`;
+            }).join('');
+            summaryEl.innerHTML = `
+                <div class="transactions-summary-cards">
+                    <div class="summary-card expense">
+                        <div class="summary-card-value">${formatMoney(totalExp)} ₽</div>
+                        <div class="summary-card-label">Траты</div>
+                        <div class="summary-bar"><div class="summary-bar-fill expense" style="width: ${expWidth}%"></div></div>
+                    </div>
+                    <div class="summary-card income">
+                        <div class="summary-card-value">${formatMoney(totalInc)} ₽</div>
+                        <div class="summary-card-label">Доходы</div>
+                        <div class="summary-bar"><div class="summary-bar-fill income" style="width: ${incWidth}%"></div></div>
+                    </div>
+                </div>
+                ${catRows ? `<div class="report-by-category"><h4>Расходы по категориям</h4><div class="report-cat-list">${catRows}</div></div>` : ''}
+            `;
+        }
+        
+        if (transactions.length === 0) {
             showEmptyState(
                 'transactions-list',
                 '📝',
-                'Нет транзакций',
-                `Добавьте первую ${AppState.currentTab === 'income' ? 'доход' : 'расход'}`
+                'Нет операций',
+                'Добавьте транзакцию или измените фильтры'
             );
             return;
         }
         
-        list.innerHTML = filtered.map(tx => {
-            const amount = parseFloat(tx.amount);
-            const isPositive = amount >= 0;
-            const absAmount = Math.abs(amount);
-            const categories = AppState.getCategories();
-            const emoji = categories[tx.category] || '💰';
-            
-            return `
-                <div class="transaction-card slide-up">
-                    <div class="transaction-icon ${isPositive ? 'income' : 'expense'}">
-                        ${emoji}
+        const byDate = {};
+        transactions.forEach(tx => {
+            const d = tx.created_at ? (tx.created_at.slice ? tx.created_at.slice(0, 10) : new Date(tx.created_at).toISOString().slice(0, 10)) : '';
+            if (!byDate[d]) byDate[d] = [];
+            byDate[d].push(tx);
+        });
+        const sortedDates = Object.keys(byDate).sort((a, b) => b.localeCompare(a));
+        const categories = AppState.getCategories();
+        const today = new Date().toISOString().slice(0, 10);
+        
+        list.innerHTML = sortedDates.map(date => {
+            const label = date === today ? 'Сегодня' : formatDate(date);
+            const rows = byDate[date].map(tx => {
+                const amount = parseFloat(tx.amount);
+                const isPositive = amount >= 0;
+                const absAmount = Math.abs(amount);
+                const emoji = categories[tx.category] || '💰';
+                return `
+                    <div class="transaction-card slide-up" data-id="${tx.id}">
+                        <div class="transaction-icon ${isPositive ? 'income' : 'expense'}">${emoji}</div>
+                        <div class="transaction-content">
+                            <div class="transaction-title">${escapeHtml(tx.description || tx.category || '—')}</div>
+                            <div class="transaction-meta">${escapeHtml(tx.category || '—')} · ${formatDate(tx.created_at)}</div>
+                        </div>
+                        <div class="transaction-amount ${isPositive ? 'positive' : 'negative'}">
+                            ${isPositive ? '+' : ''}${formatMoney(absAmount)} ₽
+                        </div>
+                        <button class="btn-icon" onclick="editTransaction(${tx.id})" title="Изменить">✏️</button>
+                        <button class="btn-icon danger" onclick="deleteTransaction(${tx.id})" title="Удалить">🗑️</button>
                     </div>
-                    <div class="transaction-content">
-                        <div class="transaction-title">${escapeHtml(tx.category || '—')}</div>
-                        <div class="transaction-meta">${formatDate(tx.created_at)}</div>
-                        ${tx.description ? `<div class="transaction-meta" style="margin-top: 4px;">${escapeHtml(tx.description)}</div>` : ''}
-                    </div>
-                    <div class="transaction-amount ${isPositive ? 'positive' : 'negative'}">
-                        ${isPositive ? '+' : ''}${formatMoney(absAmount)} ₽
-                    </div>
-                </div>
-            `;
+                `;
+            }).join('');
+            return `<div class="transaction-group"><div class="transaction-group-date">${label}</div>${rows}</div>`;
         }).join('');
     } catch (error) {
         console.error('Error loading transactions:', error);
@@ -323,6 +450,21 @@ async function loadTransactions() {
         `;
     }
 }
+
+function editTransaction(id) {
+    AppState.hapticFeedback('light');
+    showNotification('Редактирование: откройте форму и измените данные, затем сохраните', 'info');
+}
+
+function deleteTransaction(id) {
+    if (!confirm('Удалить эту транзакцию?')) return;
+    AppState.hapticFeedback('medium');
+    apiRequest('/api/transactions/' + id, { method: 'DELETE' })
+        .then(() => { showNotification('Удалено'); loadTransactions(); loadStats(); })
+        .catch(e => showNotification('Ошибка удаления', 'error'));
+}
+window.deleteTransaction = deleteTransaction;
+window.editTransaction = editTransaction;
 
 function showAddTransactionForm(type) {
     AppState.currentTab = type;
@@ -548,13 +690,15 @@ async function loadCapital() {
                     </div>
                     <div class="list">
                         ${assets.map(asset => `
-                            <div class="transaction-card slide-up">
+                            <div class="transaction-card slide-up" data-asset-id="${asset.asset_id}">
                                 <div class="transaction-icon income">💼</div>
                                 <div class="transaction-content">
                                     <div class="transaction-title">${escapeHtml(asset.title)}</div>
                                     <div class="transaction-meta">${escapeHtml(asset.type || '—')}</div>
                                 </div>
                                 <div class="transaction-amount positive">${formatMoney(asset.amount || 0)} ₽</div>
+                                <button class="btn-icon" onclick="editAsset(${asset.asset_id})" title="Изменить">✏️</button>
+                                <button class="btn-icon danger" onclick="deleteAsset(${asset.asset_id})" title="Удалить">🗑️</button>
                             </div>
                         `).join('')}
                     </div>
@@ -592,13 +736,15 @@ async function loadCapital() {
                     </div>
                     <div class="list">
                         ${liabilities.map(liab => `
-                            <div class="transaction-card slide-up">
+                            <div class="transaction-card slide-up" data-liability-id="${liab.liability_id}">
                                 <div class="transaction-icon expense">📋</div>
                                 <div class="transaction-content">
                                     <div class="transaction-title">${escapeHtml(liab.title)}</div>
                                     <div class="transaction-meta">${escapeHtml(liab.type || '—')} | Платеж: ${formatMoney(liab.monthly_payment || 0)} ₽/мес</div>
                                 </div>
                                 <div class="transaction-amount negative">${formatMoney(liab.amount || 0)} ₽</div>
+                                <button class="btn-icon" onclick="editLiability(${liab.liability_id})" title="Изменить">✏️</button>
+                                <button class="btn-icon danger" onclick="deleteLiability(${liab.liability_id})" title="Удалить">🗑️</button>
                             </div>
                         `).join('')}
                     </div>
@@ -615,6 +761,91 @@ async function loadCapital() {
         );
     }
 }
+
+async function deleteAsset(id) {
+    if (!confirm('Удалить этот актив?')) return;
+    AppState.hapticFeedback('medium');
+    try {
+        await apiRequest('/api/assets/' + id, { method: 'DELETE' });
+        showNotification('Актив удалён');
+        loadCapital();
+        loadStats();
+    } catch (e) {
+        showNotification('Ошибка удаления: ' + e.message, 'error');
+    }
+}
+window.deleteAsset = deleteAsset;
+
+async function editAsset(id) {
+    const asset = (AppState.assets || []).find(a => a.asset_id === id);
+    if (!asset) return;
+    const title = prompt('Название', asset.title || '');
+    if (title === null) return;
+    const type = prompt('Тип (например: депозит, недвижимость)', asset.type || '');
+    if (type === null) return;
+    const amount = parseFloat(prompt('Сумма (₽)', (asset.amount || 0).toString()));
+    if (isNaN(amount) || amount < 0) {
+        showNotification('Введите корректную сумму', 'error');
+        return;
+    }
+    try {
+        await apiRequest('/api/assets/' + id, {
+            method: 'PUT',
+            body: JSON.stringify({ title: title.trim(), type: type.trim(), amount })
+        });
+        showNotification('Актив обновлён');
+        loadCapital();
+        loadStats();
+    } catch (e) {
+        showNotification('Ошибка: ' + e.message, 'error');
+    }
+}
+window.editAsset = editAsset;
+
+async function deleteLiability(id) {
+    if (!confirm('Удалить этот долг?')) return;
+    AppState.hapticFeedback('medium');
+    try {
+        await apiRequest('/api/liabilities/' + id, { method: 'DELETE' });
+        showNotification('Долг удалён');
+        loadCapital();
+        loadStats();
+    } catch (e) {
+        showNotification('Ошибка удаления: ' + e.message, 'error');
+    }
+}
+window.deleteLiability = deleteLiability;
+
+async function editLiability(id) {
+    const liab = (AppState.liabilities || []).find(l => l.liability_id === id);
+    if (!liab) return;
+    const title = prompt('Название', liab.title || '');
+    if (title === null) return;
+    const type = prompt('Тип (например: кредит, займ)', liab.type || '');
+    if (type === null) return;
+    const amount = parseFloat(prompt('Сумма долга (₽)', (liab.amount || 0).toString()));
+    if (isNaN(amount) || amount < 0) {
+        showNotification('Введите корректную сумму', 'error');
+        return;
+    }
+    const monthly = parseFloat(prompt('Ежемесячный платёж (₽)', (liab.monthly_payment || 0).toString()));
+    if (isNaN(monthly) || monthly < 0) {
+        showNotification('Введите корректный платёж', 'error');
+        return;
+    }
+    try {
+        await apiRequest('/api/liabilities/' + id, {
+            method: 'PUT',
+            body: JSON.stringify({ title: title.trim(), type: type.trim(), amount, monthly_payment: monthly })
+        });
+        showNotification('Долг обновлён');
+        loadCapital();
+        loadStats();
+    } catch (e) {
+        showNotification('Ошибка: ' + e.message, 'error');
+    }
+}
+window.editLiability = editLiability;
 
 // ========== Reports ==========
 
@@ -869,6 +1100,34 @@ async function requestNewConsultation() {
 }
 // Export immediately
 window.requestNewConsultation = requestNewConsultation;
+
+async function sendConsultationMessage() {
+    const input = document.getElementById('consultation-message-input');
+    const msg = (input && input.value || '').trim();
+    if (!msg) {
+        showNotification('Введите сообщение', 'error');
+        return;
+    }
+    const btn = document.getElementById('consultation-send-btn');
+    if (btn) btn.disabled = true;
+    try {
+        const result = await apiRequest('/api/consultation/message', {
+            method: 'POST',
+            body: JSON.stringify({ message: msg })
+        });
+        if (input) input.value = '';
+        showNotification(result.reply || 'Сообщение принято');
+        if (result.goals_added && result.goals_added.length > 0) {
+            showNotification('Цели добавлены: ' + result.goals_added.map(g => g.title).join(', '), 'info');
+        }
+        AppState.hapticFeedback('light');
+    } catch (e) {
+        showNotification('Ошибка: ' + (e.message || 'Не удалось отправить'), 'error');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+window.sendConsultationMessage = sendConsultationMessage;
 
 // Functions are exported immediately after definition above
 // This ensures they're available as soon as the script loads
