@@ -536,67 +536,162 @@ def _extract_text_from_file(file_path: str, content_type: str, filename: str) ->
     return "\n".join(text_parts) if text_parts else "[Не удалось извлечь текст]"
 
 
+# Категории приложения: расходы и доходы (для нормализации при импорте)
+IMPORT_EXPENSE_CATEGORIES = [
+    "Супермаркеты", "Рестораны и кафе", "Транспорт", "Аренда жилья",
+    "Коммунальные платежи", "Здоровье и красота", "Развлечения", "Прочие расходы"
+]
+IMPORT_INCOME_CATEGORIES = ["Заработная плата", "Дивиденды и купоны", "Прочие доходы"]
+IMPORT_ALL_CATEGORIES = IMPORT_EXPENSE_CATEGORIES + IMPORT_INCOME_CATEGORIES
+
+
+def _normalize_category_from_ai(cat: str, description: str, amount: float) -> str:
+    """Нормализовать категорию под список приложения по смыслу операции."""
+    c = (cat or "").strip()
+    d = (description or "").strip()
+    if c in IMPORT_ALL_CATEGORIES:
+        return c
+    # Маппинг по ключевым словам из названия операции (cat или description)
+    c_lower = c.lower()
+    d_lower = d.lower()
+    if any(x in c_lower or x in d_lower for x in ("магнит", "пятерочка", "перекресток", "ашан", "лента", "супермаркет", "продукт")):
+        return "Супермаркеты"
+    if any(x in c_lower or x in d_lower for x in ("кафе", "ресторан", "кофе", "доставка ед", "яндекс.еда")):
+        return "Рестораны и кафе"
+    if any(x in c_lower or x in d_lower for x in ("азс", "бензин", "заправка", "такси", "яндекс.такси", "транспорт", "метро", "парковк")):
+        return "Транспорт"
+    if any(x in c_lower or x in d_lower for x in ("аренд", "жилье", "квартир")):
+        return "Аренда жилья"
+    if any(x in c_lower or x in d_lower for x in ("жкх", "коммунал", "электр", "газ", "водоканал", "тепло")):
+        return "Коммунальные платежи"
+    if any(x in c_lower or x in d_lower for x in ("аптек", "клиник", "врач", "здоровье", "косметик")):
+        return "Здоровье и красота"
+    if any(x in c_lower or x in d_lower for x in ("кино", "развлечен", "подписк", "netflix", "spotify", "игр")):
+        return "Развлечения"
+    if any(x in c_lower or x in d_lower for x in ("озон", "wildberries", "маркетплейс", "wb.ru", "ozon")):
+        return "Прочие расходы"
+    if any(x in c_lower or x in d_lower for x in ("зарплат", "перевод от работодател", "доход")):
+        return "Заработная плата"
+    if any(x in c_lower or x in d_lower for x in ("дивиденд", "купон", "процент по вклад")):
+        return "Дивиденды и купоны"
+    return "Прочие расходы" if (amount < 0) else "Прочие доходы"
+
+
+def _is_likely_auth_code(amount: float, description: str) -> bool:
+    """Проверка: не подставил ли AI код авторизации вместо суммы (4–6 целых цифр, без осмысленного описания)."""
+    if amount == 0:
+        return True
+    try:
+        v = abs(amount)
+        if v != int(v):  # есть копейки — скорее сумма
+            return False
+        # Код авторизации обычно 4–6 цифр; при этом описание пустое или «код»/«авториз»
+        desc = (description or "").strip().lower()
+        if 1000 <= v <= 999999:
+            if len(desc) >= 5 and "код" not in desc and "авториз" not in desc and "подтвержд" not in desc:
+                return False  # похоже на реальную операцию с описанием
+            if len(desc) < 3:
+                return True  # нет описания — подозрительно
+        return False
+    except Exception:
+        return False
+
+
+async def _parse_single_chunk(raw_chunk: str) -> tuple[list[dict], list[str]]:
+    """Распарсить один фрагмент текста выписки (один запрос к AI)."""
+    prompt = (
+        "Ты парсер банковской выписки. Извлеки ВСЕ транзакции из текста.\n\n"
+        "ПРАВИЛА (строго):\n"
+        "1) date — дата операции в формате YYYY-MM-DD.\n"
+        "2) amount — ТОЛЬКО сумма операции в рублях (положительное = приход, отрицательное = расход). "
+        "Сумма обычно с копейками (1234.56) или целое. НИКОГДА не подставляй: код авторизации (4–8 цифр), "
+        "последние цифры карты, коды из СМС, номера счетов — это НЕ суммы!\n"
+        "3) category — ОДНА из категорий по смыслу операции: Супермаркеты, Рестораны и кафе, Транспорт, "
+        "Аренда жилья, Коммунальные платежи, Здоровье и красота, Развлечения, Прочие расходы, "
+        "Заработная плата, Дивиденды и купоны, Прочие доходы. Определяй по названию операции (магазин → Супермаркеты, "
+        "кафе → Рестораны и кафе, АЗС/такси → Транспорт, ЖКХ → Коммунальные платежи и т.д.). НЕ относи всё в Прочее — только если смысл неясен.\n"
+        "4) description — текст операции ИЗ ВЫПИСКИ как есть: название магазина/получателя/отправителя (например: ООО Магнит, Перевод Иванову). "
+        "НЕ путай: category — всегда одно из слов выше; description — название из выписки.\n\n"
+        "Ответь ТОЛЬКО JSON-массивом, без комментариев:\n"
+        '[{"date":"YYYY-MM-DD","amount":число,"category":"одна из категорий выше","description":"название из выписки"}]\n\n'
+        "Текст выписки:\n" + raw_chunk
+    )
+    messages = [
+        {"role": "system", "content": "Ты парсер банковской выписки. Отвечай только JSON-массивом объектов с полями date, amount, category, description."},
+        {"role": "user", "content": prompt}
+    ]
+    answer = await gigachat_request(messages)
+    answer = (answer or "").strip()
+    import re
+    json_match = re.search(r"\[[\s\S]*\]", answer)
+    if not json_match:
+        return [], [f"AI не вернул массив: {answer[:150]}"]
+    data = json.loads(json_match.group())
+    transactions = []
+    errors = []
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            errors.append(f"Строка {i+1}: не объект")
+            continue
+        try:
+            date_str = str(item.get("date", ""))[:10]
+            raw_amount = item.get("amount", 0)
+            amount = float(raw_amount)
+            raw_cat = (item.get("category") or "").strip()
+            raw_desc = (item.get("description") or "").strip()
+            # Исправление перепутанных полей: если "category" длинное, а "description" — из списка категорий
+            if raw_cat in IMPORT_ALL_CATEGORIES and raw_desc and raw_desc not in IMPORT_ALL_CATEGORIES:
+                category = _normalize_category_from_ai(raw_cat, raw_desc, amount)
+                description = raw_desc or None
+            elif raw_desc in IMPORT_ALL_CATEGORIES and (not raw_cat or raw_cat not in IMPORT_ALL_CATEGORIES or len(raw_cat) > 25):
+                category = _normalize_category_from_ai(raw_desc, raw_cat, amount)
+                description = raw_cat or None
+            else:
+                category = _normalize_category_from_ai(raw_cat, raw_desc, amount)
+                description = (raw_desc or raw_cat).strip() or None
+                if description and description in IMPORT_ALL_CATEGORIES and raw_cat and raw_cat not in IMPORT_ALL_CATEGORIES:
+                    description = raw_cat
+            # Отсекать коды авторизации, принятые за сумму
+            if _is_likely_auth_code(amount, description or ""):
+                errors.append(f"Строка {i+1}: пропущена (похоже на код авторизации, не сумма): {amount}")
+                continue
+            if not date_str or len(date_str) < 10:
+                errors.append(f"Строка {i+1}: некорректная дата")
+                continue
+            transactions.append({
+                "date": date_str,
+                "amount": amount,
+                "category": category,
+                "description": description
+            })
+        except (TypeError, ValueError) as e:
+            errors.append(f"Строка {i+1}: {e}")
+    return transactions, errors
+
+
 async def _parse_transactions_with_ai(raw_text: str) -> tuple[list[dict], list[str]]:
-    """Вызвать GigaChat для извлечения списка транзакций из текста. Возвращает (transactions, errors)."""
+    """Извлечь транзакции из текста выписки. Большие выписки обрабатываются по частям (чанки)."""
     if not raw_text or len(raw_text.strip()) < 10:
         return [], ["Мало данных для распознавания"]
-
-    prompt = (
-        "Из следующего текста (выписка, таблица, список операций) извлеки транзакции.\n"
-        "Для каждой транзакции определи: дата (YYYY-MM-DD), сумма (число: положительное — доход, отрицательное — расход), "
-        "категория (одно слово на русском: Еда, Транспорт, Зарплата, Развлечения, Здоровье, Жильё, Прочее и т.д.), описание (кратко).\n\n"
-        "Ответь ТОЛЬКО валидным JSON-массивом объектов без комментариев, в формате:\n"
-        '[{"date":"YYYY-MM-DD","amount":число,"category":"категория","description":"описание"}]\n'
-        "Если транзакций нет или не удалось распознать — верни [].\n"
-        "Нормализуй категории к одному из: Еда, Транспорт, Зарплата, Развлечения, Здоровье, Жильё, Маркетплейсы, Прочее (если не подходит — Прочее).\n\n"
-        "Текст:\n" + raw_text[:15000]
-    )
-    try:
-        messages = [
-            {"role": "system", "content": "Ты парсер финансовых транзакций. Отвечай только JSON-массивом."},
-            {"role": "user", "content": prompt}
-        ]
-        answer = await gigachat_request(messages)
-        answer = (answer or "").strip()
-        # Выделить JSON из ответа (на случай обёртки в markdown)
-        if "```" in answer:
-            start = answer.find("[")
-            end = answer.rfind("]") + 1
-            if start >= 0 and end > start:
-                answer = answer[start:end]
-        import re
-        json_match = re.search(r"\[[\s\S]*\]", answer)
-        if not json_match:
-            return [], [f"AI не вернул список транзакций: {answer[:200]}"]
-        data = json.loads(json_match.group())
-        transactions = []
-        errors = []
-        for i, item in enumerate(data):
-            if not isinstance(item, dict):
-                errors.append(f"Строка {i+1}: не объект")
-                continue
-            try:
-                date_str = str(item.get("date", ""))[:10]
-                amount = float(item.get("amount", 0))
-                category = (item.get("category") or "Прочее").strip() or "Прочее"
-                description = (item.get("description") or "").strip() or None
-                if not date_str or len(date_str) < 10:
-                    errors.append(f"Строка {i+1}: некорректная дата")
-                    continue
-                transactions.append({
-                    "date": date_str,
-                    "amount": amount,
-                    "category": category,
-                    "description": description
-                })
-            except (TypeError, ValueError) as e:
-                errors.append(f"Строка {i+1}: {e}")
-        return transactions, errors
-    except json.JSONDecodeError as e:
-        return [], [f"Ошибка разбора JSON: {e}"]
-    except Exception as e:
-        logging.exception("AI parse transactions")
-        return [], [str(e)]
+    text = raw_text.strip()
+    # Чанки по ~12k символов, чтобы уместить в контекст и получить все операции (~2000 записей)
+    CHUNK_SIZE = 12000
+    all_transactions = []
+    all_errors = []
+    offset = 0
+    while offset < len(text):
+        chunk = text[offset:offset + CHUNK_SIZE]
+        if not chunk.strip():
+            offset += CHUNK_SIZE
+            continue
+        try:
+            tx_list, err_list = await _parse_single_chunk(chunk)
+            all_transactions.extend(tx_list)
+            all_errors.extend(err_list)
+        except Exception as e:
+            all_errors.append(f"Ошибка парсинга блока: {e}")
+        offset += CHUNK_SIZE
+    return all_transactions, all_errors
 
 
 @app.post("/api/transactions/import")
