@@ -66,14 +66,15 @@ async function apiRequest(endpoint, options = {}) {
         });
         
         if (!response.ok) {
-            // Handle 401 (Unauthorized) gracefully
+            const errorText = await response.text();
             if (response.status === 401) {
-                const errorText = await response.text();
                 console.error('401 Unauthorized:', errorText);
                 throw new Error('Требуется авторизация. Откройте приложение через Telegram.');
             }
-            const errorText = await response.text();
-            throw new Error(`API error: ${response.status} - ${errorText}`);
+            if (response.status === 403 && (errorText.includes('PREMIUM') || errorText.includes('premium'))) {
+                throw new Error('Требуется подписка. Оформите подписку в боте.');
+            }
+            throw new Error(errorText || `Ошибка: ${response.status}`);
         }
         
         return await response.json();
@@ -98,7 +99,10 @@ async function uploadFile(endpoint, file) {
     });
     if (!response.ok) {
         const text = await response.text();
-        throw new Error(`API error: ${response.status} - ${text}`);
+        if (response.status === 403 && (text.includes('PREMIUM') || text.includes('premium'))) {
+            throw new Error('Требуется подписка. Оформите подписку в боте.');
+        }
+        throw new Error(text || `Ошибка: ${response.status}`);
     }
     return await response.json();
 }

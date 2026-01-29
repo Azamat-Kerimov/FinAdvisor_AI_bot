@@ -451,9 +451,65 @@ async function loadTransactions() {
     }
 }
 
+function openEditTransactionModal(id) {
+    const tx = (AppState.transactions || []).find(t => t.id === id);
+    if (!tx) return;
+    const modal = document.getElementById('edit-transaction-modal');
+    const catSelect = document.getElementById('edit-tx-category');
+    const amountInput = document.getElementById('edit-tx-amount');
+    const descInput = document.getElementById('edit-tx-description');
+    if (!modal || !catSelect || !amountInput || !descInput) return;
+    const allCats = { ...AppState.incomeCategories, ...AppState.expenseCategories };
+    catSelect.innerHTML = '';
+    for (const [cat, emoji] of Object.entries(allCats)) {
+        const opt = document.createElement('option');
+        opt.value = cat;
+        opt.textContent = `${emoji} ${cat}`;
+        if (cat === (tx.category || '')) opt.selected = true;
+        catSelect.appendChild(opt);
+    }
+    document.getElementById('edit-tx-id').value = String(id);
+    amountInput.value = String(tx.amount ?? 0);
+    descInput.value = (tx.description || '').trim();
+    modal.style.display = 'flex';
+}
+function closeEditTransactionModal() {
+    const modal = document.getElementById('edit-transaction-modal');
+    if (modal) modal.style.display = 'none';
+}
+window.closeEditTransactionModal = closeEditTransactionModal;
+
+async function saveEditTransaction() {
+    const id = document.getElementById('edit-tx-id')?.value;
+    const amount = parseFloat(document.getElementById('edit-tx-amount')?.value);
+    const category = document.getElementById('edit-tx-category')?.value;
+    const description = (document.getElementById('edit-tx-description')?.value || '').trim();
+    if (!id || isNaN(amount)) {
+        showNotification('Заполните сумму', 'error');
+        return;
+    }
+    if (!category) {
+        showNotification('Выберите категорию', 'error');
+        return;
+    }
+    try {
+        await apiRequest('/api/transactions/' + id, {
+            method: 'PUT',
+            body: JSON.stringify({ amount, category, description: description || null })
+        });
+        showNotification('Транзакция сохранена');
+        closeEditTransactionModal();
+        loadTransactions();
+        loadStats();
+    } catch (e) {
+        showNotification('Ошибка: ' + (e.message || 'Не удалось сохранить'), 'error');
+    }
+}
+window.saveEditTransaction = saveEditTransaction;
+
 function editTransaction(id) {
     AppState.hapticFeedback('light');
-    showNotification('Редактирование: откройте форму и измените данные, затем сохраните', 'info');
+    openEditTransactionModal(id);
 }
 
 function deleteTransaction(id) {
