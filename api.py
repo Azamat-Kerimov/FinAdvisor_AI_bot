@@ -674,8 +674,8 @@ async def _parse_transactions_with_ai(raw_text: str) -> tuple[list[dict], list[s
     if not raw_text or len(raw_text.strip()) < 10:
         return [], ["Мало данных для распознавания"]
     text = raw_text.strip()
-    # Чанки по ~12k символов, чтобы уместить в контекст и получить все операции (~2000 записей)
-    CHUNK_SIZE = 12000
+    # Чанки по ~20k символов: меньше запросов к AI = быстрее и меньше шанс 504
+    CHUNK_SIZE = 20000
     all_transactions = []
     all_errors = []
     offset = 0
