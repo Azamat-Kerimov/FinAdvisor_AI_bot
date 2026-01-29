@@ -1,5 +1,7 @@
 # FastAPI сервер для Telegram Web App
 # v_01.28.26 - Рефакторинг: полная бизнес-логика, проверка подписки, AI
+from __future__ import annotations
+
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, Query, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
