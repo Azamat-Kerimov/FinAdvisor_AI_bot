@@ -8,5 +8,6 @@ numpy
 pandas
 fastapi
 uvicorn
+python-multipart
 openpyxl
 pypdf
