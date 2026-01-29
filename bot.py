@@ -91,11 +91,16 @@ def get_main_keyboard(has_premium: bool = False) -> InlineKeyboardMarkup:
         )]
     ]
     
-    # Если нет подписки и платежи настроены, добавляем кнопку оплаты
-    if not has_premium and PAYMENT_PROVIDER_TOKEN:
-        buttons.append([
-            InlineKeyboardButton(text="💳 Оформить подписку", callback_data="subscribe_from_main")
-        ])
+    # Если платежи настроены: без подписки — «Оформить», с подпиской — «Продлить»
+    if PAYMENT_PROVIDER_TOKEN:
+        if has_premium:
+            buttons.append([
+                InlineKeyboardButton(text="💳 Продлить подписку", callback_data="subscribe_from_main")
+            ])
+        else:
+            buttons.append([
+                InlineKeyboardButton(text="💳 Оформить подписку", callback_data="subscribe_from_main")
+            ])
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
