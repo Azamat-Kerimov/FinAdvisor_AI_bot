@@ -562,3 +562,91 @@ select:focus {
     height: 120px;
     margin-bottom: var(--space-md);
 }
+
+/* ========== Сводка транзакций и таблица по категориям ========== */
+.transactions-summary {
+    margin-bottom: var(--space-md);
+}
+.transactions-summary-cards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-md);
+    margin-bottom: var(--space-md);
+}
+.summary-card {
+    padding: var(--space-md);
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius-sm);
+}
+.summary-card.expense .summary-card-value { color: var(--danger); }
+.summary-card.income .summary-card-value { color: var(--accent); }
+.summary-card-label {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    margin-top: var(--space-xs);
+}
+.summary-bar {
+    height: 6px;
+    background: var(--border-color);
+    border-radius: 3px;
+    margin-top: var(--space-sm);
+    overflow: hidden;
+}
+.summary-bar-fill.expense { background: var(--danger); }
+.summary-bar-fill.income { background: var(--accent); }
+
+.report-by-category {
+    margin-top: var(--space-md);
+    padding: var(--space-md);
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius-sm);
+}
+.report-by-category h4 {
+    margin: 0 0 var(--space-sm);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+}
+.report-cat-list { display: flex; flex-direction: column; gap: var(--space-xs); }
+.report-cat-row {
+    display: grid;
+    grid-template-columns: 1fr 80px 80px;
+    align-items: center;
+    gap: var(--space-sm);
+    font-size: var(--font-size-sm);
+}
+.report-cat-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.report-cat-bar {
+    height: 8px;
+    background: var(--border-color);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.report-cat-fill {
+    display: block;
+    height: 100%;
+    background: var(--danger);
+    border-radius: 4px;
+}
+.report-cat-value { text-align: right; font-weight: 600; }
+
+.report-table-wrap { margin-top: var(--space-md); }
+.report-cat-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--font-size-sm);
+}
+.report-cat-table th,
+.report-cat-table td {
+    padding: var(--space-sm) var(--space-md);
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+.report-cat-table th { font-weight: 600; color: var(--text-secondary); }
+.report-cat-table th:last-child,
+.report-cat-table td.report-table-expense,
+.report-cat-table td.report-table-income { text-align: right; }
+.report-cat-table td.report-table-expense { color: var(--danger); }
+.report-cat-table td.report-table-income { color: var(--accent); }
+.report-cat-table .report-table-cat { word-break: break-word; }
+.report-cat-table td.report-table-expense,
+.report-cat-table td.report-table-income { white-space: nowrap; }
