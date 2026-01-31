@@ -205,11 +205,13 @@ async def require_premium(user_id: int = Depends(get_user_id)):
 # Pydantic models
 class TransactionCreate(BaseModel):
     amount: float
-    category: str
+    category_id: Optional[int] = None  # предпочтительно
+    category: Optional[str] = None     # имя категории (если category_id не передан)
     description: Optional[str] = None
 
 class TransactionUpdate(BaseModel):
     amount: Optional[float] = None
+    category_id: Optional[int] = None
     category: Optional[str] = None
     description: Optional[str] = None
 
@@ -242,10 +244,10 @@ class LiabilityUpdate(BaseModel):
 
 
 class TransactionImportItem(BaseModel):
-    """Один элемент из AI-парсера импорта"""
+    """Один элемент импорта (category_id из справочника/маппинга)"""
     date: str  # YYYY-MM-DD
     amount: float
-    category: str
+    category_id: int
     description: Optional[str] = None
 
 
@@ -261,6 +263,56 @@ class ConsultationMessageRequest(BaseModel):
 class BudgetCreate(BaseModel):
     category: str
     monthly_limit: float
+
+
+# --- Справочник категорий (БД) ---
+
+@app.get("/api/categories")
+async def get_categories_list(user_id: int = Depends(require_premium)):
+    """Список категорий приложения (id, name, type) из БД."""
+    db = await get_db()
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, type FROM categories ORDER BY type, name"
+        )
+        return [{"id": r["id"], "name": r["name"], "type": r["type"]} for r in rows]
+
+
+async def _get_category_id_by_name(conn, name: str) -> int | None:
+    """Вернуть id категории по имени или None."""
+    if not name or not str(name).strip():
+        return None
+    row = await conn.fetchrow(
+        "SELECT id FROM categories WHERE name = $1",
+        str(name).strip()
+    )
+    return row["id"] if row else None
+
+
+async def _resolve_bank_category_to_id(conn, bank_category: str, amount: float) -> int:
+    """
+    Резолв категории банка (Сбер/Т-Банк) в category_id.
+    Если маппинга нет — добавляем в category_mapping с «Прочие доходы» или «Прочие расходы».
+    """
+    key = (bank_category or "").strip().lower()
+    if not key or key in ("прочее", "прочие", "прочие расходы", "прочие доходы"):
+        fallback = "Прочие расходы" if amount < 0 else "Прочие доходы"
+        row = await conn.fetchrow("SELECT id FROM categories WHERE name = $1", fallback)
+        return row["id"] if row else 1
+    row = await conn.fetchrow(
+        "SELECT category_id FROM category_mapping WHERE LOWER(TRIM(bank_category)) = $1",
+        key
+    )
+    if row:
+        return row["category_id"]
+    fallback_name = "Прочие расходы" if amount < 0 else "Прочие доходы"
+    fallback_row = await conn.fetchrow("SELECT id FROM categories WHERE name = $1", fallback_name)
+    fallback_id = fallback_row["id"] if fallback_row else 1
+    await conn.execute(
+        "INSERT INTO category_mapping (bank_category, category_id) VALUES ($1, $2) ON CONFLICT (bank_category) DO NOTHING",
+        key, fallback_id
+    )
+    return fallback_id
 
 
 # API Endpoints
@@ -375,10 +427,11 @@ async def get_stats(user_id: int = Depends(require_premium)):
     async with db.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT amount, category, created_at
-            FROM transactions
-            WHERE user_id=$1 AND created_at >= $2
-            ORDER BY created_at ASC
+            SELECT t.amount, c.name AS category, t.created_at
+            FROM transactions t
+            JOIN categories c ON c.id = t.category_id
+            WHERE t.user_id=$1 AND t.created_at >= $2
+            ORDER BY t.created_at ASC
             """,
             user_id, since
         )
@@ -428,31 +481,32 @@ async def get_transactions(
     """Получить список транзакций с фильтрами (месяц, год, категория, тип)"""
     db = await get_db()
     async with db.acquire() as conn:
-        conditions = ["user_id = $1"]
+        conditions = ["t.user_id = $1"]
         params: List = [user_id]
         n = 2
         if month is not None and year is not None:
             from datetime import date
             start = date(year, month, 1)
             end = date(year, month + 1, 1) if month < 12 else date(year + 1, 1, 1)
-            conditions.append(f"created_at >= ${n}::timestamp")
-            conditions.append(f"created_at < ${n + 1}::timestamp")
+            conditions.append(f"t.created_at >= ${n}::timestamp")
+            conditions.append(f"t.created_at < ${n + 1}::timestamp")
             params.extend([start, end])
             n += 2
         if category:
-            conditions.append(f"category = ${n}")
+            conditions.append(f"c.name = ${n}")
             params.append(category)
             n += 1
         if type_ == "income":
-            conditions.append("amount >= 0")
+            conditions.append("t.amount >= 0")
         elif type_ == "expense":
-            conditions.append("amount < 0")
+            conditions.append("t.amount < 0")
         params.append(limit)
         q = f"""
-            SELECT id, amount, category, description, created_at
-            FROM transactions
+            SELECT t.id, t.amount, c.name AS category, t.description, t.created_at
+            FROM transactions t
+            JOIN categories c ON c.id = t.category_id
             WHERE {" AND ".join(conditions)}
-            ORDER BY created_at DESC
+            ORDER BY t.created_at DESC
             LIMIT ${n}
             """
         rows = await conn.fetch(q, *params)
@@ -460,15 +514,20 @@ async def get_transactions(
 
 @app.post("/api/transactions")
 async def create_transaction(transaction: TransactionCreate, user_id: int = Depends(require_premium)):
-    """Создать транзакцию"""
+    """Создать транзакцию (category_id или category по имени)"""
     db = await get_db()
     async with db.acquire() as conn:
+        cid = transaction.category_id
+        if cid is None and transaction.category:
+            cid = await _get_category_id_by_name(conn, transaction.category)
+        if cid is None:
+            raise HTTPException(status_code=400, detail="Укажите category_id или category")
         await conn.execute(
             """
-            INSERT INTO transactions (user_id, amount, category, description, created_at)
+            INSERT INTO transactions (user_id, amount, category_id, description, created_at)
             VALUES ($1, $2, $3, $4, NOW())
             """,
-            user_id, transaction.amount, transaction.category, transaction.description
+            user_id, transaction.amount, cid, transaction.description
         )
         return {"status": "ok"}
 
@@ -486,11 +545,18 @@ async def update_transaction(
                 "UPDATE transactions SET amount=$1 WHERE id=$2 AND user_id=$3",
                 body.amount, tx_id, user_id
             )
-        if body.category is not None:
+        if body.category_id is not None:
             await conn.execute(
-                "UPDATE transactions SET category=$1 WHERE id=$2 AND user_id=$3",
-                body.category, tx_id, user_id
+                "UPDATE transactions SET category_id=$1 WHERE id=$2 AND user_id=$3",
+                body.category_id, tx_id, user_id
             )
+        elif body.category is not None:
+            cid = await _get_category_id_by_name(conn, body.category)
+            if cid is not None:
+                await conn.execute(
+                    "UPDATE transactions SET category_id=$1 WHERE id=$2 AND user_id=$3",
+                    cid, tx_id, user_id
+                )
         if body.description is not None:
             await conn.execute(
                 "UPDATE transactions SET description=$1 WHERE id=$2 AND user_id=$3",
@@ -558,132 +624,9 @@ def _extract_text_from_file(file_path: str, content_type: str, filename: str) ->
     return "\n".join(text_parts) if text_parts else "[Не удалось извлечь текст]"
 
 
-# Категории приложения: расходы и доходы (единый список, без дублей)
-IMPORT_EXPENSE_CATEGORIES = [
-    "Супермаркеты", "Рестораны и кафе", "Транспорт", "Аренда жилья",
-    "Коммунальные платежи", "Здоровье и красота", "Развлечения", "Образование",
-    "Связь", "Одежда и обувь", "Дом и ремонт", "Питомцы", "Прочие расходы"
-]
-IMPORT_INCOME_CATEGORIES = ["Заработная плата", "Дивиденды и купоны", "Прочие доходы"]
-IMPORT_ALL_CATEGORIES = IMPORT_EXPENSE_CATEGORIES + IMPORT_INCOME_CATEGORIES
-
-# Маппинг категорий из выгрузок Сбера и Т-Банка в категории приложения (если в исходнике не «Прочее» — маппим в подходящую или новую)
-BANK_CATEGORY_MAPPING = {
-    # Транспорт (объединяем Авто, Самокат, Такси, АЗС и т.д.)
-    "транспорт": "Транспорт", "авто": "Транспорт", "автомобили": "Транспорт",
-    "азс": "Транспорт", "такси": "Транспорт", "топливо": "Транспорт",
-    "парковка": "Транспорт", "общественный транспорт": "Транспорт",
-    "аренда транспорта": "Транспорт", "аренда транспорта и каршеринг": "Транспорт",
-    "каршеринг": "Транспорт", "самокат": "Транспорт", "метро": "Транспорт",
-    # Супермаркеты
-    "супермаркеты": "Супермаркеты", "продукты": "Супермаркеты", "продуктовые": "Супермаркеты",
-    "продуктовые магазины": "Супермаркеты", "еда": "Супермаркеты", "бакалея": "Супермаркеты",
-    "гипермаркеты": "Супермаркеты",
-    # Рестораны и кафе
-    "рестораны и кафе": "Рестораны и кафе", "кафе": "Рестораны и кафе", "рестораны": "Рестораны и кафе",
-    "кафе, рестораны, доставка еды": "Рестораны и кафе", "доставка еды": "Рестораны и кафе",
-    "рестораны и кафе, доставка": "Рестораны и кафе", "доставка": "Рестораны и кафе",
-    "кафе и рестораны": "Рестораны и кафе",
-    # Здоровье и красота
-    "здоровье и красота": "Здоровье и красота", "аптеки": "Здоровье и красота",
-    "медицина": "Здоровье и красота", "здоровье": "Здоровье и красота",
-    "фитнес": "Здоровье и красота", "спорт": "Здоровье и красота", "красота": "Здоровье и красота",
-    "салоны красоты": "Здоровье и красота", "клиники": "Здоровье и красота",
-    "ветеринар": "Здоровье и красота",
-    # Коммунальные и жильё
-    "коммунальные платежи": "Коммунальные платежи", "жкх": "Коммунальные платежи",
-    "коммунальные услуги": "Коммунальные платежи",
-    "аренда жилья": "Аренда жилья", "аренда": "Аренда жилья", "жильё": "Аренда жилья",
-    # Развлечения
-    "развлечения": "Развлечения", "кино": "Развлечения", "подписки": "Развлечения",
-    "игры": "Развлечения", "хобби": "Развлечения", "отдых": "Развлечения",
-    "стриминг": "Развлечения", "музыка": "Развлечения",
-    # Образование
-    "образование": "Образование", "обучение": "Образование", "курсы": "Образование",
-    "книги": "Образование",
-    # Связь (новая категория)
-    "связь": "Связь", "мобильная связь": "Связь", "телефон": "Связь",
-    "интернет": "Связь", "услуги связи": "Связь", "телевидение": "Связь",
-    # Одежда и обувь (новая категория)
-    "одежда и обувь": "Одежда и обувь", "одежда": "Одежда и обувь", "обувь": "Одежда и обувь",
-    "аксессуары": "Одежда и обувь",
-    # Дом и ремонт (новая категория)
-    "дом и ремонт": "Дом и ремонт", "ремонт": "Дом и ремонт", "мебель": "Дом и ремонт",
-    "бытовая техника": "Дом и ремонт", "товары для дома": "Дом и ремонт",
-    "хозтовары": "Дом и ремонт", "стройматериалы": "Дом и ремонт",
-    # Питомцы (новая категория)
-    "питомцы": "Питомцы", "животные": "Питомцы", "зоомагазины": "Питомцы",
-    "зоотовары": "Питомцы", "корм для животных": "Питомцы",
-    # Доходы
-    "заработная плата": "Заработная плата", "зарплата": "Заработная плата",
-    "пополнение": "Прочие доходы", "перевод": "Прочие доходы", "переводы": "Прочие доходы",
-    "дивиденды и купоны": "Дивиденды и купоны", "дивиденды": "Дивиденды и купоны",
-    "бонусы": "Прочие доходы", "кэшбэк": "Прочие доходы", "возврат": "Прочие доходы",
-    # Онлайн и прочее
-    "онлайн покупки": "Прочие расходы", "интернет-магазины": "Прочие расходы",
-    "покупки": "Прочие расходы", "банковские услуги": "Прочие расходы",
-    "страхование": "Прочие расходы", "комиссии": "Прочие расходы",
-    "прочие": "Прочие расходы", "прочие расходы": "Прочие расходы",
-    "прочие доходы": "Прочие доходы",
-}
-
-
-def _normalize_bank_category(bank_category: str, amount: float, description: str = "") -> str:
-    """Привести категорию из выгрузки банка к категории приложения. Если в исходнике не «Прочее» — маппим в подходящую или по ключевым словам."""
-    if not bank_category or not str(bank_category).strip():
-        return _normalize_category_from_ai("", description, amount)
-    key = str(bank_category).strip().lower()
-    if key in ("прочее", "прочие", "прочие расходы", "прочие доходы"):
-        return "Прочие расходы" if amount < 0 else "Прочие доходы"
-    if key in BANK_CATEGORY_MAPPING:
-        return BANK_CATEGORY_MAPPING[key]
-    for bank_key, app_cat in BANK_CATEGORY_MAPPING.items():
-        if bank_key in key or key in bank_key:
-            return app_cat
-    # Категория не «Прочее» и не в маппинге — пробуем по ключевым словам из названия категории и описания
-    return _normalize_category_from_ai(bank_category, description, amount)
-
-
-def _normalize_category_from_ai(cat: str, description: str, amount: float) -> str:
-    """Нормализовать категорию под список приложения по смыслу операции."""
-    c = (cat or "").strip()
-    d = (description or "").strip()
-    if c in IMPORT_ALL_CATEGORIES:
-        return c
-    # Маппинг по ключевым словам из названия операции (cat или description)
-    c_lower = c.lower()
-    d_lower = d.lower()
-    if any(x in c_lower or x in d_lower for x in ("магнит", "пятерочка", "перекресток", "ашан", "лента", "супермаркет", "продукт")):
-        return "Супермаркеты"
-    if any(x in c_lower or x in d_lower for x in ("кафе", "ресторан", "кофе", "доставка ед", "яндекс.еда")):
-        return "Рестораны и кафе"
-    if any(x in c_lower or x in d_lower for x in ("азс", "бензин", "заправка", "такси", "яндекс.такси", "транспорт", "метро", "парковк", "самокат")):
-        return "Транспорт"
-    if any(x in c_lower or x in d_lower for x in ("аренд", "жилье", "квартир")):
-        return "Аренда жилья"
-    if any(x in c_lower or x in d_lower for x in ("жкх", "коммунал", "электр", "газ", "водоканал", "тепло")):
-        return "Коммунальные платежи"
-    if any(x in c_lower or x in d_lower for x in ("аптек", "клиник", "врач", "здоровье", "косметик")):
-        return "Здоровье и красота"
-    if any(x in c_lower or x in d_lower for x in ("кино", "развлечен", "подписк", "netflix", "spotify", "игр")):
-        return "Развлечения"
-    if any(x in c_lower or x in d_lower for x in ("озон", "wildberries", "маркетплейс", "wb.ru", "ozon")):
-        return "Прочие расходы"
-    if any(x in c_lower or x in d_lower for x in ("образован", "обучен", "курс", "универ", "школ", "репетитор")):
-        return "Образование"
-    if any(x in c_lower or x in d_lower for x in ("связь", "телефон", "мобильн", "интернет-провайдер", "оператор связи")):
-        return "Связь"
-    if any(x in c_lower or x in d_lower for x in ("одежд", "обувь", "аксессуар", "магазин одежд")):
-        return "Одежда и обувь"
-    if any(x in c_lower or x in d_lower for x in ("дом и ремонт", "ремонт", "мебель", "бытовую технику", "хозтовар", "стройматериал")):
-        return "Дом и ремонт"
-    if any(x in c_lower or x in d_lower for x in ("питомц", "зоомагазин", "зоотовар", "корм для живот", "ветеринар")):
-        return "Питомцы"
-    if any(x in c_lower or x in d_lower for x in ("зарплат", "перевод от работодател", "доход")):
-        return "Заработная плата"
-    if any(x in c_lower or x in d_lower for x in ("дивиденд", "купон", "процент по вклад")):
-        return "Дивиденды и купоны"
-    return "Прочие расходы" if (amount < 0) else "Прочие доходы"
+def _fallback_category_name(amount: float) -> str:
+    """Минимальный fallback для парсеров PDF/AI (резолв в id делается по имени в БД)."""
+    return "Прочие расходы" if amount < 0 else "Прочие доходы"
 
 
 def _is_likely_auth_code(amount: float, description: str) -> bool:
@@ -713,8 +656,8 @@ _RU_MONTHS = {
 }
 
 
-def _parse_excel_structured(file_path: str) -> tuple[list[dict], list[str]]:
-    """Парсинг Excel без ИИ: форматы Сбер (лист data) и Т-Банк (лист Sheet1). Категории из колонки банка или по ключевым словам."""
+async def _parse_excel_structured(file_path: str, conn) -> tuple[list[dict], list[str]]:
+    """Парсинг Excel без ИИ: форматы Сбер/Т-Банк. category_id резолвится через category_mapping (БД)."""
     transactions = []
     errors = []
     try:
@@ -837,15 +780,12 @@ def _parse_excel_structured(file_path: str) -> tuple[list[dict], list[str]]:
             if amount != 0:
                 errors.append(f"Строка {idx}: пропущена (похоже на код, не сумма): {amount}")
             continue
-        # Категория: из колонки банка (Сбер/Т-Банк) или по ключевым словам из описания
-        if col_category is not None and _cell(row, col_category):
-            category = _normalize_bank_category(_cell(row, col_category), amount, description)
-        else:
-            category = _normalize_category_from_ai("", description, amount)
+        bank_category = _cell(row, col_category) if col_category is not None else ""
+        category_id = await _resolve_bank_category_to_id(conn, bank_category, amount)
         transactions.append({
             "date": date_str,
             "amount": amount,
-            "category": category,
+            "category_id": category_id,
             "description": description or None,
         })
 
@@ -910,7 +850,7 @@ def _parse_pdf_by_regex(raw_text: str) -> tuple[list[dict], list[str]]:
             if key in seen:
                 continue
             seen.add(key)
-            category = _normalize_category_from_ai("", desc, amount)
+            category = _fallback_category_name(amount)
             transactions.append({
                 "date": date_str,
                 "amount": amount,
@@ -965,18 +905,8 @@ async def _parse_single_chunk(raw_chunk: str) -> tuple[list[dict], list[str]]:
             amount = float(raw_amount)
             raw_cat = (item.get("category") or "").strip()
             raw_desc = (item.get("description") or "").strip()
-            # Исправление перепутанных полей: если "category" длинное, а "description" — из списка категорий
-            if raw_cat in IMPORT_ALL_CATEGORIES and raw_desc and raw_desc not in IMPORT_ALL_CATEGORIES:
-                category = _normalize_category_from_ai(raw_cat, raw_desc, amount)
-                description = raw_desc or None
-            elif raw_desc in IMPORT_ALL_CATEGORIES and (not raw_cat or raw_cat not in IMPORT_ALL_CATEGORIES or len(raw_cat) > 25):
-                category = _normalize_category_from_ai(raw_desc, raw_cat, amount)
-                description = raw_cat or None
-            else:
-                category = _normalize_category_from_ai(raw_cat, raw_desc, amount)
-                description = (raw_desc or raw_cat).strip() or None
-                if description and description in IMPORT_ALL_CATEGORIES and raw_cat and raw_cat not in IMPORT_ALL_CATEGORIES:
-                    description = raw_cat
+            category = (raw_cat or raw_desc) or _fallback_category_name(amount)
+            description = (raw_desc or raw_cat).strip() or None
             # Отсекать коды авторизации, принятые за сумму
             if _is_likely_auth_code(amount, description or ""):
                 if amount != 0:
@@ -1048,12 +978,21 @@ async def import_transactions_file(
             tmp.write(body)
             tmp_path = tmp.name
         try:
-            transactions, errors = _parse_excel_structured(tmp_path)
+            db = await get_db()
+            async with db.acquire() as conn:
+                transactions, errors = await _parse_excel_structured(tmp_path, conn)
             if not transactions:
                 return {
                     "transactions": [],
                     "errors": [IMPORT_EXCEL_STRUCTURE_MESSAGE]
                 }
+            ids = list({t["category_id"] for t in transactions})
+            db = await get_db()
+            async with db.acquire() as conn:
+                rows = await conn.fetch("SELECT id, name FROM categories WHERE id = ANY($1)", ids)
+            id_to_name = {r["id"]: r["name"] for r in rows}
+            for t in transactions:
+                t["category"] = id_to_name.get(t["category_id"], "—")
             return {"transactions": transactions, "errors": errors}
         finally:
             try:
@@ -1087,10 +1026,10 @@ async def import_transactions_apply(
                 dt = datetime.now()
             await conn.execute(
                 """
-                INSERT INTO transactions (user_id, amount, category, description, created_at)
+                INSERT INTO transactions (user_id, amount, category_id, description, created_at)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
-                user_id, t.amount, t.category, (t.description or "").strip() or None, dt
+                user_id, t.amount, t.category_id, (t.description or "").strip() or None, dt
             )
     return {"status": "ok", "applied": len(body.transactions)}
 
