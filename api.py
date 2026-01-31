@@ -510,7 +510,13 @@ async def delete_transaction(tx_id: int, user_id: int = Depends(require_premium)
         return {"status": "ok"}
 
 
-# --- Импорт транзакций из файла (PDF, Excel, изображения) + AI-парсер ---
+# --- Импорт транзакций из файла (PDF, Excel, изображения) ---
+# Варианты: 1) Excel/PDF — структурированный парсинг без ИИ (экономия токенов, стабильность).
+#           2) PDF — regex по строкам выписки; категория через ключевые слова (_normalize_category_from_ai).
+#           3) Fallback — полный парсинг через ИИ (чанки по 20k символов).
+
+import re
+
 
 def _extract_text_from_file(file_path: str, content_type: str, filename: str) -> str:
     """Извлечь текст из файла для передачи в AI-парсер."""
@@ -552,13 +558,61 @@ def _extract_text_from_file(file_path: str, content_type: str, filename: str) ->
     return "\n".join(text_parts) if text_parts else "[Не удалось извлечь текст]"
 
 
-# Категории приложения: расходы и доходы (для нормализации при импорте)
+# Категории приложения: расходы и доходы (единый список, без дублей типа «Авто»/«Автомобили»)
 IMPORT_EXPENSE_CATEGORIES = [
     "Супермаркеты", "Рестораны и кафе", "Транспорт", "Аренда жилья",
-    "Коммунальные платежи", "Здоровье и красота", "Развлечения", "Прочие расходы"
+    "Коммунальные платежи", "Здоровье и красота", "Развлечения", "Образование", "Прочие расходы"
 ]
 IMPORT_INCOME_CATEGORIES = ["Заработная плата", "Дивиденды и купоны", "Прочие доходы"]
 IMPORT_ALL_CATEGORIES = IMPORT_EXPENSE_CATEGORIES + IMPORT_INCOME_CATEGORIES
+
+# Маппинг категорий из выгрузок Сбера и Т-Банка в категории приложения (чтобы не было дублей)
+BANK_CATEGORY_MAPPING = {
+    # Транспорт (объединяем Авто, Автомобили, АЗС, Такси и т.д.)
+    "транспорт": "Транспорт", "авто": "Транспорт", "автомобили": "Транспорт",
+    "азс": "Транспорт", "такси": "Транспорт", "топливо": "Транспорт",
+    "парковка": "Транспорт", "общественный транспорт": "Транспорт",
+    # Супермаркеты
+    "супермаркеты": "Супермаркеты", "продукты": "Супермаркеты", "продуктовые": "Супермаркеты",
+    "еда": "Супермаркеты", "бакалея": "Супермаркеты",
+    # Рестораны и кафе
+    "рестораны и кафе": "Рестораны и кафе", "кафе": "Рестораны и кафе", "рестораны": "Рестораны и кафе",
+    "кафе, рестораны, доставка еды": "Рестораны и кафе", "доставка еды": "Рестораны и кафе",
+    "рестораны и кафе, доставка": "Рестораны и кафе",
+    # Здоровье и красота
+    "здоровье и красота": "Здоровье и красота", "аптеки": "Здоровье и красота",
+    "медицина": "Здоровье и красота", "здоровье": "Здоровье и красота",
+    "фитнес": "Здоровье и красота", "спорт": "Здоровье и красота", "красота": "Здоровье и красота",
+    # Коммунальные и жильё
+    "коммунальные платежи": "Коммунальные платежи", "жкх": "Коммунальные платежи",
+    "аренда жилья": "Аренда жилья", "аренда": "Аренда жилья",
+    # Развлечения
+    "развлечения": "Развлечения", "кино": "Развлечения", "подписки": "Развлечения",
+    "игры": "Развлечения", "хобби": "Развлечения",
+    # Образование
+    "образование": "Образование", "обучение": "Образование", "курсы": "Образование",
+    # Доходы
+    "заработная плата": "Заработная плата", "зарплата": "Заработная плата",
+    "пополнение": "Прочие доходы", "перевод": "Прочие доходы",
+    "дивиденды и купоны": "Дивиденды и купоны", "дивиденды": "Дивиденды и купоны",
+    # Всё остальное — в прочие
+    "онлайн покупки": "Прочие расходы", "интернет-магазины": "Прочие расходы",
+    "покупки": "Прочие расходы", "прочие": "Прочие расходы", "прочие расходы": "Прочие расходы",
+    "прочие доходы": "Прочие доходы",
+}
+
+
+def _normalize_bank_category(bank_category: str, amount: float) -> str:
+    """Привести категорию из выгрузки банка (Сбер, Т-Банк) к категории приложения. Без дублей."""
+    if not bank_category or not str(bank_category).strip():
+        return "Прочие расходы" if amount < 0 else "Прочие доходы"
+    key = str(bank_category).strip().lower()
+    if key in BANK_CATEGORY_MAPPING:
+        return BANK_CATEGORY_MAPPING[key]
+    for bank_key, app_cat in BANK_CATEGORY_MAPPING.items():
+        if bank_key in key or key in bank_key:
+            return app_cat
+    return "Прочие расходы" if amount < 0 else "Прочие доходы"
 
 
 def _normalize_category_from_ai(cat: str, description: str, amount: float) -> str:
@@ -586,6 +640,8 @@ def _normalize_category_from_ai(cat: str, description: str, amount: float) -> st
         return "Развлечения"
     if any(x in c_lower or x in d_lower for x in ("озон", "wildberries", "маркетплейс", "wb.ru", "ozon")):
         return "Прочие расходы"
+    if any(x in c_lower or x in d_lower for x in ("образован", "обучен", "курс", "универ", "школ", "репетитор")):
+        return "Образование"
     if any(x in c_lower or x in d_lower for x in ("зарплат", "перевод от работодател", "доход")):
         return "Заработная плата"
     if any(x in c_lower or x in d_lower for x in ("дивиденд", "купон", "процент по вклад")):
@@ -613,6 +669,223 @@ def _is_likely_auth_code(amount: float, description: str) -> bool:
         return False
 
 
+# Месяцы по-русски для парсинга даты из выгрузки Сбера ("02 фев. 2025, 14:30")
+_RU_MONTHS = {
+    "янв": 1, "фев": 2, "мар": 3, "апр": 4, "май": 5, "июн": 6,
+    "июл": 7, "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12,
+}
+
+
+def _parse_excel_structured(file_path: str) -> tuple[list[dict], list[str]]:
+    """Парсинг Excel без ИИ: форматы Сбер (лист data) и Т-Банк (лист Sheet1). Категории из колонки банка или по ключевым словам."""
+    transactions = []
+    errors = []
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        sheet = wb.active
+        rows = list(sheet.iter_rows(values_only=True))
+        wb.close()
+    except Exception as e:
+        return [], [f"Ошибка чтения Excel: {e}"]
+
+    if not rows:
+        return [], ["Файл пуст"]
+
+    # Заголовки: Сбер — №, Дата, Тип операции, Категория, Сумма, ..., Описание; Т-Банк — Дата операции, Сумма операции, Категория, Описание (название организации)
+    headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+    col_date = col_amount = col_income = col_expense = col_desc = col_type = col_category = None
+    for i, h in enumerate(headers):
+        if not h:
+            continue
+        if h in ("дата", "date") or h == "дата операции" or h == "дата проведения" or "дата" in h:
+            if col_date is None:
+                col_date = i
+        elif h in ("сумма", "amount") or h == "сумма операции" or ("сумма" in h and "в валюте" not in h):
+            col_amount = i
+        elif "сумма" in h and "в валюте" in h and col_amount is None:
+            col_amount = i
+        elif "тип операции" in h or "тип" == h:
+            col_type = i
+        elif "категория" in h:
+            col_category = i
+        elif "приход" in h or "доход" in h or h == "income":
+            col_income = i
+        elif "расход" in h or h == "expense":
+            col_expense = i
+        elif h in ("описание", "назначение", "операция", "опер", "description") or "описание" in h or "назначение" in h or "название организации" in h:
+            col_desc = i
+
+    if col_date is None and col_amount is None and col_income is None and col_expense is None:
+        return [], ["Не найдены колонки даты/суммы (ожидаются заголовки: дата, сумма или приход/расход, описание)"]
+
+    def _cell(row: tuple, idx: int | None) -> str:
+        if idx is None or idx >= len(row):
+            return ""
+        v = row[idx]
+        if v is None:
+            return ""
+        if hasattr(v, "strftime"):
+            return v.strftime("%Y-%m-%d")
+        return str(v).strip()
+
+    def _amount_cell(row: tuple, idx: int | None) -> float | None:
+        if idx is None or idx >= len(row):
+            return None
+        v = row[idx]
+        if v is None or v == "":
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            s = str(v).replace(",", ".").replace(" ", "")
+            try:
+                return float(s)
+            except ValueError:
+                return None
+
+    def _to_date(s: str, row_idx: int) -> str | None:
+        if not s or len(s) < 6:
+            return None
+        s = str(s).strip()
+        # YYYY-MM-DD
+        if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+            return s[:10]
+        # DD.MM.YYYY
+        m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})", s)
+        if m:
+            d, mo, y = m.group(1).zfill(2), m.group(2).zfill(2), m.group(3)
+            return f"{y}-{mo}-{d}"
+        # Сбер: "02 фев. 2025, 14:30" или "02 февраля 2025"
+        m_ru = re.match(r"(\d{1,2})\s+(\w+)\s*\.?\s*(\d{4})", s, re.IGNORECASE)
+        if m_ru:
+            day, month_part, year = m_ru.group(1), m_ru.group(2)[:3].lower(), m_ru.group(3)
+            if month_part in _RU_MONTHS:
+                return f"{year}-{_RU_MONTHS[month_part]:02d}-{int(day):02d}"
+        return None
+
+    for idx, row in enumerate(rows[1:], start=2):
+        if not any(c is not None and str(c).strip() for c in row):
+            continue
+        date_str = _to_date(_cell(row, col_date), idx) if col_date is not None else None
+        if not date_str and col_date is not None and col_date < len(row):
+            v = row[col_date]
+            if hasattr(v, "strftime"):
+                date_str = v.strftime("%Y-%m-%d")
+        if not date_str:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+
+        amount = None
+        if col_amount is not None:
+            amount = _amount_cell(row, col_amount)
+        if amount is None and (col_income is not None or col_expense is not None):
+            inc = _amount_cell(row, col_income) or 0
+            exp = _amount_cell(row, col_expense) or 0
+            if inc and exp:
+                amount = inc - exp
+            else:
+                amount = inc if inc else (-exp if exp else None)
+
+        if amount is None:
+            errors.append(f"Строка {idx}: не удалось определить сумму")
+            continue
+        # Сбер: сумма в выгрузке положительная, тип операции «Списание» — делаем расход отрицательным
+        if col_type is not None and amount and amount > 0:
+            type_val = _cell(row, col_type).lower()
+            if "списание" in type_val or "расход" in type_val:
+                amount = -amount
+
+        description = _cell(row, col_desc) if col_desc is not None else ""
+        if _is_likely_auth_code(amount, description):
+            errors.append(f"Строка {idx}: пропущена (похоже на код, не сумма): {amount}")
+            continue
+        # Категория: из колонки банка (Сбер/Т-Банк) или по ключевым словам из описания
+        if col_category is not None and _cell(row, col_category):
+            category = _normalize_bank_category(_cell(row, col_category), amount)
+        else:
+            category = _normalize_category_from_ai("", description, amount)
+        transactions.append({
+            "date": date_str,
+            "amount": amount,
+            "category": category,
+            "description": description or None,
+        })
+
+    return transactions, errors
+
+
+def _parse_pdf_by_regex(raw_text: str) -> tuple[list[dict], list[str]]:
+    """Извлечь транзакции из текста PDF по шаблонам строк (дата + сумма + описание). Без ИИ."""
+    transactions = []
+    errors = []
+    lines = (raw_text or "").strip().split("\n")
+
+    # Паттерны: дата (DD.MM.YYYY или YYYY-MM-DD) + сумма (число с точкой/запятой, возможно минус/пробелы) + остаток строки
+    date_amount_desc = re.compile(
+        r"^(\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2})[\s\t]+([+-]?\s*[\d\s.,]+?)(?:\s{2,}|\t)(.*)$",
+        re.MULTILINE
+    )
+    # Альтернатива: сумма в конце строки перед описанием
+    date_desc_amount = re.compile(
+        r"^(\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2})[\s\t]+(.+?)[\s\t]+([+-]?\s*[\d\s.,]+)\s*$",
+        re.MULTILINE
+    )
+
+    def norm_amount(s: str) -> float | None:
+        s = (s or "").replace(" ", "").replace(",", ".")
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    def to_iso_date(s: str) -> str:
+        s = (s or "").strip()
+        if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+            return s[:10]
+        m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})", s)
+        if m:
+            return f"{m.group(3)}-{m.group(2).zfill(2)}-{m.group(1).zfill(2)}"
+        return s[:10] if len(s) >= 10 else ""
+
+    seen = set()
+    for line in lines:
+        line = line.strip()
+        if len(line) < 12:
+            continue
+        for pattern in (date_amount_desc, date_desc_amount):
+            m = pattern.match(line)
+            if not m:
+                continue
+            if pattern == date_amount_desc:
+                date_str = to_iso_date(m.group(1))
+                amount = norm_amount(m.group(2))
+                desc = (m.group(3) or "").strip()
+            else:
+                date_str = to_iso_date(m.group(1))
+                amount = norm_amount(m.group(3))
+                desc = (m.group(2) or "").strip()
+            if len(date_str) < 10 or amount is None:
+                continue
+            if _is_likely_auth_code(amount, desc):
+                continue
+            key = (date_str, amount, desc[:50])
+            if key in seen:
+                continue
+            seen.add(key)
+            category = _normalize_category_from_ai("", desc, amount)
+            transactions.append({
+                "date": date_str,
+                "amount": amount,
+                "category": category,
+                "description": desc or None,
+            })
+            break
+
+    if not transactions and len(lines) > 3:
+        errors.append("По regex не найдено ни одной строки вида «дата сумма описание». Будет использован ИИ-парсер.")
+    return transactions, errors
+
+
 async def _parse_single_chunk(raw_chunk: str) -> tuple[list[dict], list[str]]:
     """Распарсить один фрагмент текста выписки (один запрос к AI)."""
     prompt = (
@@ -623,7 +896,7 @@ async def _parse_single_chunk(raw_chunk: str) -> tuple[list[dict], list[str]]:
         "Сумма обычно с копейками (1234.56) или целое. НИКОГДА не подставляй: код авторизации (4–8 цифр), "
         "последние цифры карты, коды из СМС, номера счетов — это НЕ суммы!\n"
         "3) category — ОДНА из категорий по смыслу операции: Супермаркеты, Рестораны и кафе, Транспорт, "
-        "Аренда жилья, Коммунальные платежи, Здоровье и красота, Развлечения, Прочие расходы, "
+        "Аренда жилья, Коммунальные платежи, Здоровье и красота, Развлечения, Образование, Прочие расходы, "
         "Заработная плата, Дивиденды и купоны, Прочие доходы. Определяй по названию операции (магазин → Супермаркеты, "
         "кафе → Рестораны и кафе, АЗС/такси → Транспорт, ЖКХ → Коммунальные платежи и т.д.). НЕ относи всё в Прочее — только если смысл неясен.\n"
         "4) description — текст операции ИЗ ВЫПИСКИ как есть: название магазина/получателя/отправителя (например: ООО Магнит, Перевод Иванову). "
@@ -638,7 +911,6 @@ async def _parse_single_chunk(raw_chunk: str) -> tuple[list[dict], list[str]]:
     ]
     answer = await gigachat_request(messages)
     answer = (answer or "").strip()
-    import re
     json_match = re.search(r"\[[\s\S]*\]", answer)
     if not json_match:
         return [], [f"AI не вернул массив: {answer[:150]}"]
@@ -710,16 +982,25 @@ async def _parse_transactions_with_ai(raw_text: str) -> tuple[list[dict], list[s
     return all_transactions, all_errors
 
 
+# Сообщение, когда структура Excel не совпадает с форматами Сбер/Т-Банк
+IMPORT_EXCEL_STRUCTURE_MESSAGE = "Загружаемый файл должен быть из СберОнлайн или Т-Банка без изменений"
+
+
 @app.post("/api/transactions/import")
 async def import_transactions_file(
     file: UploadFile = File(...),
     user_id: int = Depends(require_premium)
 ):
-    """Загрузить файл (PDF, Excel, изображение), распознать транзакции через AI. Возвращает предпросмотр (transactions + errors)."""
+    """Загрузить только файл Excel (выгрузка Сбера или Т-Банка без изменений). Возвращает предпросмотр (transactions + errors)."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename")
-    content_type = file.content_type or ""
-    suffix = ".xlsx" if "xlsx" in file.filename.lower() else (".pdf" if "pdf" in file.filename.lower() else ".bin")
+    fn = (file.filename or "").lower()
+    if not (fn.endswith(".xlsx") or fn.endswith(".xls")):
+        raise HTTPException(
+            status_code=400,
+            detail="Разрешена загрузка только файлов Excel (.xlsx, .xls)"
+        )
+    suffix = ".xlsx" if fn.endswith(".xlsx") else ".xls"
     try:
         body = await file.read()
         if len(body) > 10 * 1024 * 1024:  # 10 MB
@@ -728,8 +1009,12 @@ async def import_transactions_file(
             tmp.write(body)
             tmp_path = tmp.name
         try:
-            text = _extract_text_from_file(tmp_path, content_type, file.filename)
-            transactions, errors = await _parse_transactions_with_ai(text)
+            transactions, errors = _parse_excel_structured(tmp_path)
+            if not transactions:
+                return {
+                    "transactions": [],
+                    "errors": [IMPORT_EXCEL_STRUCTURE_MESSAGE]
+                }
             return {"transactions": transactions, "errors": errors}
         finally:
             try:

@@ -326,6 +326,12 @@ document.addEventListener('DOMContentLoaded', function() {
         fileInput.addEventListener('change', async function() {
             const file = this.files && this.files[0];
             if (!file) return;
+            const name = (file.name || '').toLowerCase();
+            if (!name.endsWith('.xlsx') && !name.endsWith('.xls')) {
+                showNotification('Разрешена загрузка только файлов Excel (.xlsx, .xls)', 'error');
+                this.value = '';
+                return;
+            }
             const list = document.getElementById('import-preview-list');
             const errEl = document.getElementById('import-errors');
             const modal = document.getElementById('import-modal');
@@ -336,8 +342,9 @@ document.addEventListener('DOMContentLoaded', function() {
             try {
                 const result = await uploadFile('/api/transactions/import', file);
                 importPreviewData = { transactions: result.transactions || [], errors: result.errors || [] };
+                const structureMsg = (importPreviewData.errors || []).find(e => e && e.indexOf('без изменений') !== -1);
                 if (importPreviewData.transactions.length === 0) {
-                    list.innerHTML = '<div class="empty-state-text">Транзакций не распознано</div>';
+                    list.innerHTML = '<div class="empty-state-text">' + (structureMsg ? escapeHtml(structureMsg) : 'Транзакций не распознано') + '</div>';
                 } else {
                     list.innerHTML = importPreviewData.transactions.slice(0, 50).map(t => `
                         <div class="import-preview-item">
