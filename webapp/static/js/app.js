@@ -50,11 +50,16 @@ function loadScreenData(screenId) {
             loadTransactions();
             loadCategories();
             break;
+        case 'budgets':
+            loadBudgets();
+            break;
         case 'capital':
             loadCapital();
             break;
         case 'consultation':
             loadConsultation();
+            break;
+        case 'about':
             break;
     }
 }
@@ -116,10 +121,11 @@ async function loadStats() {
     showSkeleton('stats-card', 3);
     
     try {
-        const [stats, assets, liabilities] = await Promise.all([
+        const [stats, assets, liabilities, goalsInsight] = await Promise.all([
             apiRequest('/api/stats'),
             apiRequest('/api/assets'),
-            apiRequest('/api/liabilities')
+            apiRequest('/api/liabilities'),
+            apiRequest('/api/goals/insight').catch(() => ({ goals: [], monthly_savings: 0 }))
         ]);
         
         AppState.stats = stats;
@@ -134,11 +140,57 @@ async function loadStats() {
         // Блок 2 — Баланс по транзакциям (текущий месяц)
         const income = stats.total_income || 0;
         const expense = stats.total_expense || 0;
-        const balance = income + expense; // expense уже отрицательный в данных
-        if (typeof expense === 'number' && expense > 0) {
-            const balanceCorrect = income - expense;
-        }
         const balanceMonth = income - Math.abs(expense);
+        
+        // Ценность 4: резервный фонд (рекомендуем 3 мес. расходов)
+        const reserveRec = stats.reserve_recommended || 0;
+        const reserveShort = Math.max(0, reserveRec - totalAssets);
+        const reserveBlock = reserveRec > 0 ? `
+            <div class="card stat-card home-block">
+                <div class="card-header"><h3>🛡️ Резервный фонд</h3></div>
+                <div class="capital-summary three-rows">
+                    <div class="capital-item">
+                        <div class="capital-label">У вас (активы)</div>
+                        <div class="capital-value">${formatMoney(totalAssets)} ₽</div>
+                    </div>
+                    <div class="capital-item">
+                        <div class="capital-label">Рекомендуем (3 мес. расходов)</div>
+                        <div class="capital-value">${formatMoney(reserveRec)} ₽</div>
+                    </div>
+                    <div class="capital-item highlight">
+                        <div class="capital-label">Осталось накопить</div>
+                        <div class="capital-value" style="color: ${reserveShort <= 0 ? '#10B981' : '#6366F1'};">${formatMoney(reserveShort)} ₽</div>
+                    </div>
+                </div>
+            </div>
+        ` : '';
+        
+        // Ценность 5: короткий инсайт
+        const insightBlock = stats.insight ? `
+            <div class="card stat-card home-block insight-block">
+                <div class="card-header"><h3>💡 Подсказка</h3></div>
+                <p class="insight-text">${escapeHtml(stats.insight)}</p>
+            </div>
+        ` : '';
+        
+        // Ценность 3: цели + «через N месяцев»
+        const goals = goalsInsight.goals || [];
+        const goalsBlock = goals.length > 0 ? goals.map(g => {
+            const months = g.months_to_goal != null ? `При текущем темпе — через ${g.months_to_goal} мес.` : 'Добавляйте операции для расчёта.';
+            return `
+                <div class="goal-insight-item">
+                    <div class="goal-insight-title">${escapeHtml(g.title)}</div>
+                    <div class="goal-insight-remaining">Осталось ${formatMoney(g.remaining)} ₽</div>
+                    <div class="goal-insight-months">${months}</div>
+                </div>
+            `;
+        }).join('') : '';
+        const goalsBlockWrap = goalsBlock ? `
+            <div class="card stat-card home-block">
+                <div class="card-header"><h3>🎯 Цели</h3></div>
+                <div class="goals-insight-list">${goalsBlock}</div>
+            </div>
+        ` : '';
         
         statsCard.innerHTML = `
             <!-- Блок 1: Капитал -->
@@ -178,6 +230,9 @@ async function loadStats() {
                     </div>
                 </div>
             </div>
+            ${reserveBlock}
+            ${insightBlock}
+            ${goalsBlockWrap}
         `;
     } catch (error) {
         console.error('Error loading stats:', error);
@@ -704,6 +759,103 @@ async function addGoal() {
 }
 // Export immediately
 window.addGoal = addGoal;
+
+// ========== Budgets (ценность 2 — не перерасходовать) ==========
+
+async function loadBudgets() {
+    const list = document.getElementById('budgets-status');
+    const catSelect = document.getElementById('budget-category');
+    if (!list) return;
+    showSkeleton('budgets-status', 2);
+    const categories = { ...AppState.expenseCategories };
+    if (catSelect && catSelect.options.length <= 1) {
+        catSelect.innerHTML = '<option value="">Выберите категорию</option>';
+        for (const [cat, emoji] of Object.entries(categories)) {
+            const opt = document.createElement('option');
+            opt.value = cat;
+            opt.textContent = `${emoji} ${cat}`;
+            catSelect.appendChild(opt);
+        }
+    }
+    try {
+        const status = await apiRequest('/api/budgets/status').catch(() => []);
+        if (status.length === 0) {
+            list.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">📊</div>
+                    <div class="empty-state-title">Нет лимитов</div>
+                    <div class="empty-state-text">Добавьте лимит по категории, чтобы контролировать расходы</div>
+                </div>
+            `;
+        } else {
+            list.innerHTML = status.map(b => {
+                const pct = b.percent || 0;
+                const over = b.spent > b.monthly_limit;
+                return `
+                    <div class="budget-card slide-up" data-id="${b.id}">
+                        <div class="budget-cat">${escapeHtml(b.category)}</div>
+                        <div class="budget-values">
+                            <span>${formatMoney(b.spent)} / ${formatMoney(b.monthly_limit)} ₽</span>
+                            <span class="${over ? 'over-limit' : ''}">${pct}%</span>
+                        </div>
+                        <button class="btn-icon danger" onclick="deleteBudget(${b.id})" title="Удалить">🗑️</button>
+                        <div class="budget-bar"><div class="budget-bar-fill ${over ? 'over' : ''}" style="width: ${Math.min(100, pct)}%"></div></div>
+                    </div>
+                `;
+            }).join('');
+        }
+    } catch (e) {
+        list.innerHTML = `<div class="empty-state"><div class="empty-state-text">${escapeHtml(e.message)}</div></div>`;
+    }
+}
+window.loadBudgets = loadBudgets;
+
+async function addBudget() {
+    const category = document.getElementById('budget-category')?.value;
+    const limit = parseFloat(document.getElementById('budget-limit')?.value);
+    if (!category || !limit || limit <= 0) {
+        showNotification('Выберите категорию и введите лимит', 'error');
+        return;
+    }
+    try {
+        await apiRequest('/api/budgets', {
+            method: 'POST',
+            body: JSON.stringify({ category, monthly_limit: limit })
+        });
+        showNotification('Лимит добавлен');
+        document.getElementById('budget-limit').value = '';
+        loadBudgets();
+    } catch (e) {
+        showNotification('Ошибка: ' + (e.message || ''), 'error');
+    }
+}
+window.addBudget = addBudget;
+
+async function deleteBudget(id) {
+    if (!confirm('Удалить лимит по этой категории?')) return;
+    try {
+        await apiRequest('/api/budgets/' + id, { method: 'DELETE' });
+        showNotification('Лимит удалён');
+        loadBudgets();
+    } catch (e) {
+        showNotification('Ошибка: ' + (e.message || ''), 'error');
+    }
+}
+window.deleteBudget = deleteBudget;
+
+async function deleteMyAccount() {
+    if (!confirm('Удалить все ваши данные безвозвратно? После этого вы не сможете войти в приложение с этим аккаунтом Telegram.')) return;
+    try {
+        await apiRequest('/api/me', { method: 'DELETE' });
+        showNotification('Данные удалены. Закройте приложение.');
+        if (window.Telegram?.WebApp?.close) {
+            setTimeout(() => window.Telegram.WebApp.close(), 1500);
+        }
+    } catch (e) {
+        showNotification('Ошибка: ' + (e.message || ''), 'error');
+    }
+}
+window.deleteMyAccount = deleteMyAccount;
 
 // ========== Capital ==========
 

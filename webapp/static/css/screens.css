@@ -752,3 +752,95 @@
     text-align: right;
     font-weight: var(--font-weight-medium);
 }
+
+/* Ценность 5: инсайт на главной */
+.insight-block {
+    border-left: 4px solid var(--primary);
+}
+.insight-text {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+/* Ценность 3: цели на главной */
+.goals-insight-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+}
+.goal-insight-item {
+    padding: var(--space-sm) 0;
+    border-bottom: 1px solid var(--border-color);
+}
+.goal-insight-item:last-child {
+    border-bottom: none;
+}
+.goal-insight-title {
+    font-weight: var(--font-weight-semibold);
+    color: var(--text-primary);
+}
+.goal-insight-remaining {
+    font-size: var(--font-size-sm);
+    color: var(--primary);
+}
+.goal-insight-months {
+    font-size: var(--font-size-xs);
+    color: var(--text-tertiary);
+}
+
+/* Бюджеты (ценность 2) */
+.budget-card {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    grid-template-rows: auto auto;
+    align-items: center;
+    gap: var(--space-xs) var(--space-sm);
+    padding: var(--space-md);
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius-sm);
+    margin-bottom: var(--space-sm);
+}
+.budget-cat {
+    font-weight: var(--font-weight-medium);
+}
+.budget-values {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    font-size: var(--font-size-sm);
+}
+.budget-values .over-limit {
+    color: var(--danger);
+}
+.budget-bar {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    height: 8px;
+    background: var(--border-color);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.budget-bar-fill {
+    height: 100%;
+    background: var(--primary);
+    border-radius: 4px;
+}
+.budget-bar-fill.over {
+    background: var(--danger);
+}
+
+/* О приложении (ценность 6) */
+.about-content {
+    padding: var(--space-md) 0;
+}
+.about-content p {
+    margin-bottom: var(--space-md);
+    font-size: var(--font-size-base);
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+.about-content .btn-danger {
+    margin-top: var(--space-lg);
+}

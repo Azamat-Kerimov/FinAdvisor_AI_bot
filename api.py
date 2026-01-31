@@ -258,6 +258,11 @@ class ConsultationMessageRequest(BaseModel):
     message: str
 
 
+class BudgetCreate(BaseModel):
+    category: str
+    monthly_limit: float
+
+
 # API Endpoints
 
 # Auth endpoint (без проверки подписки)
@@ -392,11 +397,22 @@ async def get_stats(user_id: int = Depends(require_premium)):
         total_income = sum(income_by_cat.values())
         total_expense = sum(expense_by_cat.values())
         
+        # Ценность 4: рекомендуемый резервный фонд (3 мес. расходов)
+        reserve_recommended = round(total_expense * 3, 0) if total_expense else 0
+        
+        # Ценность 5: короткий инсайт по топу расходов
+        top_expense = sorted(expense_by_cat.items(), key=lambda x: -x[1])[:3]
+        total_exp = total_expense or 1
+        insight_parts = [f"{cat}: {int(amt):,} ₽ ({int(100 * amt / total_exp)}%)".replace(",", " ") for cat, amt in top_expense]
+        insight = "Топ расходов за месяц: " + ", ".join(insight_parts) if insight_parts else "Пока нет расходов за месяц."
+        
         return {
             "total_income": total_income,
             "total_expense": total_expense,
             "income_by_category": income_by_cat,
-            "expense_by_category": expense_by_cat
+            "expense_by_category": expense_by_cat,
+            "reserve_recommended": reserve_recommended,
+            "insight": insight,
         }
 
 # Транзакции
@@ -795,6 +811,130 @@ async def delete_goal(goal_id: int, user_id: int = Depends(require_premium)):
             goal_id, user_id
         )
         return {"status": "ok"}
+
+
+@app.get("/api/goals/insight")
+async def get_goals_insight(user_id: int = Depends(require_premium)):
+    """Ценность 3: прогресс по целям + «через N месяцев» (средний темп накопления за 3 мес.)"""
+    db = await get_db()
+    now = datetime.now()
+    since_3m = (now.replace(day=1) - timedelta(days=90)).replace(day=1)
+    async with db.acquire() as conn:
+        goals_rows = await conn.fetch(
+            "SELECT id, title, target, current FROM goals WHERE user_id=$1 ORDER BY id", user_id
+        )
+        # Средние доходы и расходы за последние 3 месяца для расчёта ежемесячного накопления
+        tx_rows = await conn.fetch(
+            """
+            SELECT amount FROM transactions
+            WHERE user_id=$1 AND created_at >= $2
+            """,
+            user_id, since_3m
+        )
+    monthly_savings = 0.0
+    if tx_rows:
+        total_inc = sum(float(r["amount"]) for r in tx_rows if float(r["amount"]) > 0)
+        total_exp = sum(-float(r["amount"]) for r in tx_rows if float(r["amount"]) < 0)
+        monthly_savings = max(0, (total_inc - total_exp) / 3) if len(tx_rows) else 0
+    result = []
+    for g in goals_rows:
+        target = float(g["target"])
+        current = float(g["current"])
+        remaining = max(0, target - current)
+        months_to_goal = int(remaining / monthly_savings) if monthly_savings > 0 else None
+        result.append({
+            "id": g["id"],
+            "title": g["title"],
+            "target": target,
+            "current": current,
+            "remaining": remaining,
+            "months_to_goal": months_to_goal,
+        })
+    return {"goals": result, "monthly_savings": monthly_savings}
+
+
+# Бюджеты по категориям (ценность 2 — не перерасходовать)
+@app.get("/api/budgets")
+async def get_budgets(user_id: int = Depends(require_premium)):
+    """Список лимитов по категориям"""
+    db = await get_db()
+    async with db.acquire() as conn:
+        try:
+            rows = await conn.fetch(
+                "SELECT id, category, monthly_limit FROM budgets WHERE user_id=$1 ORDER BY category",
+                user_id
+            )
+        except asyncpg.UndefinedTableError:
+            return []
+    return [{"id": r["id"], "category": r["category"], "monthly_limit": float(r["monthly_limit"])} for r in rows]
+
+
+@app.get("/api/budgets/status")
+async def get_budgets_status(user_id: int = Depends(require_premium)):
+    """Потрачено по категориям за текущий месяц vs лимиты (для прогресс-баров и алертов)"""
+    db = await get_db()
+    now = datetime.now()
+    since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    async with db.acquire() as conn:
+        try:
+            budgets = await conn.fetch(
+                "SELECT id, category, monthly_limit FROM budgets WHERE user_id=$1",
+                user_id
+            )
+        except asyncpg.UndefinedTableError:
+            return []
+        result = []
+        for b in budgets:
+            spent_row = await conn.fetchrow(
+                """
+                SELECT COALESCE(SUM(ABS(amount)), 0) as s
+                FROM transactions
+                WHERE user_id=$1 AND category=$2 AND amount < 0 AND created_at >= $3
+                """,
+                user_id, b["category"], since
+            )
+            spent = float(spent_row["s"]) if spent_row else 0
+            limit = float(b["monthly_limit"])
+            result.append({
+                "id": b["id"],
+                "category": b["category"],
+                "monthly_limit": limit,
+                "spent": spent,
+                "percent": min(100, int(100 * spent / limit)) if limit > 0 else 0,
+            })
+    return result
+
+
+@app.post("/api/budgets")
+async def create_budget(body: BudgetCreate, user_id: int = Depends(require_premium)):
+    """Добавить лимит по категории"""
+    db = await get_db()
+    async with db.acquire() as conn:
+        try:
+            await conn.execute(
+                """
+                INSERT INTO budgets (user_id, category, monthly_limit)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id, category) DO UPDATE SET monthly_limit = $3
+                """,
+                user_id, body.category, body.monthly_limit
+            )
+        except asyncpg.UndefinedTableError:
+            raise HTTPException(status_code=503, detail="Run migration: migrations/001_budgets.sql")
+    return {"status": "ok"}
+
+
+@app.delete("/api/budgets/{budget_id}")
+async def delete_budget(budget_id: int, user_id: int = Depends(require_premium)):
+    """Удалить лимит"""
+    db = await get_db()
+    async with db.acquire() as conn:
+        try:
+            await conn.execute("DELETE FROM budgets WHERE id=$1 AND user_id=$2", budget_id, user_id)
+        except asyncpg.UndefinedTableError:
+            raise HTTPException(status_code=503, detail="Run migration: migrations/001_budgets.sql")
+    return {"status": "ok"}
+
 
 # Активы
 @app.get("/api/assets")
@@ -1375,6 +1515,28 @@ async def get_reports(user_id: int = Depends(require_premium)):
                 "data": weeks_data
             }
         }
+
+
+# Ценность 6: удаление всех данных (мои данные под контролем)
+@app.delete("/api/me")
+async def delete_my_account(user_id: int = Depends(require_premium)):
+    """Удалить все данные пользователя и аккаунт. Необратимо."""
+    db = await get_db()
+    async with db.acquire() as conn:
+        try:
+            await conn.execute("DELETE FROM budgets WHERE user_id = $1", user_id)
+        except asyncpg.UndefinedTableError:
+            pass
+        await conn.execute("DELETE FROM ai_cache WHERE user_id = $1", user_id)
+        await conn.execute("DELETE FROM ai_context WHERE user_id = $1", user_id)
+        await conn.execute("DELETE FROM goals WHERE user_id = $1", user_id)
+        await conn.execute("DELETE FROM transactions WHERE user_id = $1", user_id)
+        await conn.execute("DELETE FROM asset_values WHERE asset_id IN (SELECT id FROM assets WHERE user_id = $1)", user_id)
+        await conn.execute("DELETE FROM assets WHERE user_id = $1", user_id)
+        await conn.execute("DELETE FROM liability_values WHERE liability_id IN (SELECT id FROM liabilities WHERE user_id = $1)", user_id)
+        await conn.execute("DELETE FROM liabilities WHERE user_id = $1", user_id)
+        await conn.execute("DELETE FROM users WHERE id = $1", user_id)
+    return {"status": "ok", "message": "Аккаунт и все данные удалены."}
 
 
 # Консультация - история
