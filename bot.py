@@ -7,6 +7,7 @@ import asyncpg
 from datetime import datetime, timedelta
 from typing import Optional
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -380,15 +381,140 @@ async def cmd_status(m: types.Message):
     )
 
 
+# Ценность 1 и 4: еженедельный отчёт и напоминание, алерты по долгам
+async def send_weekly_reports():
+    """Еженедельный отчёт: потрачено за 7 дней, топ категорий + кнопка «Открыть FinAdvisor»."""
+    if not db:
+        return
+    week_ago = datetime.now() - timedelta(days=7)
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT u.tg_id, u.id
+            FROM users u
+            WHERE u.premium_until > NOW()
+            AND u.tg_id IS NOT NULL
+            """
+        )
+        for row in rows:
+            tg_id = row["tg_id"]
+            user_id = row["id"]
+            try:
+                tx_rows = await conn.fetch(
+                    """
+                    SELECT category, SUM(ABS(amount)) as total
+                    FROM transactions
+                    WHERE user_id=$1 AND amount < 0 AND created_at >= $2
+                    GROUP BY category ORDER BY total DESC LIMIT 5
+                    """,
+                    user_id, week_ago
+                )
+                total = sum(float(r["total"]) for r in tx_rows)
+                top = ", ".join(f"{r['category']}: {int(float(r['total'])):,} ₽".replace(",", " ") for r in tx_rows[:3])
+                text = (
+                    "📊 Недельный отчёт FinAdvisor\n\n"
+                    f"За последние 7 дней потрачено: {int(total):,} ₽\n".replace(",", " ")
+                    + (f"Топ: {top}\n\n" if top else "\n")
+                    + "Откройте приложение для деталей."
+                )
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🚀 Открыть FinAdvisor", web_app=WebAppInfo(url=WEB_APP_URL))]
+                ])
+                await bot.send_message(tg_id, text, reply_markup=kb)
+            except Exception as e:
+                print(f"Weekly report to {tg_id}: {e}")
+            await asyncio.sleep(0.05)
+
+
+async def send_weekly_reminder():
+    """Напоминание: добавить операции за неделю."""
+    if not db:
+        return
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT tg_id FROM users WHERE premium_until > NOW() AND tg_id IS NOT NULL"
+        )
+        for row in rows:
+            try:
+                await bot.send_message(
+                    row["tg_id"],
+                    "⏰ Напоминание FinAdvisor\n\nДобавьте операции за неделю — так отчёты будут точнее.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🚀 Открыть FinAdvisor", web_app=WebAppInfo(url=WEB_APP_URL))]
+                    ]),
+                )
+            except Exception as e:
+                print(f"Weekly reminder to {row['tg_id']}: {e}")
+            await asyncio.sleep(0.05)
+
+
+async def send_debt_reminder():
+    """Ценность 4: напоминание о долгах — сумма долгов и ежемесячные платежи."""
+    if not db:
+        return
+    async with db.acquire() as conn:
+        users_with_liabs = await conn.fetch(
+            """
+            SELECT u.tg_id, u.id
+            FROM users u
+            WHERE u.premium_until > NOW() AND u.tg_id IS NOT NULL
+            AND EXISTS (SELECT 1 FROM liabilities l WHERE l.user_id = u.id)
+            """
+        )
+        for row in users_with_liabs:
+            user_id = row["id"]
+            tg_id = row["tg_id"]
+            try:
+                liabs = await conn.fetch(
+                    """
+                    SELECT l.title, v.amount, v.monthly_payment
+                    FROM liabilities l
+                    JOIN LATERAL (
+                        SELECT amount, monthly_payment FROM liability_values
+                        WHERE liability_id = l.id ORDER BY created_at DESC LIMIT 1
+                    ) v ON TRUE
+                    WHERE l.user_id = $1
+                    """,
+                    user_id
+                )
+                total_debt = sum(float(r["amount"] or 0) for r in liabs)
+                total_monthly = sum(float(r["monthly_payment"] or 0) for r in liabs)
+                if total_debt <= 0:
+                    continue
+                text = (
+                    "📋 FinAdvisor: напоминание о долгах\n\n"
+                    f"Сумма долгов: {int(total_debt):,} ₽\n".replace(",", " ")
+                    f"Ежемесячные платежи: {int(total_monthly):,} ₽\n\n".replace(",", " ")
+                    + "Откройте приложение, чтобы видеть детали."
+                )
+                await bot.send_message(
+                    tg_id, text,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🚀 Открыть FinAdvisor", web_app=WebAppInfo(url=WEB_APP_URL))]
+                    ]),
+                )
+            except Exception as e:
+                print(f"Debt reminder to {tg_id}: {e}")
+            await asyncio.sleep(0.05)
+
+
+scheduler = AsyncIOScheduler()
+
+
 async def on_startup():
     """Инициализация при запуске"""
     global db
     db = await create_db_pool()
-    print("DB connected. Bot ready.")
+    scheduler.add_job(send_weekly_reports, "cron", day_of_week="mon", hour=10, minute=0)
+    scheduler.add_job(send_weekly_reminder, "cron", day_of_week="thu", hour=12, minute=0)
+    scheduler.add_job(send_debt_reminder, "cron", day_of_week="sun", hour=18, minute=0)
+    scheduler.start()
+    print("DB connected. Scheduler started. Bot ready.")
 
 
 async def on_shutdown():
     """Очистка при остановке"""
+    scheduler.shutdown(wait=False)
     global db
     if db:
         await db.close()
