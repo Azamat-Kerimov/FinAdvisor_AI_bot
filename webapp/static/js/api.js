@@ -102,7 +102,14 @@ async function uploadFile(endpoint, file) {
         if (response.status === 403 && (text.includes('PREMIUM') || text.includes('premium'))) {
             throw new Error('Требуется подписка. Оформите подписку в боте.');
         }
-        throw new Error(text || `Ошибка: ${response.status}`);
+        try {
+            const json = JSON.parse(text);
+            const msg = Array.isArray(json.detail) ? json.detail.map(d => d.msg || d).join(', ') : (json.detail || text);
+            throw new Error(msg || `Ошибка: ${response.status}`);
+        } catch (e) {
+            if (e instanceof SyntaxError) throw new Error(text || `Ошибка: ${response.status}`);
+            throw e;
+        }
     }
     return await response.json();
 }
