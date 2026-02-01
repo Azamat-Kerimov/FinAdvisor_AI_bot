@@ -4,12 +4,13 @@
 
 ## Решение: unit-файлы с полным путём к Python
 
-В unit-файлах используется **активация venv через bash** (`. venv/bin/activate`), а не прямой вызов `venv/bin/python3`. Так сервисы работают и когда в venv есть только `python`, и когда путь к venv другой (например `.venv` — тогда замените `venv` на `.venv` в обоих файлах).
+Сервисы запускают **скрипты** `scripts/run_bot_venv.sh` и `scripts/run_api_venv.sh`. Они сами ищут окружение: сначала `venv/bin/activate`, затем `.venv/bin/activate` — подходит и `venv`, и `.venv`.
 
-### Если проект или venv в другом месте
+После **git pull** дайте скриптам права на выполнение: `chmod +x scripts/*.sh`
 
-- Проект не в `/root/FinAdvisor_AI_bot` — замените этот путь в обоих `.service` на свой (например `/home/user/FinAdvisor_AI_bot`).
-- Виртуальное окружение в папке `.venv`, а не `venv` — в `ExecStart` во всех `.service` замените `venv/bin/activate` на `.venv/bin/activate`.
+### Если проект в другом каталоге
+
+Проект не в `/root/FinAdvisor_AI_bot` — откройте оба `.service` и замените путь `/root/FinAdvisor_AI_bot` на свой (например `/home/user/FinAdvisor_AI_bot`).
 
 ### Полный деплой (сборка фронта + перезапуск)
 
@@ -69,7 +70,7 @@ ls -la /root/FinAdvisor_AI_bot/venv/bin/activate
 ls -la /root/FinAdvisor_AI_bot/.venv/bin/activate
 ```
 
-Если папка окружения называется `.venv`, во всех `.service` в строке `ExecStart` замените `venv/bin/activate` на `.venv/bin/activate`, затем снова `daemon-reload` и `restart`.
+Если окружение в нестандартной папке (не `venv` и не `.venv`), отредактируйте `scripts/run_bot_venv.sh` и `scripts/run_api_venv.sh`, добавив проверку своей папки по образцу существующих.
 
 ---
 

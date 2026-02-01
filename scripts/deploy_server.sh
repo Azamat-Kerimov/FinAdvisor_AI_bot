@@ -5,6 +5,9 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# Права на выполнение для скриптов (в т.ч. run_*_venv.sh для systemd)
+chmod +x scripts/*.sh 2>/dev/null || true
+
 echo "=== 1. Сборка фронта (чтобы сайт открывался) ==="
 bash scripts/build_frontend.sh
 
