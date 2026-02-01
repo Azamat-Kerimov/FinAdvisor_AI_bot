@@ -48,6 +48,14 @@ sudo systemctl restart finadvisorbot.service
 
 ### Проверка логов
 
+Если бот падает (status=1/FAILURE), смотрите **последние строки** — там будет причина (переменные .env или БД):
+
+```bash
+sudo journalctl -u finadvisorbot.service -n 40 --no-pager
+```
+
+В логах ищите: «Ошибка: в .env не заданы переменные» или «Ошибка подключения к БД». Для живого вывода:
+
 ```bash
 sudo journalctl -u finadvisor-api.service -f
 sudo journalctl -u finadvisorbot.service -f
@@ -62,3 +70,22 @@ ls -la /root/FinAdvisor_AI_bot/.venv/bin/activate
 ```
 
 Если папка окружения называется `.venv`, во всех `.service` в строке `ExecStart` замените `venv/bin/activate` на `.venv/bin/activate`, затем снова `daemon-reload` и `restart`.
+
+---
+
+### Если на сервере «Killed» при сборке фронта (мало RAM)
+
+Скрипт сборки ограничивает память Node (768 MB). Если `npm install` или `npm run build` всё равно убиваются:
+
+1. **Соберите фронт локально** (на своём ПК, где достаточно памяти):
+   ```bash
+   cd frontend && npm install && npm run build && cd ..
+   ```
+2. **Залейте только папку `frontend/dist`** на сервер (scp, rsync или архив):
+   ```bash
+   scp -r frontend/dist root@ваш-сервер:~/FinAdvisor_AI_bot/frontend/
+   ```
+3. На сервере **не запускайте** `./scripts/build_frontend.sh`, а только перезапустите сервисы:
+   ```bash
+   sudo systemctl restart finadvisor-api.service finadvisorbot.service
+   ```
