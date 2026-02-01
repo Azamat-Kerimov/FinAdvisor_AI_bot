@@ -46,7 +46,7 @@ if os.path.isdir(_frontend_dist):
             logging.warning("Could not mount frontend assets: %s", e)
 if not _frontend_ready:
     logging.warning(
-        "Frontend not found at %s — run: ./scripts/build_frontend.sh (or deploy_server.sh)",
+        "Frontend not found at %s — run: ./scripts/build_frontend.sh",
         _frontend_dist,
     )
 
