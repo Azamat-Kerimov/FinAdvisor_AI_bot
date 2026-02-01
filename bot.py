@@ -2,6 +2,7 @@
 # v_01.28.26 - Рефакторинг: бот только для подписки и WebApp
 
 import os
+import sys
 import asyncio
 import asyncpg
 from datetime import datetime, timedelta
@@ -11,19 +12,43 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, LabeledPrice
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, LabeledPrice, ErrorEvent
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEB_APP_URL = os.getenv("WEB_APP_URL", "https://finadvisor-ai.ru")
-PAYMENT_PROVIDER_TOKEN = os.getenv("PAYMENT_PROVIDER_TOKEN", "")
+BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
+WEB_APP_URL = (os.getenv("WEB_APP_URL") or "https://finadvisor-ai.ru").strip()
+PAYMENT_PROVIDER_TOKEN = (os.getenv("PAYMENT_PROVIDER_TOKEN") or "").strip()
 
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
+DB_NAME = (os.getenv("DB_NAME") or "").strip()
+DB_USER = (os.getenv("DB_USER") or "").strip()
+DB_PASSWORD = os.getenv("DB_PASSWORD")  # может быть пустым в dev
+DB_HOST = (os.getenv("DB_HOST") or "").strip()
+DB_PORT = (os.getenv("DB_PORT") or "5432").strip()
+
+
+def _check_env():
+    """Проверка обязательных переменных окружения. Выход с сообщением при ошибке."""
+    missing = []
+    if not BOT_TOKEN:
+        missing.append("BOT_TOKEN")
+    if not DB_NAME:
+        missing.append("DB_NAME")
+    if not DB_USER:
+        missing.append("DB_USER")
+    if DB_PASSWORD is None:
+        missing.append("DB_PASSWORD")
+    if not DB_HOST:
+        missing.append("DB_HOST")
+    if not DB_PORT:
+        missing.append("DB_PORT")
+    if missing:
+        print("Ошибка: в .env не заданы переменные:", ", ".join(missing))
+        print("Проверьте файл .env в корне проекта (формат: KEY=value без пробелов вокруг =).")
+        sys.exit(1)
+
+
+_check_env()
 
 # Тарифы подписки
 SUBSCRIPTION_PLANS = {
@@ -381,6 +406,22 @@ async def cmd_status(m: types.Message):
     )
 
 
+@dp.error()
+async def global_error_handler(event: ErrorEvent):
+    """Глобальный обработчик ошибок: логируем и отвечаем пользователю."""
+    print(f"Bot error: {event.exception}", flush=True)
+    try:
+        update = event.update
+        if update.message:
+            await update.message.answer(
+                "Произошла ошибка. Попробуйте позже или напишите /start."
+            )
+        elif update.callback_query:
+            await update.callback_query.answer("Ошибка. Попробуйте позже.", show_alert=True)
+    except Exception:
+        pass
+
+
 # Ценность 1 и 4: еженедельный отчёт и напоминание, алерты по долгам
 async def send_weekly_reports():
     """Еженедельный отчёт: потрачено за 7 дней, топ категорий + кнопка «Открыть FinAdvisor»."""
@@ -504,7 +545,12 @@ scheduler = AsyncIOScheduler()
 async def on_startup():
     """Инициализация при запуске"""
     global db
-    db = await create_db_pool()
+    try:
+        db = await create_db_pool()
+    except Exception as e:
+        print("Ошибка подключения к БД:", e)
+        print("Проверьте DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD и что PostgreSQL запущен.")
+        sys.exit(1)
     scheduler.add_job(send_weekly_reports, "cron", day_of_week="mon", hour=10, minute=0)
     scheduler.add_job(send_weekly_reminder, "cron", day_of_week="thu", hour=12, minute=0)
     scheduler.add_job(send_debt_reminder, "cron", day_of_week="sun", hour=18, minute=0)

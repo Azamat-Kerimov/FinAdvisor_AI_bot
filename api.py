@@ -1467,7 +1467,12 @@ async def analyze_user_finances_text(user_id: int) -> str:
     db = await get_db()
     async with db.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT amount, category, description, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2",
+            """
+            SELECT t.amount, c.name AS category, t.description, t.created_at
+            FROM transactions t
+            LEFT JOIN categories c ON c.id = t.category_id
+            WHERE t.user_id=$1 ORDER BY t.created_at DESC LIMIT $2
+            """,
             user_id, MAX_TX_FOR_ANALYSIS
         )
         
