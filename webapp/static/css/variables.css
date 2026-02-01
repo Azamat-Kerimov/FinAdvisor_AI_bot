@@ -1,65 +1,69 @@
 /* ============================================
-   CSS Variables - Design System
+   Design System — Canva-inspired
+   Чистый фон, один акцент, чёткая типографика
    ============================================ */
 
 :root {
-    /* Colors - Minimal palette */
-    --primary: #4F46E5;
-    --primary-hover: #4338CA;
+    /* Canva-style: один яркий акцент + нейтрали */
+    --primary: #6366F1;
+    --primary-hover: #4F46E5;
     --accent: #10B981;
+    --accent-soft: #D1FAE5;
     --danger: #EF4444;
-    
-    /* Backgrounds */
+    --danger-soft: #FEE2E2;
+
+    /* Фоны — светлые, много воздуха */
     --bg-primary: #FFFFFF;
-    --bg-secondary: #F9FAFB;
-    --bg-tertiary: #F3F4F6;
-    
-    /* Text */
-    --text-primary: #111827;
-    --text-secondary: #6B7280;
-    --text-tertiary: #9CA3AF;
-    
-    /* Borders */
-    --border-color: #E5E7EB;
-    --border-radius: 16px;
-    --border-radius-sm: 12px;
-    --border-radius-lg: 24px;
-    
-    /* Shadows */
-    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-    
-    /* Spacing - 8px grid system */
+    --bg-secondary: #F8FAFC;
+    --bg-tertiary: #F1F5F9;
+    --bg-card: #FFFFFF;
+
+    /* Текст */
+    --text-primary: #0F172A;
+    --text-secondary: #64748B;
+    --text-tertiary: #94A3B8;
+
+    /* Границы */
+    --border-color: #E2E8F0;
+    --border-radius: 12px;
+    --border-radius-sm: 8px;
+    --border-radius-lg: 16px;
+    --border-radius-xl: 24px;
+
+    /* Тени — мягкие */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.08);
+    --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.08);
+
+    /* Сетка 8px */
     --space-xs: 4px;
     --space-sm: 8px;
     --space-md: 16px;
     --space-lg: 24px;
     --space-xl: 32px;
     --space-2xl: 48px;
-    
-    /* Typography */
-    --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+    /* Типографика — чёткая иерархия */
+    --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     --font-size-xs: 12px;
     --font-size-sm: 14px;
     --font-size-base: 16px;
     --font-size-lg: 18px;
-    --font-size-xl: 24px;
-    --font-size-2xl: 32px;
-    --font-size-3xl: 40px;
-    
+    --font-size-xl: 22px;
+    --font-size-2xl: 28px;
+    --font-size-3xl: 34px;
+
     --font-weight-normal: 400;
     --font-weight-medium: 500;
     --font-weight-semibold: 600;
     --font-weight-bold: 700;
-    
-    /* Transitions */
+
     --transition-fast: 0.15s ease;
     --transition-base: 0.2s ease;
     --transition-slow: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    
-    /* Telegram theme fallback */
+
+    /* Telegram */
     --tg-theme-bg-color: var(--tg-theme-bg-color, var(--bg-primary));
     --tg-theme-text-color: var(--tg-theme-text-color, var(--text-primary));
     --tg-theme-hint-color: var(--tg-theme-hint-color, var(--text-secondary));
@@ -69,15 +73,17 @@
     --tg-theme-secondary-bg-color: var(--tg-theme-secondary-bg-color, var(--bg-secondary));
 }
 
-/* Dark mode support */
 @media (prefers-color-scheme: dark) {
     :root {
-        --bg-primary: #1F2937;
-        --bg-secondary: #111827;
-        --bg-tertiary: #374151;
-        --text-primary: #F9FAFB;
-        --text-secondary: #D1D5DB;
-        --text-tertiary: #9CA3AF;
-        --border-color: #374151;
+        --bg-primary: #0F172A;
+        --bg-secondary: #1E293B;
+        --bg-tertiary: #334155;
+        --text-primary: #F8FAFC;
+        --text-secondary: #94A3B8;
+        --text-tertiary: #64748B;
+        --border-color: #334155;
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+        --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.25);
+        --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.3);
     }
 }
