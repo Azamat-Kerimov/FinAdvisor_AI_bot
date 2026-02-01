@@ -1,0 +1,16 @@
+[Unit]
+Description=FinAdvisor Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/FinAdvisor_AI_bot
+# Полный путь к Python в venv — иначе systemd не найдёт python
+ExecStart=/root/FinAdvisor_AI_bot/venv/bin/python3 bot.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/root/FinAdvisor_AI_bot/.env
+
+[Install]
+WantedBy=multi-user.target
