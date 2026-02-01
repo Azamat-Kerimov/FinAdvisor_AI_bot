@@ -11,12 +11,12 @@ cd "$(dirname "$0")/.."
 # Ограничение памяти для Node (MB) — снижает риск OOM Killer на слабых серверах
 export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=768"
 
-echo "Установка зависимостей frontend..."
+echo "Установка зависимостей frontend... (на слабом сервере может занять 10–30 мин)"
 cd frontend
 if [ ! -d node_modules ]; then
-    npm install --prefer-offline --no-audit --progress=false
+    npm install --prefer-offline --no-audit
 else
-    npm ci --prefer-offline --no-audit 2>/dev/null || npm install --prefer-offline --no-audit --progress=false
+    npm ci --prefer-offline --no-audit 2>/dev/null || npm install --prefer-offline --no-audit
 fi
 echo "Сборка (tsc + vite build)..."
 npm run build
