@@ -48,13 +48,30 @@ sudo journalctl -u finadvisorbot.service -f
 
 ## 3. Фронт: сборка и «Соберите фронт» на сайте
 
-Если при открытии сайта видите «FinAdvisor API» и «Фронт не собран» — на сервере нет папки `frontend/dist`. Выполните один раз (или после изменений в `frontend/`):
+Если при открытии сайта видите «FinAdvisor API» и «Фронт не собран» — на сервере нет папки `frontend/dist`.
+
+**Вариант А — сборка на сервере** (если хватает RAM, обычно 10–60 сек):
 
 ```bash
 cd /root/FinAdvisor_AI_bot
 ./scripts/build_frontend.sh
 sudo systemctl restart finadvisor-api.service
 ```
+
+**Вариант Б — сборка на своём ПК, заливка dist на сервер** (если на сервере сборка зависает или «Killed»):
+
+1. На своём ПК (в клонированном репозитории):
+   ```bash
+   cd frontend && npm install && npm run build && cd ..
+   ```
+2. Загрузить только `frontend/dist` на сервер:
+   ```bash
+   scp -r frontend/dist root@vm2511041557:~/FinAdvisor_AI_bot/frontend/
+   ```
+3. На сервере перезапустить API:
+   ```bash
+   sudo systemctl restart finadvisor-api.service
+   ```
 
 ## Скрипты
 
