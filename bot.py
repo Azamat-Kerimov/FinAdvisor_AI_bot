@@ -43,8 +43,8 @@ def _check_env():
     if not DB_PORT:
         missing.append("DB_PORT")
     if missing:
-        print("Ошибка: в .env не заданы переменные:", ", ".join(missing))
-        print("Проверьте файл .env в корне проекта (формат: KEY=value без пробелов вокруг =).")
+        msg = f"Ошибка: в .env не заданы переменные: {', '.join(missing)}. Проверьте .env (формат: KEY=value без пробелов вокруг =)."
+        print(msg, file=sys.stderr, flush=True)
         sys.exit(1)
 
 
@@ -548,8 +548,8 @@ async def on_startup():
     try:
         db = await create_db_pool()
     except Exception as e:
-        print("Ошибка подключения к БД:", e)
-        print("Проверьте DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD и что PostgreSQL запущен.")
+        msg = f"Ошибка подключения к БД: {e}. Проверьте DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD и что PostgreSQL запущен."
+        print(msg, file=sys.stderr, flush=True)
         sys.exit(1)
     scheduler.add_job(send_weekly_reports, "cron", day_of_week="mon", hour=10, minute=0)
     scheduler.add_job(send_weekly_reminder, "cron", day_of_week="thu", hour=12, minute=0)
@@ -573,4 +573,9 @@ if __name__ == "__main__":
         dp.shutdown.register(on_shutdown)
         asyncio.run(dp.start_polling(bot))
     except (KeyboardInterrupt, SystemExit):
-        print("Shutting down")
+        print("Shutting down", flush=True)
+    except Exception as e:
+        import traceback
+        print(f"Бот упал: {e}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
