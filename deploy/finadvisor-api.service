@@ -6,8 +6,9 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/FinAdvisor_AI_bot
-# Полный путь к Python в venv — иначе systemd не найдёт python
-ExecStart=/root/FinAdvisor_AI_bot/venv/bin/python3 -m uvicorn api:app --host 0.0.0.0 --port 8000
+# Активация venv через bash — не зависит от имени бинарника (python/python3)
+# Если venv в другой папке (например .venv), замените venv на .venv ниже
+ExecStart=/bin/bash -c '. /root/FinAdvisor_AI_bot/venv/bin/activate && exec python -m uvicorn api:app --host 0.0.0.0 --port 8000'
 Restart=always
 RestartSec=5
 EnvironmentFile=/root/FinAdvisor_AI_bot/.env
