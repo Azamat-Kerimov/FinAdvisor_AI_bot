@@ -395,7 +395,7 @@ async def read_root():
         except Exception:
             pass
     return HTMLResponse(
-        content="<h1>FinAdvisor API</h1><p>Соберите фронт: <code>cd frontend && npm run build</code></p>",
+        content="<h1>FinAdvisor API</h1><p>Фронт не собран. На сервере из корня проекта выполните: <code>./scripts/build_frontend.sh</code>, затем перезапустите API.</p>",
         status_code=200
     )
 
