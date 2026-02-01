@@ -7,7 +7,8 @@ Type=simple
 User=root
 WorkingDirectory=/root/FinAdvisor_AI_bot
 Environment="PATH=/root/FinAdvisor_AI_bot/venv/bin"
-EnvironmentFile=/root/FinAdvisor_AI_bot/.env
+# Префикс "-" делает файл опциональным: сервис стартует даже если .env отсутствует
+EnvironmentFile=-/root/FinAdvisor_AI_bot/.env
 ExecStart=/root/FinAdvisor_AI_bot/venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=10
