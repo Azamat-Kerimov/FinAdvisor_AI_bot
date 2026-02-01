@@ -6,8 +6,9 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/FinAdvisor_AI_bot
-# Полный путь к Python в venv — иначе systemd не найдёт python
-ExecStart=/root/FinAdvisor_AI_bot/venv/bin/python3 bot.py
+# Активация venv через bash — не зависит от имени бинарника (python/python3)
+# Если venv в другой папке (например .venv), замените venv на .venv ниже
+ExecStart=/bin/bash -c '. /root/FinAdvisor_AI_bot/venv/bin/activate && exec python bot.py'
 Restart=always
 RestartSec=5
 EnvironmentFile=/root/FinAdvisor_AI_bot/.env
