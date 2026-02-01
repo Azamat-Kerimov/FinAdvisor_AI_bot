@@ -98,9 +98,10 @@ async def main():
         for bank_key, out_name in pairs:
             r = await conn.execute(
                 """
-                INSERT INTO category_mapping (bank_category, category_id)
-                SELECT $1, c.id FROM categories c WHERE c.name = $2
-                ON CONFLICT (bank_category) DO UPDATE SET category_id = EXCLUDED.category_id
+                INSERT INTO category_mapping (bank_category, category_id, bank_category_type)
+                SELECT $1, c.id, CASE WHEN c.type = 'income' THEN 'Доход' ELSE 'Расход' END
+                FROM categories c WHERE c.name = $2
+                ON CONFLICT (bank_category, bank_category_type) DO UPDATE SET category_id = EXCLUDED.category_id
                 """,
                 bank_key, out_name
             )
