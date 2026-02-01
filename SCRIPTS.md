@@ -1,13 +1,15 @@
 # Скрипты и запуск FinAdvisor
 
-**На Linux-сервере** используйте скрипты `.sh` (не `.ps1` — это PowerShell для Windows):
+**На Linux-сервере** используйте скрипты `.sh` (не `.ps1` — это PowerShell для Windows).
+
+**Один скрипт для полного деплоя** (сборка фронта + перезапуск API и бота):
 
 ```bash
-chmod +x scripts/*.sh   # один раз
-./scripts/run_bot.sh
-./scripts/build_frontend.sh
-./scripts/run_api.sh
+chmod +x scripts/*.sh
+./scripts/deploy_server.sh
 ```
+
+Или по шагам: `./scripts/build_frontend.sh`, затем `./scripts/run_api.sh` и `./scripts/run_bot.sh`.
 
 **На Windows** — скрипты `.ps1`: `.\scripts\run_bot.ps1` и т.д.
 
@@ -138,11 +140,13 @@ sudo systemctl restart finadvisorbot.service
 sudo systemctl status finadvisor-api.service finadvisorbot.service
 ```
 
-Дальше после обновления кода достаточно:
+**После обновления кода (git pull)** — один скрипт соберёт фронт и перезапустит оба сервиса:
+
 ```bash
-sudo systemctl restart finadvisor-api.service
-sudo systemctl restart finadvisorbot.service
+./scripts/deploy_server.sh
 ```
+
+(Потребуется пароль sudo для systemctl restart.) Если нужен только рестарт без сборки: `sudo systemctl restart finadvisor-api.service finadvisorbot.service`.
 
 Подробнее: **`deploy/README.md`**.
 
@@ -150,7 +154,7 @@ sudo systemctl restart finadvisorbot.service
 
 ## Деплой на finadvisor-ai.ru
 
-1. **Соберите фронт** на сервере: `./scripts/build_frontend.sh`. В `frontend/dist` появятся `index.html` и `assets/`.
-2. **Настройте systemd** по инструкции выше (unit-файлы из `deploy/` с полным путём к venv).
-3. **Настройте nginx**: запросы на `https://finadvisor-ai.ru` проксировать на `http://127.0.0.1:8000`. API отдаёт React по `/` и статику по `/assets/`.
+1. **Один раз настройте systemd** по инструкции выше (unit-файлы из `deploy/`, путь к venv).
+2. **После каждого git pull** на сервере запускайте: `./scripts/deploy_server.sh` — скрипт соберёт фронт и перезапустит API и бота. Тогда сайт будет отдавать React, а бот — отвечать на команды.
+3. **Nginx**: запросы на `https://finadvisor-ai.ru` проксировать на `http://127.0.0.1:8000`. API отдаёт React по `/` и статику по `/assets/`.
 4. В `.env` на сервере: `WEB_APP_URL=https://finadvisor-ai.ru`.

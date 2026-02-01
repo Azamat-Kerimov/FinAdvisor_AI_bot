@@ -34,13 +34,21 @@ app = FastAPI()
 
 # Статика фронта (React/Vite build) — frontend/dist
 _frontend_dist = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+_frontend_ready = False
 if os.path.isdir(_frontend_dist):
     _assets = os.path.join(_frontend_dist, "assets")
-    if os.path.isdir(_assets):
+    index_path = os.path.join(_frontend_dist, "index.html")
+    if os.path.isdir(_assets) and os.path.isfile(index_path):
         try:
             app.mount("/assets", StaticFiles(directory=_assets), name="assets")
+            _frontend_ready = True
         except Exception as e:
-            print(f"Warning: Could not mount frontend assets: {e}")
+            logging.warning("Could not mount frontend assets: %s", e)
+if not _frontend_ready:
+    logging.warning(
+        "Frontend not found at %s — run: ./scripts/build_frontend.sh (or deploy_server.sh)",
+        _frontend_dist,
+    )
 
 # CORS для Telegram Web App
 app.add_middleware(

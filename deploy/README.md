@@ -9,9 +9,17 @@
 ### Если проект или venv в другом месте
 
 - Проект не в `/root/FinAdvisor_AI_bot` — замените этот путь в обоих `.service` на свой (например `/home/user/FinAdvisor_AI_bot`).
-- Виртуальное окружение в папке `.venv`, а не `venv` — в `ExecStart` замените `venv/bin/activate` на `.venv/bin/activate` в обоих файлах.
+- Виртуальное окружение в папке `.venv`, а не `venv` — в `ExecStart` во всех `.service` замените `venv/bin/activate` на `.venv/bin/activate`.
 
-### Установка и перезапуск
+### Полный деплой (сборка фронта + перезапуск)
+
+После **git pull** на сервере запустите один скрипт — он соберёт фронт и перезапустит оба сервиса (сайт начнёт отдавать React, бот — отвечать):
+
+```bash
+./scripts/deploy_server.sh
+```
+
+### Установка unit-файлов и перезапуск (один раз)
 
 На сервере, из корня проекта:
 
@@ -22,10 +30,8 @@ sudo cp deploy/finadvisor-api.service deploy/finadvisorbot.service /etc/systemd/
 # Перечитать конфигурацию systemd
 sudo systemctl daemon-reload
 
-# Включить автозапуск при загрузке (опционально)
+# Включить и запустить сервисы
 sudo systemctl enable finadvisor-api.service finadvisorbot.service
-
-# Запустить/перезапустить сервисы
 sudo systemctl restart finadvisor-api.service
 sudo systemctl restart finadvisorbot.service
 
@@ -55,4 +61,4 @@ ls -la /root/FinAdvisor_AI_bot/venv/bin/activate
 ls -la /root/FinAdvisor_AI_bot/.venv/bin/activate
 ```
 
-Если папка окружения называется `.venv`, в обоих `.service` в строке `ExecStart` замените `venv/bin/activate` на `.venv/bin/activate`, затем снова `daemon-reload` и `restart`.
+Если папка окружения называется `.venv`, во всех `.service` в строке `ExecStart` замените `venv/bin/activate` на `.venv/bin/activate`, затем снова `daemon-reload` и `restart`.
