@@ -23,10 +23,19 @@ sudo systemctl start finadvisor-api.service finadvisorbot.service
 
 ## 2. После каждого обновления кода
 
-На сервере:
+На сервере, **из корня проекта**:
 
 ```bash
 cd /root/FinAdvisor_AI_bot
+git pull
+./scripts/deploy.sh
+```
+
+Если `git pull` пишет *Your local changes ... would be overwritten by merge*:
+
+```bash
+cd /root/FinAdvisor_AI_bot
+git restore scripts/
 git pull
 ./scripts/deploy.sh
 ```
@@ -37,9 +46,9 @@ git pull
 sudo journalctl -u finadvisorbot.service -f
 ```
 
-## 3. Если меняли код фронта
+## 3. Фронт: сборка и «Соберите фронт» на сайте
 
-Только тогда пересобрать фронт:
+Если при открытии сайта видите «FinAdvisor API» и «Фронт не собран» — на сервере нет папки `frontend/dist`. Выполните один раз (или после изменений в `frontend/`):
 
 ```bash
 cd /root/FinAdvisor_AI_bot
