@@ -32,12 +32,15 @@ logging.basicConfig(
 
 app = FastAPI()
 
-# Подключаем статические файлы через встроенный StaticFiles
-# Это должно решить проблему с 403 Forbidden
-try:
-    app.mount("/static", StaticFiles(directory="webapp/static"), name="static")
-except Exception as e:
-    print(f"Warning: Could not mount static files: {e}")
+# Статика фронта (React/Vite build) — frontend/dist
+_frontend_dist = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+if os.path.isdir(_frontend_dist):
+    _assets = os.path.join(_frontend_dist, "assets")
+    if os.path.isdir(_assets):
+        try:
+            app.mount("/assets", StaticFiles(directory=_assets), name="assets")
+        except Exception as e:
+            print(f"Warning: Could not mount frontend assets: {e}")
 
 # CORS для Telegram Web App
 app.add_middleware(
@@ -369,56 +372,25 @@ async def auth_telegram(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    """Главная страница Web App"""
-    try:
-        with open("webapp/index.html", "r", encoding="utf-8") as f:
-            content = f.read()
-            # Добавляем заголовки для предотвращения кэширования
+    """Главная страница — React SPA из frontend/dist или заглушка"""
+    index_path = os.path.join(_frontend_dist, "index.html")
+    if os.path.isfile(index_path):
+        try:
+            with open(index_path, "r", encoding="utf-8") as f:
+                content = f.read()
             headers = {
                 "Cache-Control": "no-cache, no-store, must-revalidate",
                 "Pragma": "no-cache",
                 "Expires": "0"
             }
             return HTMLResponse(content=content, headers=headers)
-    except FileNotFoundError:
-        return HTMLResponse(content="<h1>Web App не найден</h1><p>Проверьте путь к файлу webapp/index.html</p>", status_code=500)
+        except Exception:
+            pass
+    return HTMLResponse(
+        content="<h1>FinAdvisor API</h1><p>Соберите фронт: <code>cd frontend && npm run build</code></p>",
+        status_code=200
+    )
 
-# Статические файлы теперь обрабатываются через app.mount("/static", ...) выше
-# Этот endpoint больше не нужен, но оставляем как fallback на случай проблем
-@app.get("/static/{file_path:path}")
-async def static_files_fallback(file_path: str):
-    """Fallback для статических файлов (если mount не работает)"""
-    import mimetypes
-    
-    file_path_clean = file_path.split('?')[0]  # Убираем query параметры для версионирования
-    full_path = f"webapp/static/{file_path_clean}"
-    
-    # Проверяем существование файла
-    if not os.path.exists(full_path):
-        raise HTTPException(status_code=404, detail=f"File not found: {full_path}")
-    
-    # Определяем MIME-тип
-    mime_type, _ = mimetypes.guess_type(full_path)
-    if not mime_type:
-        # Определяем по расширению
-        if full_path.endswith('.css'):
-            mime_type = 'text/css; charset=utf-8'
-        elif full_path.endswith('.js'):
-            mime_type = 'application/javascript; charset=utf-8'
-        elif full_path.endswith('.html'):
-            mime_type = 'text/html; charset=utf-8'
-        else:
-            mime_type = 'application/octet-stream'
-    
-    # Устанавливаем заголовки для предотвращения кэширования в разработке
-    headers = {
-        "Cache-Control": "no-cache, no-store, must-revalidate",
-        "Pragma": "no-cache",
-        "Expires": "0",
-        "Content-Type": mime_type
-    }
-    
-    return FileResponse(full_path, headers=headers, media_type=mime_type)
 
 # Статистика
 @app.get("/api/stats")
@@ -1199,7 +1171,7 @@ async def create_budget(body: BudgetCreate, user_id: int = Depends(require_premi
                 user_id, body.category, body.monthly_limit
             )
         except asyncpg.UndefinedTableError:
-            raise HTTPException(status_code=503, detail="Run migration: migrations/001_budgets.sql")
+            raise HTTPException(status_code=503, detail="Run database migrations")
     return {"status": "ok"}
 
 
@@ -1211,7 +1183,7 @@ async def delete_budget(budget_id: int, user_id: int = Depends(require_premium))
         try:
             await conn.execute("DELETE FROM budgets WHERE id=$1 AND user_id=$2", budget_id, user_id)
         except asyncpg.UndefinedTableError:
-            raise HTTPException(status_code=503, detail="Run migration: migrations/001_budgets.sql")
+            raise HTTPException(status_code=503, detail="Run database migrations")
     return {"status": "ok"}
 
 
