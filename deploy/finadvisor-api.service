@@ -6,9 +6,8 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/FinAdvisor_AI_bot
-# Активация venv через bash — не зависит от имени бинарника (python/python3)
-# Если venv в другой папке (например .venv), замените venv на .venv ниже
-ExecStart=/bin/bash -c '. /root/FinAdvisor_AI_bot/venv/bin/activate && exec python -m uvicorn api:app --host 0.0.0.0 --port 8000'
+# Скрипт сам находит venv или .venv в каталоге проекта
+ExecStart=/root/FinAdvisor_AI_bot/scripts/run_api_venv.sh
 Restart=always
 RestartSec=5
 EnvironmentFile=/root/FinAdvisor_AI_bot/.env
