@@ -22,7 +22,20 @@ bash scripts/deploy.sh
 - обновит unit systemd и перезапустит `finadvisor-api`;
 - обновит конфиг Nginx (если есть `config/nginx-finadvisor.conf`) и перезагрузит nginx.
 
-После этого откройте сайт в браузере (например, https://finadvisor-ai.ru).
+После этого откройте сайт в браузере (например, https://finadvisor-ai.ru) — будет отображаться **новый React-интерфейс**.
+
+---
+
+## Только переключить сайт на новый React-интерфейс
+
+Если деплой уже делали, а в браузере всё ещё старый интерфейс (webapp), выполните:
+
+```bash
+cd ~/FinAdvisor_AI_bot
+bash scripts/use-react-frontend.sh
+```
+
+Скрипт соберёт React-приложение и переключит Nginx на раздачу статики из `frontend/dist` (новый интерфейс). Перезапуск API не выполняется.
 
 ## Требования на сервере
 
