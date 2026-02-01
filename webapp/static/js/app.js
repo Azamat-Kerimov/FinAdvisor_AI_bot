@@ -185,7 +185,44 @@
     window.addTransaction = function() { loadTransactions(); };
     window.editTransaction = function() {};
     window.deleteTransaction = function() {};
-    window.loadStats = function() {};
+    /** Загрузка статистики на главный экран (с таймаутом и fallback — убирает вечную загрузку) */
+    async function loadStats() {
+        const container = document.getElementById('stats-card');
+        if (!container) return;
+        const timeoutMs = 8000;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const data = await apiRequest('/api/stats', { signal: controller.signal });
+            clearTimeout(timeoutId);
+            const inc = (data && data.total_income) ? Number(data.total_income) : 0;
+            const exp = (data && data.total_expense) ? Number(data.total_expense) : 0;
+            const insight = (data && data.insight) ? String(data.insight) : '';
+            const reserve = (data && data.reserve_recommended) ? Number(data.reserve_recommended) : 0;
+            container.innerHTML =
+                '<div class="balance-card">' +
+                '<div class="balance-label">За текущий месяц</div>' +
+                '<div class="balance-stats">' +
+                '<div class="balance-stat-item"><div class="balance-stat-label">Доходы</div><div class="balance-stat-value">' + (typeof formatMoney !== 'undefined' ? formatMoney(inc) : inc) + ' ₽</div></div>' +
+                '<div class="balance-stat-item"><div class="balance-stat-label">Расходы</div><div class="balance-stat-value">' + (typeof formatMoney !== 'undefined' ? formatMoney(exp) : exp) + ' ₽</div></div>' +
+                '</div>' +
+                (insight ? '<p class="balance-insight">' + escapeHtml(insight) + '</p>' : '') +
+                (reserve > 0 ? '<p class="balance-reserve">Резервный фонд (рекоменд.): ' + (typeof formatMoney !== 'undefined' ? formatMoney(reserve) : reserve) + ' ₽</p>' : '') +
+                '</div>';
+        } catch (e) {
+            clearTimeout(timeoutId);
+            container.innerHTML =
+                '<div class="welcome-card">' +
+                '<div class="welcome-title">Добро пожаловать</div>' +
+                '<p class="welcome-text">Добавьте операции или загрузите выписку из Сбера или Т‑Банка — статистика появится здесь.</p>' +
+                '</div>';
+        }
+    }
+    window.loadStats = loadStats;
+
+    document.addEventListener('DOMContentLoaded', function() {
+        loadStats();
+    });
     window.loadBudgets = function() {};
     window.loadCapital = function() {};
     window.loadConsultation = function() {};
