@@ -4,9 +4,28 @@
 
 ## Решение: unit-файлы с полным путём к Python
 
-Сервисы запускают **скрипты** `scripts/run_bot_venv.sh` и `scripts/run_api_venv.sh`. Они сами ищут окружение: сначала `venv/bin/activate`, затем `.venv/bin/activate` — подходит и `venv`, и `.venv`.
+Сервисы запускают **скрипты** `scripts/run_bot_venv.sh` и `scripts/run_api_venv.sh`. Они ищут окружение в каталоге проекта: сначала `venv`, затем `.venv`.
 
 После **git pull** дайте скриптам права на выполнение: `chmod +x scripts/*.sh`
+
+### Ошибка «не найден venv/bin/activate или .venv/bin/activate»
+
+Значит в каталоге проекта **нет** папки `venv` и нет `.venv`. Systemd не видит то окружение, которое вы активируете вручную в SSH — нужно создать venv **внутри проекта**:
+
+```bash
+cd /root/FinAdvisor_AI_bot
+python3 -m venv venv
+. venv/bin/activate
+pip install -r requirements.txt
+chmod +x scripts/*.sh
+```
+
+После этого перезапустите сервисы:
+
+```bash
+sudo systemctl restart finadvisor-api.service
+sudo systemctl restart finadvisorbot.service
+```
 
 ### Если проект в другом каталоге
 

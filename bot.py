@@ -524,8 +524,8 @@ async def send_debt_reminder():
                     continue
                 text = (
                     "📋 FinAdvisor: напоминание о долгах\n\n"
-                    f"Сумма долгов: {int(total_debt):,} ₽\n".replace(",", " ")
-                    f"Ежемесячные платежи: {int(total_monthly):,} ₽\n\n".replace(",", " ")
+                    + f"Сумма долгов: {int(total_debt):,} ₽\n".replace(",", " ")
+                    + f"Ежемесячные платежи: {int(total_monthly):,} ₽\n\n".replace(",", " ")
                     + "Откройте приложение, чтобы видеть детали."
                 )
                 await bot.send_message(
