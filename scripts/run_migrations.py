@@ -42,7 +42,10 @@ async def main():
             print(f"Выполняю {name}...")
             for stmt in sql.split(";"):
                 stmt = stmt.strip()
-                if not stmt or stmt.startswith("--"):
+                # Убрать ведущие строки-комментарии и пустые строки
+                lines = [line for line in stmt.split("\n") if line.strip() and not line.strip().startswith("--")]
+                stmt = "\n".join(lines)
+                if not stmt:
                     continue
                 await conn.execute(stmt)
             print(f"  OK: {name}")
