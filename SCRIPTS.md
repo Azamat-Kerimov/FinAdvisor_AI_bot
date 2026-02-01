@@ -118,9 +118,39 @@ chmod +x scripts/*.sh
 
 ---
 
+## Деплой на сервере (systemd)
+
+Если при `systemctl restart` вы видите **502 Bad Gateway** или в логах **python: not found** — systemd запускает сервисы без venv, в PATH нет `python`. Нужны unit-файлы с **полным путём** к Python в venv.
+
+В репозитории есть готовые unit-файлы в папке **`deploy/`**:
+- `deploy/finadvisor-api.service`
+- `deploy/finadvisorbot.service`
+
+В них указан путь `/root/FinAdvisor_AI_bot/venv/bin/python3`. Если проект у вас в другой директории — отредактируйте путь в обоих файлах.
+
+**Установка и перезапуск:**
+
+```bash
+sudo cp deploy/finadvisor-api.service deploy/finadvisorbot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart finadvisor-api.service
+sudo systemctl restart finadvisorbot.service
+sudo systemctl status finadvisor-api.service finadvisorbot.service
+```
+
+Дальше после обновления кода достаточно:
+```bash
+sudo systemctl restart finadvisor-api.service
+sudo systemctl restart finadvisorbot.service
+```
+
+Подробнее: **`deploy/README.md`**.
+
+---
+
 ## Деплой на finadvisor-ai.ru
 
-1. **Соберите фронт** на сервере или локально и скопируйте папку `frontend/dist` на сервер в ту же директорию, откуда запускается API (рядом с `api.py`).
-2. **Запустите API** из корня проекта: `python -m uvicorn api:app --host 0.0.0.0 --port 8000`. Убедитесь, что в рабочей директории есть `frontend/dist/index.html`.
-3. **Настройте nginx** (или другой прокси): запросы на `https://finadvisor-ai.ru` должны проксироваться на `http://127.0.0.1:8000`. API сам отдаёт React по `/` и статику из `/assets/`.
-4. **Запустите бота** в отдельном процессе (systemd/screen): `python bot.py`. В `.env` на сервере должен быть `WEB_APP_URL=https://finadvisor-ai.ru`.
+1. **Соберите фронт** на сервере: `./scripts/build_frontend.sh`. В `frontend/dist` появятся `index.html` и `assets/`.
+2. **Настройте systemd** по инструкции выше (unit-файлы из `deploy/` с полным путём к venv).
+3. **Настройте nginx**: запросы на `https://finadvisor-ai.ru` проксировать на `http://127.0.0.1:8000`. API отдаёт React по `/` и статику по `/assets/`.
+4. В `.env` на сервере: `WEB_APP_URL=https://finadvisor-ai.ru`.
