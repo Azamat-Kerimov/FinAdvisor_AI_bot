@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Применить миграции 002 и 003 к БД.
+Применить миграцию 004 к БД (002, 003 уже применены).
 Требует: DATABASE_URL в .env или в окружении.
 Запуск: python scripts/run_migrations.py
 """
@@ -32,7 +32,7 @@ async def main():
 
     conn = await asyncpg.connect(db_url)
     try:
-        for name in ["002_categories.sql", "003_transactions_category_id.sql"]:
+        for name in ["004_category_mapping_type.sql"]:
             path = os.path.join(MIGRATIONS_DIR, name)
             if not os.path.exists(path):
                 print(f"Пропуск (файл не найден): {name}")

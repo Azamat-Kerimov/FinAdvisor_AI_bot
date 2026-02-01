@@ -289,28 +289,33 @@ async def _get_category_id_by_name(conn, name: str) -> int | None:
     return row["id"] if row else None
 
 
-async def _resolve_bank_category_to_id(conn, bank_category: str, amount: float) -> int:
+async def _resolve_bank_category_to_id(
+    conn, bank_category: str, amount: float, is_expense_row: bool | None = None
+) -> int:
     """
-    Резолв категории банка (Сбер/Т-Банк) в category_id.
-    Если маппинга нет — добавляем в category_mapping с «Прочие доходы» или «Прочие расходы».
+    Резолв категории банка (Сбер/Т-Банк) в category_id по маппингу (bank_category + bank_category_type).
+    is_expense_row: True = расход, False = доход, None = по знаку amount.
     """
     key = (bank_category or "").strip().lower()
-    if not key or key in ("прочее", "прочие", "прочие расходы", "прочие доходы"):
-        fallback = "Прочие расходы" if amount < 0 else "Прочие доходы"
+    if not key:
+        fallback = "Прочие расходы" if (is_expense_row if is_expense_row is not None else amount < 0) else "Прочие доходы"
         row = await conn.fetchrow("SELECT id FROM categories WHERE name = $1", fallback)
         return row["id"] if row else 1
+    cat_type = "Расход" if (is_expense_row if is_expense_row is not None else amount < 0) else "Доход"
     row = await conn.fetchrow(
-        "SELECT category_id FROM category_mapping WHERE LOWER(TRIM(bank_category)) = $1",
-        key
+        """SELECT category_id FROM category_mapping
+           WHERE LOWER(TRIM(bank_category)) = $1 AND bank_category_type = $2""",
+        key, cat_type
     )
     if row:
         return row["category_id"]
-    fallback_name = "Прочие расходы" if amount < 0 else "Прочие доходы"
+    fallback_name = "Прочие расходы" if cat_type == "Расход" else "Прочие доходы"
     fallback_row = await conn.fetchrow("SELECT id FROM categories WHERE name = $1", fallback_name)
     fallback_id = fallback_row["id"] if fallback_row else 1
     await conn.execute(
-        "INSERT INTO category_mapping (bank_category, category_id) VALUES ($1, $2) ON CONFLICT (bank_category) DO NOTHING",
-        key, fallback_id
+        """INSERT INTO category_mapping (bank_category, category_id, bank_category_type)
+           VALUES ($1, $2, $3) ON CONFLICT (bank_category, bank_category_type) DO NOTHING""",
+        key, fallback_id, cat_type
     )
     return fallback_id
 
@@ -769,6 +774,17 @@ async def _parse_excel_structured(file_path: str, conn) -> tuple[list[dict], lis
         if amount is None:
             errors.append(f"Строка {idx}: не удалось определить сумму")
             continue
+        # Тип строки по колонкам (до изменения знака): для маппинга «Прочее» и др. по bank_category_type
+        is_expense_row = None
+        if col_type is not None:
+            type_val = _cell(row, col_type).lower()
+            is_expense_row = "списание" in type_val or "расход" in type_val
+        elif col_expense is not None and col_income is not None:
+            inc = _amount_cell(row, col_income) or 0
+            exp = _amount_cell(row, col_expense) or 0
+            is_expense_row = exp > 0 and inc == 0
+        else:
+            is_expense_row = amount < 0 if amount else None
         # Сбер: сумма в выгрузке положительная, тип операции «Списание» — делаем расход отрицательным
         if col_type is not None and amount and amount > 0:
             type_val = _cell(row, col_type).lower()
@@ -781,7 +797,7 @@ async def _parse_excel_structured(file_path: str, conn) -> tuple[list[dict], lis
                 errors.append(f"Строка {idx}: пропущена (похоже на код, не сумма): {amount}")
             continue
         bank_category = _cell(row, col_category) if col_category is not None else ""
-        category_id = await _resolve_bank_category_to_id(conn, bank_category, amount)
+        category_id = await _resolve_bank_category_to_id(conn, bank_category, amount, is_expense_row=is_expense_row)
         transactions.append({
             "date": date_str,
             "amount": amount,
