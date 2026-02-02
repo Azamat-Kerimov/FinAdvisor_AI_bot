@@ -8,6 +8,32 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# Проверка наличия всех файлов, от которых зависит сборка (до npm install)
+REQUIRED_FILES="
+  frontend/src/components/transactions/TransactionsScreen.tsx
+  frontend/src/components/capital/CapitalScreen.tsx
+  frontend/src/components/consultation/ConsultationScreen.tsx
+  frontend/src/components/dashboard/ExpenseChart.tsx
+  frontend/src/components/dashboard/GoalsSummary.tsx
+"
+MISSING=""
+for f in $REQUIRED_FILES; do
+  if [ ! -f "$f" ]; then
+    MISSING="${MISSING}\n  - $f"
+  fi
+done
+if [ -n "$MISSING" ]; then
+  echo "Ошибка: отсутствуют файлы фронтенда:$MISSING"
+  echo ""
+  echo "Добавьте их в репозиторий с локальной машины:"
+  echo "  git add frontend/src/components/"
+  echo "  git commit -m 'Add missing frontend components'"
+  echo "  git push"
+  echo "Затем на сервере: git pull && ./scripts/build_frontend.sh"
+  exit 1
+fi
+echo "Проверка файлов: все на месте."
+
 # Ограничение памяти для Node (MB) — снижает риск OOM Killer на слабых серверах
 export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=768"
 
