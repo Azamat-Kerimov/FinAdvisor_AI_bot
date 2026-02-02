@@ -6,8 +6,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/FinAdvisor_AI_bot
-# Скрипт сам находит venv или .venv в каталоге проекта
-ExecStart=/root/FinAdvisor_AI_bot/scripts/run_api_venv.sh
+ExecStart=/root/FinAdvisor_AI_bot/venv/bin/python -m uvicorn api:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
 EnvironmentFile=/root/FinAdvisor_AI_bot/.env

@@ -23,7 +23,20 @@ sudo systemctl start finadvisor-api.service finadvisorbot.service
 
 ## 2. После каждого обновления кода
 
-На сервере, **из корня проекта**:
+На сервере, **из корня проекта**. VPS — только цель деплоя: код только из GitHub, локальные правки не сохраняем (см. **PROJECT_RULES.md**).
+
+**Предпочтительно** (приводит репозиторий в точное состояние GitHub, без конфликтов):
+
+```bash
+cd /root/FinAdvisor_AI_bot
+git fetch
+git reset --hard origin/main
+git clean -fd -e .env
+chmod +x scripts/*.sh
+./scripts/deploy.sh
+```
+
+Если используете обычный pull:
 
 ```bash
 cd /root/FinAdvisor_AI_bot
@@ -31,13 +44,12 @@ git pull
 ./scripts/deploy.sh
 ```
 
-Если `git pull` пишет *Your local changes ... would be overwritten by merge*:
+Если git сообщает о локальных изменениях — **не сохраняйте их**, приведите репозиторий к GitHub:
 
 ```bash
-cd /root/FinAdvisor_AI_bot
-git restore scripts/
+git restore .
 git pull
-./scripts/deploy.sh
+# или: git fetch && git reset --hard origin/main && git clean -fd -e .env
 ```
 
 Проверка логов:

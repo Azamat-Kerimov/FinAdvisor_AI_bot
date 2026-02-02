@@ -6,8 +6,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/FinAdvisor_AI_bot
-# Скрипт сам находит venv или .venv в каталоге проекта
-ExecStart=/root/FinAdvisor_AI_bot/scripts/run_bot_venv.sh
+ExecStart=/root/FinAdvisor_AI_bot/venv/bin/python bot.py
 Restart=always
 RestartSec=5
 EnvironmentFile=/root/FinAdvisor_AI_bot/.env
