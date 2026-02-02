@@ -58,6 +58,17 @@ cd /root/FinAdvisor_AI_bot
 sudo systemctl restart finadvisor-api.service
 ```
 
+Перед сборкой скрипт проверяет наличие всех нужных файлов фронтенда. Если видите **«Ошибка: отсутствуют файлы»** — эти файлы не попали в репозиторий. На **локальной машине** (где правите код) выполните:
+
+```bash
+git add frontend/src/components/
+git status
+git commit -m "Add missing frontend components"
+git push
+```
+
+Затем на сервере: `git pull` и снова `./scripts/build_frontend.sh`. Локально перед пушем можно проверить: `./scripts/check_frontend_files.sh`.
+
 **Вариант Б — сборка на своём ПК, заливка dist на сервер** (если на сервере сборка зависает или «Killed»):
 
 1. На своём ПК (в клонированном репозитории):
@@ -78,5 +89,6 @@ sudo systemctl restart finadvisor-api.service
 | Скрипт | Назначение |
 |--------|------------|
 | `scripts/deploy.sh` | После git pull — перезапуск API и бота |
-| `scripts/build_frontend.sh` | Только когда меняли frontend — сборка и рестарт API |
+| `scripts/build_frontend.sh` | Сборка фронта (сначала проверка файлов, затем npm install/build) |
+| `scripts/check_frontend_files.sh` | Проверка наличия всех файлов фронтенда (запускать локально перед push) |
 | `scripts/run_bot_venv.sh`, `scripts/run_api_venv.sh` | Вызываются systemd, вручную не запускать |
