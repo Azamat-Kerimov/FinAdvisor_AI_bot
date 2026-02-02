@@ -2,6 +2,8 @@ import { PageHeader } from '@/components/layout/PageHeader';
 import { StatsCards } from './StatsCards';
 import { WelcomeCard } from './WelcomeCard';
 import { InsightBlock } from './InsightBlock';
+import { ExpenseChart } from './ExpenseChart';
+import { GoalsSummary } from './GoalsSummary';
 import { useStats } from '@/hooks/useStats';
 
 /** Текущий месяц в формате «1–30 июля» для подписи. Масштабирование: получать с API или из выбора периода. */
@@ -31,6 +33,10 @@ export function DashboardScreen() {
       {!loading && data && (
         <>
           <StatsCards data={data} periodLabel={currentMonthLabel()} />
+          <div className="grid grid-cols-1 gap-4 mt-4">
+            <ExpenseChart data={data} />
+            <GoalsSummary />
+          </div>
           <InsightBlock data={data} />
         </>
       )}
