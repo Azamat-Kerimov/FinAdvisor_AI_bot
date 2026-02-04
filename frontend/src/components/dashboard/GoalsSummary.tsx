@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { Card } from '@/components/ui/Card';
 import { apiRequest } from '@/lib/api';
 
 interface GoalInsight {
@@ -14,7 +13,11 @@ interface GoalInsight {
   monthly_savings: number;
 }
 
-export function GoalsSummary() {
+interface GoalsSummaryProps {
+  variant?: 'light' | 'dark';
+}
+
+export function GoalsSummary({ variant = 'light' }: GoalsSummaryProps) {
   const [data, setData] = useState<GoalInsight | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -31,28 +34,44 @@ export function GoalsSummary() {
     return new Intl.NumberFormat('ru-RU').format(Math.round(value));
   }
 
+  const isDark = variant === 'dark';
+
   return (
-    <Card className="p-4">
-      <h3 className="text-sm font-semibold text-slate-900 mb-3">Прогресс по целям</h3>
+    <div
+      className={
+        isDark
+          ? 'rounded-2xl bg-slate-900 px-4 py-4'
+          : 'rounded-card bg-white p-4 shadow-card border border-border/80'
+      }
+    >
+      <h3
+        className={
+          isDark ? 'text-sm font-semibold text-slate-300 mb-3' : 'text-sm font-semibold text-slate-900 mb-3'
+        }
+      >
+        Прогресс по целям
+      </h3>
       <div className="space-y-3">
         {data.goals.slice(0, 3).map((goal) => {
           const progress = goal.target > 0 ? (goal.current / goal.target) * 100 : 0;
           return (
             <div key={goal.id} className="space-y-1">
               <div className="flex justify-between text-sm">
-                <span className="text-slate-700 font-medium">{goal.title}</span>
-                <span className="text-slate-600">
+                <span className={isDark ? 'font-medium text-white' : 'font-medium text-slate-700'}>
+                  {goal.title}
+                </span>
+                <span className={isDark ? 'text-slate-400' : 'text-slate-600'}>
                   {formatMoney(goal.current)} / {formatMoney(goal.target)} ₽
                 </span>
               </div>
-              <div className="w-full bg-slate-200 rounded-full h-2">
+              <div className={`w-full rounded-full h-2 ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`}>
                 <div
-                  className="bg-slate-800 h-2 rounded-full transition-all"
+                  className={`rounded-full h-2 transition-all ${isDark ? 'bg-blue-500' : 'bg-slate-800'}`}
                   style={{ width: `${Math.min(100, progress)}%` }}
                 />
               </div>
               {goal.months_to_goal !== null && goal.months_to_goal > 0 && (
-                <p className="text-xs text-muted">
+                <p className={isDark ? 'text-xs text-slate-400' : 'text-xs text-muted'}>
                   Осталось: {formatMoney(goal.remaining)} ₽ (~{goal.months_to_goal} мес.)
                 </p>
               )}
@@ -60,6 +79,6 @@ export function GoalsSummary() {
           );
         })}
       </div>
-    </Card>
+    </div>
   );
 }
