@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -19,6 +19,16 @@ interface ConsultationResponse {
   requests_used?: number;
 }
 
+interface ConsultationHistoryItem {
+  content: string;
+  date: string;
+}
+
+interface MessageResponse {
+  goals_added: Array<{ title: string; target: number }>;
+  reply: string;
+}
+
 export function ConsultationScreen() {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,21 +39,22 @@ export function ConsultationScreen() {
   const [loadingConsultation, setLoadingConsultation] = useState(false);
   const [consultationError, setConsultationError] = useState<string | null>(null);
   const [requestsUsed, setRequestsUsed] = useState<number>(0);
+  const [consultationLimit, setConsultationLimit] = useState<string>('');
+  
+  const [history, setHistory] = useState<ConsultationHistoryItem[]>([]);
+  const [selectedHistoryIndex, setSelectedHistoryIndex] = useState<number | null>(null);
   
   const [goalTitle, setGoalTitle] = useState('');
   const [goalTarget, setGoalTarget] = useState('');
   const [goalDescription, setGoalDescription] = useState('');
   const [message, setMessage] = useState('');
-
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [sendingMessage, setSendingMessage] = useState(false);
 
   useEffect(() => {
     loadGoals();
+    loadHistory();
+    loadConsultationLimit();
   }, []);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [consultation]);
 
   async function loadGoals() {
     try {
@@ -53,6 +64,29 @@ export function ConsultationScreen() {
       console.error('Ошибка загрузки целей:', e);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadHistory() {
+    try {
+      const data = await apiRequest<ConsultationHistoryItem[]>('/api/consultation/history');
+      setHistory(data);
+    } catch (e) {
+      console.error('Ошибка загрузки истории:', e);
+    }
+  }
+
+  async function loadConsultationLimit() {
+    try {
+      const data = await apiRequest<ConsultationResponse>('/api/consultation');
+      setRequestsUsed(data.requests_used || 0);
+      if (data.limit_reached) {
+        setConsultationLimit(`Лимит консультаций: ${data.requests_used || 0}/5`);
+      } else {
+        setConsultationLimit(`Консультаций использовано: ${data.requests_used || 0}/5`);
+      }
+    } catch (e) {
+      console.error('Ошибка загрузки лимита:', e);
     }
   }
 
@@ -121,17 +155,40 @@ export function ConsultationScreen() {
   async function handleGetConsultation() {
     setLoadingConsultation(true);
     setConsultationError(null);
+    setConsultation(null);
     try {
       const data = await apiRequest<ConsultationResponse>('/api/consultation');
-      if (data.error || data.limit_reached) {
+      setRequestsUsed(data.requests_used || 0);
+      
+      if (data.limit_reached) {
         setConsultationError(data.error || `Лимит консультаций исчерпан (${data.requests_used}/5)`);
         setConsultation(null);
+        setConsultationLimit(`Лимит консультаций: ${data.requests_used || 0}/5`);
+      } else if (data.consultation) {
+        // Проверяем, не является ли это сообщением об ошибке
+        const consultationText = data.consultation;
+        if (consultationText.includes('⏱️') || consultationText.includes('❌') || consultationText.includes('ошибка')) {
+          setConsultationError(consultationText);
+          setConsultation(null);
+        } else {
+          setConsultation(consultationText);
+          setConsultationError(null);
+          loadHistory();
+        }
+        setConsultationLimit(`Консультаций использовано: ${data.requests_used || 0}/5`);
+      } else if (data.error) {
+        setConsultationError(data.error);
+        setConsultation(null);
+        setConsultationLimit(`Консультаций использовано: ${data.requests_used || 0}/5`);
       } else {
-        setConsultation(data.consultation || null);
-        setRequestsUsed(data.requests_used || 0);
+        setConsultationError('Не удалось получить консультацию');
+        setConsultation(null);
       }
     } catch (e) {
-      setConsultationError(e instanceof Error ? e.message : String(e));
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      setConsultationError(errorMsg.includes('timeout') || errorMsg.includes('Timeout')
+        ? '⏱️ Генерация консультации заняла слишком много времени. Попробуйте позже.'
+        : `Ошибка: ${errorMsg}`);
       setConsultation(null);
     } finally {
       setLoadingConsultation(false);
@@ -140,26 +197,47 @@ export function ConsultationScreen() {
 
   async function handleSendMessage(e: React.FormEvent) {
     e.preventDefault();
-    if (!message.trim()) return;
+    const msg = message.trim();
+    if (!msg) return;
 
-    setLoadingConsultation(true);
+    setSendingMessage(true);
     try {
-      await apiRequest('/api/consultation/message', {
+      const response = await apiRequest<MessageResponse>('/api/consultation/message', {
         method: 'POST',
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message: msg }),
       });
+      
       setMessage('');
-      loadGoals();
-      alert('Сообщение отправлено. Цели обновлены.');
+      await loadGoals();
+      
+      if (response.goals_added && response.goals_added.length > 0) {
+        const goalsList = response.goals_added
+          .map(g => `${g.title} — ${Math.round(g.target).toLocaleString('ru-RU')} ₽`)
+          .join(', ');
+        alert(`Цели добавлены: ${goalsList}`);
+      } else {
+        alert(response.reply || 'Сообщение отправлено.');
+      }
     } catch (e) {
       alert('Ошибка: ' + (e instanceof Error ? e.message : String(e)));
     } finally {
-      setLoadingConsultation(false);
+      setSendingMessage(false);
     }
   }
 
   function formatMoney(value: number): string {
     return new Intl.NumberFormat('ru-RU').format(Math.round(value));
+  }
+
+  function formatDate(dateStr: string): string {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('ru-RU', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   }
 
   return (
@@ -232,19 +310,12 @@ export function ConsultationScreen() {
       )}
 
       <Card className="p-4 mb-4">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-bold text-slate-900">Цели</h2>
-          {requestsUsed > 0 && (
-            <span className="text-xs text-muted">
-              Консультаций: {requestsUsed}/5
-            </span>
-          )}
-        </div>
+        <h2 className="text-lg font-bold text-slate-900 mb-3">Цели</h2>
         {loading ? (
           <div className="text-center py-4 text-muted text-sm">Загрузка...</div>
         ) : goals.length === 0 ? (
           <div className="text-center py-4 text-muted text-sm">
-            Нет целей. Добавьте цель выше.
+            Нет целей. Добавьте цель выше или отправьте сообщение ИИ.
           </div>
         ) : (
           <div className="space-y-3">
@@ -288,8 +359,34 @@ export function ConsultationScreen() {
         )}
       </Card>
 
+      {/* Блок "Отправить сообщение" - перемещён выше */}
       <Card className="p-4 mb-4">
-        <h2 className="text-lg font-bold text-slate-900 mb-3">Консультация ИИ</h2>
+        <h2 className="text-lg font-bold text-slate-900 mb-3">Отправить сообщение</h2>
+        <form onSubmit={handleSendMessage} className="space-y-2">
+          <textarea
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            className="w-full px-3 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400"
+            placeholder="Например: Хочу накопить 500 000 на машину за год или оставьте пустым"
+            rows={3}
+          />
+          <Button type="submit" variant="primary" disabled={sendingMessage || !message.trim()} className="w-full">
+            {sendingMessage ? 'Отправка...' : 'Отправить'}
+          </Button>
+        </form>
+        <p className="text-xs text-muted mt-2">
+          ИИ извлечёт цели из сообщения и добавит их автоматически. Для пассивного дохода ИИ рассчитает необходимый капитал.
+        </p>
+      </Card>
+
+      {/* Блок "Консультация ИИ" */}
+      <Card className="p-4 mb-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-bold text-slate-900">Консультация ИИ</h2>
+          {consultationLimit && (
+            <span className="text-xs text-slate-500">{consultationLimit}</span>
+          )}
+        </div>
         <Button
           variant="primary"
           onClick={handleGetConsultation}
@@ -312,24 +409,47 @@ export function ConsultationScreen() {
         )}
       </Card>
 
-      <Card className="p-4">
-        <h2 className="text-lg font-bold text-slate-900 mb-3">Отправить сообщение</h2>
-        <form onSubmit={handleSendMessage} className="space-y-2">
-          <textarea
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            className="w-full px-3 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400"
-            placeholder="Например: Хочу накопить 500 000 на машину за год"
-            rows={3}
-          />
-          <Button type="submit" variant="primary" disabled={loadingConsultation || !message.trim()} className="w-full">
-            Отправить
-          </Button>
-        </form>
-        <p className="text-xs text-muted mt-2">
-          ИИ извлечёт цели из сообщения и добавит их автоматически.
-        </p>
-      </Card>
+      {/* История консультаций */}
+      {history.length > 0 && (
+        <Card className="p-4">
+          <h2 className="text-lg font-bold text-slate-900 mb-3">История консультаций</h2>
+          <div className="space-y-2">
+            {history.map((item, index) => (
+              <button
+                key={index}
+                type="button"
+                onClick={() => setSelectedHistoryIndex(selectedHistoryIndex === index ? null : index)}
+                className={`w-full rounded-lg border-2 p-3 text-left transition-colors ${
+                  selectedHistoryIndex === index
+                    ? 'border-blue-500 bg-blue-50'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-slate-900">
+                    Консультация от {formatDate(item.date)}
+                  </span>
+                  <svg
+                    className={`h-4 w-4 text-slate-400 transition-transform ${
+                      selectedHistoryIndex === index ? 'rotate-180' : ''
+                    }`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+                {selectedHistoryIndex === index && (
+                  <div className="mt-3 pt-3 border-t border-slate-200 text-sm text-slate-700 whitespace-pre-wrap">
+                    {item.content}
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
+        </Card>
+      )}
     </>
   );
 }
