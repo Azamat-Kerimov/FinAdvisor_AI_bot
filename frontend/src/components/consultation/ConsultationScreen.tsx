@@ -38,7 +38,7 @@ export function ConsultationScreen() {
   const [consultation, setConsultation] = useState<string | null>(null);
   const [loadingConsultation, setLoadingConsultation] = useState(false);
   const [consultationError, setConsultationError] = useState<string | null>(null);
-  const [requestsUsed, setRequestsUsed] = useState<number>(0);
+  const [, setRequestsUsed] = useState<number>(0);
   const [consultationLimit, setConsultationLimit] = useState<string>('');
   
   const [history, setHistory] = useState<ConsultationHistoryItem[]>([]);

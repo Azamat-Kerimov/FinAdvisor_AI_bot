@@ -25,13 +25,6 @@ export function DonutChart({ income, expense, balance, size = 200 }: DonutChartP
     return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
   }
 
-  function describeArc(cx: number, cy: number, R: number, startAngle: number, endAngle: number) {
-    const start = polarToCartesian(cx, cy, R, endAngle);
-    const end = polarToCartesian(cx, cy, R, startAngle);
-    const largeArc = endAngle - startAngle > 180 ? 1 : 0;
-    return `M ${start.x} ${start.y} A ${R} ${R} 0 ${largeArc} 1 ${end.x} ${end.y}`;
-  }
-
   function segmentPath(a0Deg: number, a1Deg: number): string {
     const startOuter = polarToCartesian(center, center, R, a0Deg);
     const endOuter = polarToCartesian(center, center, R, a1Deg);
