@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, type MouseEvent } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiRequest } from '@/lib/api';
@@ -406,7 +406,8 @@ export function CapitalScreen() {
       {/* Pie Chart Modal */}
       {showPieChart && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowPieChart(null)}>
-          <Card className="max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+          <div className="max-w-md w-full" onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}>
+            <Card className="p-6">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-900">
                 {showPieChart === 'assets' ? 'Активы по типам' : 'Пассивы по типам'}
@@ -424,7 +425,8 @@ export function CapitalScreen() {
               total={showPieChart === 'assets' ? assetsTotal : liabilitiesTotal}
               title={showPieChart === 'assets' ? 'Активы' : 'Пассивы'}
             />
-          </Card>
+            </Card>
+          </div>
         </div>
       )}
 
@@ -446,7 +448,8 @@ export function CapitalScreen() {
       {/* Модальное окно добавления/редактирования */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => resetForm()}>
-          <Card className="max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+          <div className="max-w-md w-full" onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}>
+            <Card className="p-6">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-900">
                 {editingId ? 'Редактировать' : editingIsAsset ? 'Добавить актив' : 'Добавить пассив'}
@@ -569,7 +572,8 @@ export function CapitalScreen() {
                 </Button>
               </div>
             </form>
-          </Card>
+            </Card>
+          </div>
         </div>
       )}
 

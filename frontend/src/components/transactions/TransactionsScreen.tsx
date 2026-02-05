@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, type MouseEvent } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiRequest } from '@/lib/api';
@@ -287,20 +287,6 @@ export function TransactionsScreen() {
     return new Intl.NumberFormat('ru-RU').format(Math.round(value));
   }
 
-  function formatDateShort(dateStr: string): string {
-    const date = new Date(dateStr);
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    
-    if (date.toDateString() === today.toDateString()) {
-      return 'Сегодня';
-    }
-    if (date.toDateString() === yesterday.toDateString()) {
-      return 'Вчера';
-    }
-    return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
-  }
 
   function getDayTotal(date: string): number {
     return groupedTransactions[date]?.reduce((sum, tx) => sum + tx.amount, 0) || 0;
@@ -489,7 +475,8 @@ export function TransactionsScreen() {
       {/* Pie Chart Modal */}
       {showPieChart && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowPieChart(null)}>
-          <Card className="max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+          <div className="max-w-md w-full" onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}>
+            <Card className="p-6">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-900">
                 {showPieChart === 'expense' ? 'Расходы по категориям' : 'Доходы по категориям'}
@@ -507,7 +494,8 @@ export function TransactionsScreen() {
               total={showPieChart === 'expense' ? expenseTotal : incomeTotal}
               title={showPieChart === 'expense' ? 'Расходы' : 'Доходы'}
             />
-          </Card>
+            </Card>
+          </div>
         </div>
       )}
 
@@ -549,7 +537,8 @@ export function TransactionsScreen() {
       {/* Модальное окно загрузки */}
       {showUploadModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowUploadModal(false)}>
-          <Card className="max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+          <div className="max-w-md w-full" onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}>
+            <Card className="p-6">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-900">Загрузить данные из Банка</h2>
               <button
@@ -582,14 +571,16 @@ export function TransactionsScreen() {
                 )}
               </div>
             </label>
-          </Card>
+            </Card>
+          </div>
         </div>
       )}
 
       {/* Модальное окно добавления */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => resetForm()}>
-          <Card className="max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+          <div className="max-w-md w-full" onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}>
+            <Card className="p-6">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-900">
                 {editingId ? 'Редактировать транзакцию' : 'Добавить транзакцию'}
@@ -697,7 +688,8 @@ export function TransactionsScreen() {
                 </Button>
               </div>
             </form>
-          </Card>
+            </Card>
+          </div>
         </div>
       )}
 
