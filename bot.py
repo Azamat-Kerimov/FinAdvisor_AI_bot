@@ -5,7 +5,7 @@ import os
 import sys
 import asyncio
 import asyncpg
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -109,25 +109,17 @@ def format_premium_status(premium_until: Optional[datetime]) -> str:
 
 
 def get_main_keyboard(has_premium: bool = False) -> InlineKeyboardMarkup:
-    """Главное меню с кнопкой WebApp и оплатой"""
+    """Главное меню: WebApp и кнопка подписки всегда доступны."""
     buttons = [
         [InlineKeyboardButton(
             text="🚀 Открыть FinAdvisor",
             web_app=WebAppInfo(url=WEB_APP_URL)
+        )],
+        [InlineKeyboardButton(
+            text="💳 Продлить подписку" if has_premium else "💳 Оформить подписку",
+            callback_data="subscribe_from_main"
         )]
     ]
-    
-    # Если платежи настроены: без подписки — «Оформить», с подпиской — «Продлить»
-    if PAYMENT_PROVIDER_TOKEN:
-        if has_premium:
-            buttons.append([
-                InlineKeyboardButton(text="💳 Продлить подписку", callback_data="subscribe_from_main")
-            ])
-        else:
-            buttons.append([
-                InlineKeyboardButton(text="💳 Оформить подписку", callback_data="subscribe_from_main")
-            ])
-    
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -422,19 +414,31 @@ async def global_error_handler(event: ErrorEvent):
         pass
 
 
-# Ценность 1 и 4: еженедельный отчёт и напоминание, алерты по долгам
-async def send_weekly_reports():
-    """Еженедельный отчёт: потрачено за 7 дней, топ категорий + кнопка «Открыть FinAdvisor»."""
+# Ежемесячный отчёт: 1-го числа за предыдущий месяц
+MONTH_NAMES = (
+    "январь", "февраль", "март", "апрель", "май", "июнь",
+    "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"
+)
+
+
+async def send_monthly_reports():
+    """Месячный отчёт за предыдущий месяц: статистика расходов и рекомендация или уведомление обновить данные."""
     if not db:
         return
-    week_ago = datetime.now() - timedelta(days=7)
+    today = date.today()
+    first_this_month = today.replace(day=1)
+    last_prev = first_this_month - timedelta(days=1)
+    first_prev = last_prev.replace(day=1)
+    period_start = datetime.combine(first_prev, datetime.min.time())
+    period_end = datetime.combine(last_prev, datetime.max.time())
+    month_label = f"{MONTH_NAMES[first_prev.month - 1]} {first_prev.year}"
+
     async with db.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT u.tg_id, u.id
             FROM users u
-            WHERE u.premium_until > NOW()
-            AND u.tg_id IS NOT NULL
+            WHERE u.premium_until > NOW() AND u.tg_id IS NOT NULL
             """
         )
         for row in rows:
@@ -445,25 +449,36 @@ async def send_weekly_reports():
                     """
                     SELECT category, SUM(ABS(amount)) as total
                     FROM transactions
-                    WHERE user_id=$1 AND amount < 0 AND created_at >= $2
+                    WHERE user_id=$1 AND amount < 0
+                      AND created_at >= $2 AND created_at <= $3
                     GROUP BY category ORDER BY total DESC LIMIT 5
                     """,
-                    user_id, week_ago
+                    user_id, period_start, period_end
                 )
                 total = sum(float(r["total"]) for r in tx_rows)
-                top = ", ".join(f"{r['category']}: {int(float(r['total'])):,} ₽".replace(",", " ") for r in tx_rows[:3])
-                text = (
-                    "📊 Недельный отчёт FinAdvisor\n\n"
-                    f"За последние 7 дней потрачено: {int(total):,} ₽\n".replace(",", " ")
-                    + (f"Топ: {top}\n\n" if top else "\n")
-                    + "Откройте приложение для деталей."
-                )
+                if not tx_rows or total <= 0:
+                    text = (
+                        f"📊 Месячный отчёт FinAdvisor за {month_label}\n\n"
+                        "За выбранный месяц операций не найдено. Обновите данные в приложении — так отчёты будут полезнее."
+                    )
+                else:
+                    top = ", ".join(
+                        f"{r['category']}: {int(float(r['total'])):,} ₽".replace(",", " ")
+                        for r in tx_rows[:3]
+                    )
+                    text = (
+                        f"📊 Месячный отчёт FinAdvisor за {month_label}\n\n"
+                        f"Расходы: {int(total):,} ₽\n".replace(",", " ")
+                        + (f"Топ категорий: {top}\n\n" if top else "\n")
+                        
+                    )
                 kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🚀 Открыть FinAdvisor", web_app=WebAppInfo(url=WEB_APP_URL))]
+                    [InlineKeyboardButton(text="🚀 Открыть FinAdvisor", web_app=WebAppInfo(url=WEB_APP_URL))],
+                    [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
                 ])
                 await bot.send_message(tg_id, text, reply_markup=kb)
             except Exception as e:
-                print(f"Weekly report to {tg_id}: {e}")
+                print(f"Monthly report to {tg_id}: {e}", file=sys.stderr, flush=True)
             await asyncio.sleep(0.05)
 
 
@@ -551,7 +566,7 @@ async def on_startup():
         msg = f"Ошибка подключения к БД: {e}. Проверьте DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD и что PostgreSQL запущен."
         print(msg, file=sys.stderr, flush=True)
         sys.exit(1)
-    scheduler.add_job(send_weekly_reports, "cron", day_of_week="mon", hour=10, minute=0)
+    scheduler.add_job(send_monthly_reports, "cron", day=1, hour=10, minute=0)
     scheduler.add_job(send_weekly_reminder, "cron", day_of_week="thu", hour=12, minute=0)
     scheduler.add_job(send_debt_reminder, "cron", day_of_week="sun", hour=18, minute=0)
     scheduler.start()
