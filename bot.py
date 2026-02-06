@@ -90,23 +90,33 @@ async def create_db_pool():
     )
 
 
-async def get_or_create_user(tg_id: int) -> tuple[int, bool]:
+async def get_or_create_user(tg_id: int, username: Optional[str] = None) -> tuple[int, bool]:
     """Получить или создать пользователя с 2 бесплатными месяцами
+    
+    Args:
+        tg_id: Telegram user ID
+        username: Telegram username (optional, обновляется если передан)
     
     Returns:
         tuple[int, bool]: (user_id, is_new_user)
     """
     async with db.acquire() as conn:
-        row = await conn.fetchrow("SELECT id, premium_until FROM users WHERE tg_id=$1", tg_id)
+        row = await conn.fetchrow("SELECT id, premium_until, username FROM users WHERE tg_id=$1", tg_id)
         if not row:
             # Новый пользователь - даем 2 бесплатных месяца
             free_months_until = datetime.now() + timedelta(days=60)
             await conn.execute(
                 "INSERT INTO users (tg_id, username, created_at, premium_until) VALUES ($1, $2, NOW(), $3)",
-                tg_id, None, free_months_until
+                tg_id, username, free_months_until
             )
             row = await conn.fetchrow("SELECT id, premium_until FROM users WHERE tg_id=$1", tg_id)
             return row['id'], True  # Возвращаем True если новый пользователь
+        # Если пользователь существует, но username пустой, а передан новый - обновляем
+        if username and (not row['username'] or row['username'] != username):
+            await conn.execute(
+                "UPDATE users SET username=$1 WHERE tg_id=$2",
+                username, tg_id
+            )
         return row['id'], False  # Существующий пользователь
 
 
@@ -135,7 +145,7 @@ def get_main_keyboard(has_premium: bool = False) -> InlineKeyboardMarkup:
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message):
     """Команда /start - создает пользователя и показывает статус"""
-    user_id, is_new_user = await get_or_create_user(m.from_user.id)
+    user_id, is_new_user = await get_or_create_user(m.from_user.id, m.from_user.username)
     
     # Получаем статус подписки
     async with db.acquire() as conn:
@@ -210,7 +220,7 @@ async def cmd_subscribe(m: types.Message):
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main(c: types.CallbackQuery):
     """Вернуться в главное меню"""
-    user_id, _ = await get_or_create_user(c.from_user.id)
+    user_id, _ = await get_or_create_user(c.from_user.id, c.from_user.username)
     
     async with db.acquire() as conn:
         row = await conn.fetchrow(
@@ -321,7 +331,7 @@ async def pre_checkout_handler(pre_checkout_query: types.PreCheckoutQuery):
     
         # Проверяем, что пользователь существует
     try:
-        user_id, _ = await get_or_create_user(pre_checkout_query.from_user.id)
+        user_id, _ = await get_or_create_user(pre_checkout_query.from_user.id, pre_checkout_query.from_user.username)
         await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
     except Exception as e:
         print(f"Error in pre_checkout: {e}")
@@ -355,7 +365,7 @@ async def successful_payment_handler(m: types.Message):
         return
     
     plan = SUBSCRIPTION_PLANS[plan_type]
-    user_id, _ = await get_or_create_user(m.from_user.id)
+    user_id, _ = await get_or_create_user(m.from_user.id, m.from_user.username)
     
     # Получаем текущую дату окончания подписки
     async with db.acquire() as conn:
@@ -390,7 +400,7 @@ async def successful_payment_handler(m: types.Message):
 @dp.message(Command("status"))
 async def cmd_status(m: types.Message):
     """Команда /status - показать статус подписки"""
-    user_id, _ = await get_or_create_user(m.from_user.id)
+    user_id, _ = await get_or_create_user(m.from_user.id, m.from_user.username)
     
     async with db.acquire() as conn:
         row = await conn.fetchrow(
