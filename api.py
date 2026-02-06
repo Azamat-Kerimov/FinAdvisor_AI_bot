@@ -440,6 +440,16 @@ async def auth_telegram(request: Request):
         raise HTTPException(status_code=401, detail=f"Authentication error: {str(e)}")
 
 
+@app.get("/yandex_eb705230b9f963ce.html", response_class=HTMLResponse)
+async def yandex_verification():
+    """Файл верификации домена для Яндекс.Вебмастер (должен лежать в frontend/dist после сборки)."""
+    path = os.path.join(_frontend_dist, "yandex_eb705230b9f963ce.html")
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    raise HTTPException(status_code=404, detail="File not found. Rebuild frontend so public/yandex_*.html is in dist.")
+
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     """Главная страница — React SPA из frontend/dist или заглушка"""
