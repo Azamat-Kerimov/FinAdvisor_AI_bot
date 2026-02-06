@@ -53,7 +53,7 @@ export function GoalsSummary({ variant = 'light' }: GoalsSummaryProps) {
       </h3>
       <div className="space-y-3">
         {data.goals.slice(0, 3).map((goal) => {
-          const progress = goal.target > 0 ? (goal.current / goal.target) * 100 : 0;
+          const progress = goal.target <= 0 ? 100 : Math.max(0, Math.min(100, (Math.max(0, goal.current) / goal.target) * 100));
           return (
             <div key={goal.id} className="space-y-1">
               <div className="flex justify-between text-sm">
@@ -67,7 +67,7 @@ export function GoalsSummary({ variant = 'light' }: GoalsSummaryProps) {
               <div className={`w-full rounded-full h-2 ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`}>
                 <div
                   className={`rounded-full h-2 transition-all ${isDark ? 'bg-blue-500' : 'bg-slate-800'}`}
-                  style={{ width: `${Math.min(100, progress)}%` }}
+                  style={{ width: `${progress}%` }}
                 />
               </div>
               {goal.months_to_goal !== null && goal.months_to_goal > 0 && (

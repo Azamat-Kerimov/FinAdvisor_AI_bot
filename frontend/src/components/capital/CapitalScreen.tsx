@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useMemo, type MouseEvent } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiRequest } from '@/lib/api';
-import { PieChart } from '../transactions/PieChart';
 
 interface Asset {
   asset_id: number;
@@ -20,8 +19,6 @@ interface Liability {
   monthly_payment: number;
   updated_at: string | null;
 }
-
-const ITEMS_PER_PAGE = 50;
 
 const ASSET_TYPES = [
   'Депозит',
@@ -48,12 +45,12 @@ export function CapitalScreen() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [liabilities, setLiabilities] = useState<Liability[]>([]);
   const [loading, setLoading] = useState(true);
-  const [currentPage, setCurrentPage] = useState(1);
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedTypeFilter, setSelectedTypeFilter] = useState<string | null>(null);
+  /** Фильтр списка: all | assets | liabilities — по клику на карточку Активы/Пассивы */
+  const [listFilter, setListFilter] = useState<'all' | 'assets' | 'liabilities'>('all');
+  const [expandedTypes, setExpandedTypes] = useState<Set<string>>(new Set());
   
   const [showAddModal, setShowAddModal] = useState(false);
-  const [showPieChart, setShowPieChart] = useState<'assets' | 'liabilities' | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingIsAsset, setEditingIsAsset] = useState<boolean>(true);
   
@@ -75,7 +72,6 @@ export function CapitalScreen() {
       ]);
       setAssets(assetsData);
       setLiabilities(liabilitiesData);
-      setCurrentPage(1);
     } catch (e) {
       console.error('Ошибка загрузки:', e);
     } finally {
@@ -107,7 +103,8 @@ export function CapitalScreen() {
 
   const filteredItems = useMemo(() => {
     let filtered = [...allItems];
-    
+    if (listFilter === 'assets') filtered = filtered.filter(i => i.isAsset);
+    if (listFilter === 'liabilities') filtered = filtered.filter(i => !i.isAsset);
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(
@@ -117,36 +114,19 @@ export function CapitalScreen() {
           item.amount.toString().includes(query)
       );
     }
-    
-    if (selectedTypeFilter) {
-      filtered = filtered.filter(item => item.type === selectedTypeFilter);
-    }
-    
     return filtered;
-  }, [allItems, searchQuery, selectedTypeFilter]);
+  }, [allItems, searchQuery, listFilter]);
 
-  const paginatedItems = useMemo(() => {
-    const start = (currentPage - 1) * ITEMS_PER_PAGE;
-    return filteredItems.slice(start, start + ITEMS_PER_PAGE);
-  }, [filteredItems, currentPage]);
-
-  const totalPages = Math.ceil(filteredItems.length / ITEMS_PER_PAGE);
-
-  const groupedItems = useMemo(() => {
-    const groups: Record<string, typeof allItems> = {};
-    paginatedItems.forEach(item => {
-      const date = item.updated_at
-        ? new Date(item.updated_at).toLocaleDateString('ru-RU', {
-            day: 'numeric',
-            month: 'long',
-            year: 'numeric',
-          })
-        : 'Без даты';
-      if (!groups[date]) groups[date] = [];
-      groups[date].push(item);
+  /** Группировка по типу (Актив/Пассив уже учтён в listFilter) для раскрывающихся блоков */
+  const itemsByType = useMemo(() => {
+    const groups: Record<string, typeof filteredItems> = {};
+    filteredItems.forEach(item => {
+      const t = item.type || 'Прочее';
+      if (!groups[t]) groups[t] = [];
+      groups[t].push(item);
     });
     return groups;
-  }, [paginatedItems]);
+  }, [filteredItems]);
 
   const assetsTotal = useMemo(() => {
     return assets.reduce((sum, a) => sum + (a.amount || 0), 0);
@@ -172,12 +152,6 @@ export function CapitalScreen() {
     return map;
   }, [liabilities]);
 
-  const uniqueTypes = useMemo(() => {
-    const types = new Set<string>();
-    assets.forEach(a => types.add(a.type));
-    liabilities.forEach(l => types.add(l.type));
-    return Array.from(types).sort();
-  }, [assets, liabilities]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -275,30 +249,25 @@ export function CapitalScreen() {
     return new Intl.NumberFormat('ru-RU').format(Math.round(value));
   }
 
-  function getDayTotal(date: string): number {
-    const items = groupedItems[date] || [];
-    const assetsSum = items.filter(i => i.isAsset).reduce((sum, i) => sum + i.amount, 0);
-    const liabilitiesSum = items.filter(i => !i.isAsset).reduce((sum, i) => sum + i.amount, 0);
-    return assetsSum - liabilitiesSum;
+  function toggleType(type: string) {
+    setExpandedTypes(prev => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      return next;
+    });
+  }
+
+  function formatDate(updatedAt: string | null): string {
+    if (!updatedAt) return '—';
+    return new Date(updatedAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
   }
 
   return (
     <>
       {/* Хедер */}
-      <div className="mb-4 flex items-center justify-between">
-        <button
-          type="button"
-          onClick={() => {}}
-          className="text-blue-600 text-sm font-medium"
-        >
-          Закрыть
-        </button>
+      <div className="mb-4">
         <h1 className="text-lg font-bold text-slate-900">Капитал</h1>
-        <button type="button" className="text-blue-600">
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-          </svg>
-        </button>
       </div>
 
       {/* Поиск */}
@@ -322,38 +291,14 @@ export function CapitalScreen() {
         </div>
       </div>
 
-      {/* Фильтр по категориям */}
-      <div className="mb-4">
-        <div className="relative">
-          <select
-            value={selectedTypeFilter || ''}
-            onChange={(e) => setSelectedTypeFilter(e.target.value || null)}
-            className="appearance-none rounded-full border border-slate-300 bg-white px-4 py-2 pr-8 text-sm focus:border-blue-500 focus:outline-none"
-          >
-            <option value="">Все категории</option>
-            {uniqueTypes.map(type => (
-              <option key={type} value={type}>{type}</option>
-            ))}
-          </select>
-          <svg
-            className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
-        </div>
-      </div>
-
-      {/* Карточки Активы/Пассивы */}
+      {/* Карточки Активы/Пассивы — подпись сверху, сумма слева, цветная полоса */}
       <div className="mb-4 grid grid-cols-2 gap-3">
         <Card
-          className="cursor-pointer p-4 transition-shadow hover:shadow-lg"
-          onClick={() => setShowPieChart(showPieChart === 'assets' ? null : 'assets')}
+          className={`cursor-pointer p-4 transition-shadow hover:shadow-lg ${listFilter === 'assets' ? 'ring-2 ring-green-500' : ''}`}
+          onClick={() => setListFilter(listFilter === 'assets' ? 'all' : 'assets')}
         >
-          <div className="text-2xl font-bold text-slate-900">{formatMoney(assetsTotal)} ₽</div>
-          <div className="mt-1 text-sm text-slate-600">Активы</div>
+          <div className="text-sm text-slate-600">Активы</div>
+          <div className="mt-1 text-2xl font-bold text-slate-900">{formatMoney(assetsTotal)} ₽</div>
           <div className="mt-2 flex h-1.5 gap-0.5 overflow-hidden rounded">
             {Object.entries(assetsByType)
               .sort((a, b) => b[1] - a[1])
@@ -376,11 +321,11 @@ export function CapitalScreen() {
         </Card>
 
         <Card
-          className="cursor-pointer p-4 transition-shadow hover:shadow-lg"
-          onClick={() => setShowPieChart(showPieChart === 'liabilities' ? null : 'liabilities')}
+          className={`cursor-pointer p-4 transition-shadow hover:shadow-lg ${listFilter === 'liabilities' ? 'ring-2 ring-red-500' : ''}`}
+          onClick={() => setListFilter(listFilter === 'liabilities' ? 'all' : 'liabilities')}
         >
-          <div className="text-2xl font-bold text-slate-900">{formatMoney(liabilitiesTotal)} ₽</div>
-          <div className="mt-1 text-sm text-slate-600">Пассивы</div>
+          <div className="text-sm text-slate-600">Пассивы</div>
+          <div className="mt-1 text-2xl font-bold text-slate-900">{formatMoney(liabilitiesTotal)} ₽</div>
           <div className="mt-2 flex h-1.5 gap-0.5 overflow-hidden rounded">
             {Object.entries(liabilitiesByType)
               .sort((a, b) => b[1] - a[1])
@@ -403,33 +348,6 @@ export function CapitalScreen() {
         </Card>
       </div>
 
-      {/* Pie Chart Modal */}
-      {showPieChart && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowPieChart(null)}>
-          <div className="max-w-md w-full" onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}>
-            <Card className="p-6">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-slate-900">
-                {showPieChart === 'assets' ? 'Активы по типам' : 'Пассивы по типам'}
-              </h2>
-              <button
-                type="button"
-                onClick={() => setShowPieChart(null)}
-                className="text-slate-400 hover:text-slate-600"
-              >
-                ✕
-              </button>
-            </div>
-            <PieChart
-              data={showPieChart === 'assets' ? assetsByType : liabilitiesByType}
-              total={showPieChart === 'assets' ? assetsTotal : liabilitiesTotal}
-              title={showPieChart === 'assets' ? 'Активы' : 'Пассивы'}
-            />
-            </Card>
-          </div>
-        </div>
-      )}
-
       {/* Кнопка Добавить */}
       <div className="mb-4">
         <Button
@@ -439,7 +357,7 @@ export function CapitalScreen() {
             resetForm();
             setShowAddModal(true);
           }}
-          className="w-full"
+          className="w-full py-3.5"
         >
           + Добавить
         </Button>
@@ -564,10 +482,10 @@ export function CapitalScreen() {
               )}
 
               <div className="flex gap-2">
-                <Button type="submit" variant="primary" className="flex-1">
+                <Button type="submit" variant="primary" className="flex-[65_1_0] py-3">
                   {editingId ? 'Сохранить' : 'Добавить'}
                 </Button>
-                <Button type="button" variant="secondary" onClick={() => resetForm()}>
+                <Button type="button" variant="secondary" onClick={() => resetForm()} className="flex-[35_1_0] py-3">
                   Отмена
                 </Button>
               </div>
@@ -577,107 +495,97 @@ export function CapitalScreen() {
         </div>
       )}
 
-      {/* Список активов/пассивов */}
+      {/* Список по типам (раскрывающиеся блоки), без группировки по дате */}
       {loading ? (
         <div className="flex flex-col items-center justify-center py-12 text-slate-500">
           <div className="w-10 h-10 border-2 border-slate-500 border-t-transparent rounded-full animate-spin mb-3" />
           <p className="text-sm">Загрузка...</p>
         </div>
-      ) : Object.keys(groupedItems).length === 0 ? (
+      ) : filteredItems.length === 0 ? (
         <Card className="p-8 text-center text-slate-500">
           <p className="mb-4">Нет записей</p>
           <Button variant="primary" onClick={() => {
             setEditingIsAsset(true);
             setShowAddModal(true);
-          }}>
+          }} className="min-w-[200px] py-3.5 px-6">
             Добавить первую запись
           </Button>
         </Card>
       ) : (
-        <>
-          {Object.entries(groupedItems).map(([date, items]) => {
-            const dayTotal = getDayTotal(date);
+        <div className="space-y-4">
+          {Object.entries(itemsByType).map(([typeName, items]) => {
+            const isExpanded = expandedTypes.has(typeName);
+            const typeTotal = items.reduce((s, i) => s + i.amount, 0);
             return (
-              <div key={date} className="mb-6">
-                <div className="mb-2 flex items-center justify-between">
-                  <h3 className="font-bold text-slate-900">{date}</h3>
-                  <span className={`text-sm ${dayTotal >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {dayTotal >= 0 ? '+' : ''}{formatMoney(dayTotal)} ₽
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  {items.map((item) => (
-                    <Card key={item.id} className="p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex-1 min-w-0">
-                          <div className="mb-1 flex items-center gap-2">
-                            <span className={`text-base font-semibold ${item.isAsset ? 'text-green-600' : 'text-red-600'}`}>
-                              {formatMoney(item.amount)} ₽
-                            </span>
-                            <span className="text-xs px-2 py-0.5 bg-slate-100 rounded-full text-slate-600">
-                              {item.type}
-                            </span>
+              <div key={typeName}>
+                <button
+                  type="button"
+                  onClick={() => toggleType(typeName)}
+                  className="w-full flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-left hover:bg-slate-100"
+                >
+                  <span className="font-medium text-slate-900">{typeName}</span>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className={`text-sm whitespace-nowrap ${items[0]?.isAsset ? 'text-green-600' : 'text-red-600'}`}>
+                      {formatMoney(typeTotal)} ₽ · {items.length} {items.length === 1 ? 'запись' : 'записей'}
+                    </span>
+                    <svg
+                      className={`h-5 w-5 text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </div>
+                </button>
+                {isExpanded && (
+                  <div className="mt-2 space-y-2 pl-2 border-l-2 border-slate-200">
+                    {items.map((item) => (
+                      <Card key={item.id} className="p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="mb-0.5">
+                              <span className={`text-base font-semibold ${item.isAsset ? 'text-green-600' : 'text-red-600'}`}>
+                                {formatMoney(item.amount)} ₽
+                              </span>
+                            </div>
+                            <p className="text-sm font-medium text-slate-900">{item.title}</p>
+                            {!item.isAsset && item.monthly_payment > 0 && (
+                              <p className="text-xs text-slate-500">Платёж: {formatMoney(item.monthly_payment)} ₽/мес</p>
+                            )}
                           </div>
-                          <p className="text-sm font-medium text-slate-900">{item.title}</p>
-                          {!item.isAsset && item.monthly_payment > 0 && (
-                            <p className="text-xs text-slate-500 mt-0.5">
-                              Платёж: {formatMoney(item.monthly_payment)} ₽/мес
-                            </p>
-                          )}
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <span className="text-xs text-slate-500 whitespace-nowrap">{formatDate(item.updated_at)}</span>
+                            <button
+                              type="button"
+                              onClick={() => startEdit(item)}
+                              className="rounded-lg bg-slate-100 p-2.5 text-slate-600 transition-colors hover:bg-slate-200 inline-flex items-center justify-center"
+                              title="Редактировать"
+                            >
+                              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(item.id, item.isAsset)}
+                              className="rounded-lg bg-red-50 p-2.5 text-red-600 transition-colors hover:bg-red-100 inline-flex items-center justify-center"
+                              title="Удалить"
+                            >
+                              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex gap-1">
-                          <button
-                            type="button"
-                            onClick={() => startEdit(item)}
-                            className="rounded-lg bg-slate-100 p-2 text-slate-600 transition-colors hover:bg-slate-200"
-                          >
-                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                            </svg>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDelete(item.id, item.isAsset)}
-                            className="rounded-lg bg-red-50 p-2 text-red-600 transition-colors hover:bg-red-100"
-                          >
-                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                            </svg>
-                          </button>
-                        </div>
-                      </div>
-                    </Card>
-                  ))}
-                </div>
+                      </Card>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
-
-          {/* Пагинация */}
-          {totalPages > 1 && (
-            <div className="mt-6 flex items-center justify-center gap-2">
-              <button
-                type="button"
-                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                disabled={currentPage === 1}
-                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm disabled:opacity-50"
-              >
-                Назад
-              </button>
-              <span className="text-sm text-slate-600">
-                Страница {currentPage} из {totalPages}
-              </span>
-              <button
-                type="button"
-                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                disabled={currentPage === totalPages}
-                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm disabled:opacity-50"
-              >
-                Вперёд
-              </button>
-            </div>
-          )}
-        </>
+        </div>
       )}
     </>
   );

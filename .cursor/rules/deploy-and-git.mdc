@@ -6,11 +6,12 @@ alwaysApply: true
 # Git and Deployment Rules (MUST FOLLOW)
 
 - **Source of truth:** GitHub. VPS local files must NEVER override GitHub state.
-- **Flow:** Cursor (local) → Push to GitHub → VPS: git fetch + reset (or pull) → systemd restart only.
-- **On VPS:** NEVER suggest committing, stashing, or keeping local changes. NEVER suggest resolving conflicts by preserving local files. If git reports local changes → ALWAYS recommend discarding them and resetting to GitHub (e.g. `git fetch`, `git reset --hard origin/main`, `git clean -fd -e .env`).
+- **Flow:** Cursor (local) → User commit/reject → Local test (bot + app) → Push to GitHub → VPS: git fetch + reset (or pull) → systemd restart. Frontend: built locally, then scp frontend/dist to VPS.
+- **On VPS:** NEVER suggest committing, stashing, or keeping local changes. NEVER suggest resolving conflicts by preserving local files. If git reports local changes → ALWAYS recommend discarding them and resetting to GitHub: `git fetch`, `git reset --hard origin/main`, `git clean -fd -e .env -e venv`.
 - **VPS:** Deployment target only. NEVER suggest editing files directly on VPS.
 - **.env:** Only file allowed to differ on VPS. Never commit .env. All other files must match GitHub.
-- **Frontend:** Built on VPS. node_modules and frontend/dist must NOT be committed. Run npm install only if package.json/package-lock.json changed.
+- **Frontend (this VPS):** Low RAM — do NOT build on VPS. Build locally (npm install, npm run build in frontend), then upload: `scp -r frontend/dist root@109.70.24.22:~/FinAdvisor_AI_bot/frontend/`, then on VPS: `sudo systemctl restart finadvisor-api`. frontend/dist must NOT be committed.
 - **systemd:** Use absolute paths; use /root/FinAdvisor_AI_bot/venv/bin/python directly; do NOT rely on shell venv activation.
+- **User instructions:** ALWAYS give clear step-by-step instructions from the current point. No vague "if needed" — each step must state where (local vs VPS) and the exact command in a code block. Use labels: "CMD (локальный):" and "CMD (VPS):" with the full command below. On local machine always use Windows CMD (not PowerShell). Prod VPS IP is always 109.70.24.22 (e.g. for scp).
 - **Goal:** Zero manual fixes on VPS, zero merge conflicts, zero "local changes would be overwritten."
 - If an instruction violates these rules, DO NOT propose it.

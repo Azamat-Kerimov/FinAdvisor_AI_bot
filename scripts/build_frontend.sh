@@ -3,7 +3,10 @@
 # Результат: frontend/dist — эти файлы отдаёт api.py по корню сайта
 #
 # На серверах с малым RAM (1–2 GB) npm install может быть убит (Killed).
-# Ограничиваем память Node и используем более лёгкий install.
+# Если видите "Killed" — соберите фронт на своём ПК и залейте dist на сервер:
+#   На ПК: cd frontend && npm install && npm run build && cd ..
+#   scp -r frontend/dist root@ВАШ_VPS:~/FinAdvisor_AI_bot/frontend/
+#   На VPS: sudo systemctl restart finadvisor-api
 
 set -e
 cd "$(dirname "$0")/.."

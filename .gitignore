@@ -3,3 +3,14 @@
 # Секреты — не коммитить
 .env
 .env.local
+
+# Локальные тесты и артефакты (не публикуем)
+_unpublished/
+
+# Сборка и окружение
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+frontend/dist/
+frontend/node_modules/

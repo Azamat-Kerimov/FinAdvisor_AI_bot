@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, Query, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+import traceback
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
@@ -20,8 +21,12 @@ import base64
 import asyncio
 import httpx
 from datetime import datetime, timedelta
+from decimal import Decimal
 
-load_dotenv()
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+load_dotenv(_env_path)
+
+APP_ENV = (os.getenv("APP_ENV") or "").strip().lower()
 
 # Настройка логирования
 import logging
@@ -50,6 +55,17 @@ if not _frontend_ready:
         _frontend_dist,
     )
 
+# При необработанном исключении: в тесте возвращаем детали в теле 500 (для отладки автотестов)
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request, exc):
+    logging.exception("Unhandled exception: %s", exc)
+    if APP_ENV == "test":
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(exc), "traceback": traceback.format_exc()},
+        )
+    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+
 # CORS для Telegram Web App
 app.add_middleware(
     CORSMiddleware,
@@ -76,6 +92,21 @@ G_API_URL = os.getenv("GIGACHAT_API_URL")
 GIGACHAT_MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat:2.0.28.2")
 
 db_pool: Optional[asyncpg.Pool] = None
+
+
+def _json_serializable(val):
+    """Привести значение из asyncpg (Decimal, date) к типу, сериализуемому в JSON."""
+    if isinstance(val, Decimal):
+        return float(val)
+    if hasattr(val, "isoformat"):
+        return val.isoformat()
+    return val
+
+
+def _row_to_dict(r: asyncpg.Record) -> dict:
+    """Преобразовать запись asyncpg в dict с JSON-сериализуемыми значениями."""
+    return {k: _json_serializable(r[k]) for k in r.keys()}
+
 
 # Кэш для bot_module, чтобы избежать повторного импорта
 _bot_module_cache = None
@@ -154,18 +185,31 @@ def validate_telegram_webapp(init_data: str) -> dict:
         logging.error(traceback.format_exc())
         raise HTTPException(status_code=401, detail=f"Validation error: {str(e)}")
 
+def _is_test_user_request(request: Request) -> bool:
+    """Проверка: запрос с тестовым user_id (без Telegram)."""
+    return APP_ENV == "test" and bool(request.headers.get("x-test-user-id"))
+
+
 async def get_user_id(request: Request) -> int:
-    """Получить user_id из Telegram Web App"""
+    """Получить user_id из Telegram Web App или в тесте из заголовка X-Test-User-Id"""
+    # В тестовой среде разрешаем заголовок X-Test-User-Id (без Telegram)
+    if APP_ENV == "test":
+        test_user_id = request.headers.get("x-test-user-id")
+        if test_user_id:
+            try:
+                uid = int(test_user_id)
+                if uid > 0:
+                    return uid
+            except ValueError:
+                pass
+
     # Пробуем получить init-data из заголовков (nginx может передавать как init-data или init_data)
     init_data = request.headers.get("init-data") or request.headers.get("init_data")
-    
+
     if not init_data:
-        # Логируем для отладки все заголовки (безопасно)
-        import logging
         logging.warning("Missing init-data header in request")
-        logging.warning(f"Available headers: {list(request.headers.keys())}")
         raise HTTPException(status_code=401, detail="Missing initData. Откройте приложение через Telegram.")
-    
+
     try:
         user = validate_telegram_webapp(init_data)
         tg_id = user.get('id')
@@ -204,8 +248,10 @@ async def check_premium(user_id: int) -> bool:
         return row['premium_until'] > datetime.now()
 
 
-async def require_premium(user_id: int = Depends(get_user_id)):
-    """Dependency для проверки подписки - возвращает user_id если подписка активна"""
+async def require_premium(request: Request, user_id: int = Depends(get_user_id)):
+    """Dependency для проверки подписки - возвращает user_id если подписка активна. В тесте с X-Test-User-Id подписку не проверяем."""
+    if _is_test_user_request(request):
+        return user_id
     if not await check_premium(user_id):
         raise HTTPException(
             status_code=403,
@@ -323,15 +369,31 @@ async def _resolve_bank_category_to_id(
     fallback_name = "Прочие расходы" if cat_type == "Расход" else "Прочие доходы"
     fallback_row = await conn.fetchrow("SELECT id FROM categories WHERE name = $1", fallback_name)
     fallback_id = fallback_row["id"] if fallback_row else 1
-    await conn.execute(
-        """INSERT INTO category_mapping (bank_category, category_id, bank_category_type)
-           VALUES ($1, $2, $3) ON CONFLICT (bank_category, bank_category_type) DO NOTHING""",
-        key, fallback_id, cat_type
-    )
+    try:
+        await conn.execute(
+            """INSERT INTO category_mapping (bank_category, category_id, bank_category_type)
+               VALUES ($1, $2, $3)""",
+            key, fallback_id, cat_type
+        )
+    except asyncpg.UniqueViolationError:
+        pass
     return fallback_id
 
 
 # API Endpoints
+
+# Информация о среде только в тесте (какая БД, чтобы не перепутать с продом)
+@app.get("/api/env-info")
+async def get_env_info():
+    """В тесте возвращает environment и данные подключения к БД. В проде — 404."""
+    if APP_ENV != "test":
+        raise HTTPException(status_code=404, detail="Not available")
+    return {
+        "environment": "test",
+        "db_name": DB_NAME or "",
+        "db_host": DB_HOST or "",
+    }
+
 
 # Auth endpoint (без проверки подписки)
 @app.post("/api/auth/telegram")
@@ -402,12 +464,22 @@ async def read_root():
 
 # Статистика
 @app.get("/api/stats")
-async def get_stats(user_id: int = Depends(require_premium)):
-    """Получить статистику за текущий месяц"""
-    from datetime import datetime
+async def get_stats(
+    month: Optional[int] = None,
+    year: Optional[int] = None,
+    user_id: int = Depends(require_premium)
+):
+    """Получить статистику за выбранный месяц (по умолчанию — предыдущий)."""
+    from datetime import datetime, date
     now = datetime.now()
-    since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    
+    if month is None or year is None:
+        # Предыдущий месяц
+        first_this = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        prev = first_this - timedelta(days=1)
+        year, month = prev.year, prev.month
+    start = date(year, month, 1)
+    end = date(year, month + 1, 1) if month < 12 else date(year + 1, 1, 1)
+
     db = await get_db()
     async with db.acquire() as conn:
         rows = await conn.fetch(
@@ -415,10 +487,10 @@ async def get_stats(user_id: int = Depends(require_premium)):
             SELECT t.amount, c.name AS category, t.created_at
             FROM transactions t
             JOIN categories c ON c.id = t.category_id
-            WHERE t.user_id=$1 AND t.created_at >= $2
+            WHERE t.user_id=$1 AND t.created_at >= $2 AND t.created_at < $3
             ORDER BY t.created_at ASC
             """,
-            user_id, since
+            user_id, start, end
         )
         
         income_by_cat = {}
@@ -443,15 +515,58 @@ async def get_stats(user_id: int = Depends(require_premium)):
         total_exp = total_expense or 1
         insight_parts = [f"{cat}: {int(amt):,} ₽ ({int(100 * amt / total_exp)}%)".replace(",", " ") for cat, amt in top_expense]
         insight = "Топ расходов за месяц: " + ", ".join(insight_parts) if insight_parts else "Пока нет расходов за месяц."
-        
+
+        # Явно приводим к типам, сериализуемым в JSON (избегаем Decimal и т.п.)
         return {
-            "total_income": total_income,
-            "total_expense": total_expense,
-            "income_by_category": income_by_cat,
-            "expense_by_category": expense_by_cat,
-            "reserve_recommended": reserve_recommended,
+            "month": month,
+            "year": year,
+            "total_income": float(total_income),
+            "total_expense": float(total_expense),
+            "income_by_category": {k: float(v) for k, v in income_by_cat.items()},
+            "expense_by_category": {k: float(v) for k, v in expense_by_cat.items()},
+            "reserve_recommended": int(reserve_recommended),
             "insight": insight,
         }
+
+
+@app.get("/api/stats/monthly")
+async def get_stats_monthly(user_id: int = Depends(require_premium)):
+    """Доходы, расходы и разница по месяцам за последние 12 месяцев."""
+    from datetime import date
+    now = datetime.now()
+    result = []
+    month_names_ru = (
+        "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+        "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
+    )
+    db = await get_db()
+    async with db.acquire() as conn:
+        for i in range(11, -1, -1):
+            m = now.month - 1 - i
+            y = now.year
+            while m <= 0:
+                m += 12
+                y -= 1
+            start = date(y, m, 1)
+            end = date(y, m + 1, 1) if m < 12 else date(y + 1, 1, 1)
+            rows = await conn.fetch(
+                """
+                SELECT amount FROM transactions t
+                WHERE t.user_id=$1 AND t.created_at >= $2 AND t.created_at < $3
+                """,
+                user_id, start, end
+            )
+            income = sum(float(r["amount"]) for r in rows if float(r["amount"]) > 0)
+            expense = sum(-float(r["amount"]) for r in rows if float(r["amount"]) < 0)
+            result.append({
+                "year": y,
+                "month": m,
+                "label": f"{month_names_ru[m - 1]} {y}",
+                "income": round(income, 2),
+                "expense": round(expense, 2),
+                "difference": round(income - expense, 2),
+            })
+    return result
 
 # Транзакции
 @app.get("/api/transactions")
@@ -495,7 +610,7 @@ async def get_transactions(
             LIMIT ${n}
             """
         rows = await conn.fetch(q, *params)
-        return [dict(r) for r in rows]
+        return [_row_to_dict(r) for r in rows]
 
 @app.post("/api/transactions")
 async def create_transaction(transaction: TransactionCreate, user_id: int = Depends(require_premium)):
@@ -634,10 +749,14 @@ def _is_likely_auth_code(amount: float, description: str) -> bool:
         return False
 
 
-# Месяцы по-русски для парсинга даты из выгрузки Сбера ("02 фев. 2025, 14:30")
+# Месяцы по-русски для парсинга даты из выгрузки Сбера ("05 мая 2025, 09:22" или "02 фев. 2025")
+# Сокращения (янв, фев, май) и полные формы в родительном падеже (мая, января, февраля)
 _RU_MONTHS = {
     "янв": 1, "фев": 2, "мар": 3, "апр": 4, "май": 5, "июн": 6,
     "июл": 7, "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12,
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5,
+    "июня": 6, "июля": 7, "августа": 8, "сентября": 9, "октября": 10,
+    "ноября": 11, "декабря": 12,
 }
 
 
@@ -657,29 +776,45 @@ async def _parse_excel_structured(file_path: str, conn) -> tuple[list[dict], lis
     if not rows:
         return [], ["Файл пуст"]
 
-    # Заголовки: Сбер — №, Дата, Тип операции, Категория, Сумма, ..., Описание; Т-Банк — Дата операции, Сумма операции, Категория, Описание (название организации)
-    headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+    def detect_columns(header_row):
+        hdr = [str(h).strip().lower() if h is not None else "" for h in header_row]
+        col_date = col_amount = col_income = col_expense = col_desc = col_type = col_category = None
+        for i, h in enumerate(hdr):
+            if not h or h == "none":
+                continue
+            if h in ("дата", "date") or h == "дата операции" or h == "дата проведения" or "дата" in h:
+                if col_date is None:
+                    col_date = i
+            elif h in ("сумма", "amount") or h == "сумма операции" or ("сумма" in h and "в валюте" not in h and "списани" not in h and "зачислен" not in h):
+                col_amount = i
+            elif "сумма" in h and "в валюте" in h and col_amount is None:
+                col_amount = i
+            elif "сумма" in h and ("списани" in h or "расход" in h):
+                col_expense = i
+            elif "сумма" in h and ("зачислен" in h or "приход" in h or "доход" in h):
+                col_income = i
+            elif "тип операции" in h or h == "тип":
+                col_type = i
+            elif "категория" in h:
+                col_category = i
+            elif "приход" in h or "доход" in h or h == "income":
+                col_income = i
+            elif "расход" in h or h == "expense":
+                col_expense = i
+            elif h in ("описание", "назначение", "операция", "опер", "description") or "описание" in h or "назначение" in h or "название организации" in h or "название" in h:
+                col_desc = i
+        return col_date, col_amount, col_income, col_expense, col_desc, col_type, col_category
+
+    # Сбер: заголовки в первой строке; Т-Банк: иногда заголовки во второй строке (первая — название отчёта)
     col_date = col_amount = col_income = col_expense = col_desc = col_type = col_category = None
-    for i, h in enumerate(headers):
-        if not h:
-            continue
-        if h in ("дата", "date") or h == "дата операции" or h == "дата проведения" or "дата" in h:
-            if col_date is None:
-                col_date = i
-        elif h in ("сумма", "amount") or h == "сумма операции" or ("сумма" in h and "в валюте" not in h):
-            col_amount = i
-        elif "сумма" in h and "в валюте" in h and col_amount is None:
-            col_amount = i
-        elif "тип операции" in h or "тип" == h:
-            col_type = i
-        elif "категория" in h:
-            col_category = i
-        elif "приход" in h or "доход" in h or h == "income":
-            col_income = i
-        elif "расход" in h or h == "expense":
-            col_expense = i
-        elif h in ("описание", "назначение", "операция", "опер", "description") or "описание" in h or "назначение" in h or "название организации" in h:
-            col_desc = i
+    data_start_row = 1
+    for try_row in range(min(4, len(rows))):
+        cdate, camount, cincome, cexpense, cdesc, ctype, ccat = detect_columns(rows[try_row])
+        has_any = cdate is not None or camount is not None or (cincome is not None and cexpense is not None)
+        if has_any:
+            col_date, col_amount, col_income, col_expense, col_desc, col_type, col_category = cdate, camount, cincome, cexpense, cdesc, ctype, ccat
+            data_start_row = try_row + 1
+            break
 
     if col_date is None and col_amount is None and col_income is None and col_expense is None:
         return [], ["Не найдены колонки даты/суммы (ожидаются заголовки: дата, сумма или приход/расход, описание)"]
@@ -721,15 +856,18 @@ async def _parse_excel_structured(file_path: str, conn) -> tuple[list[dict], lis
         if m:
             d, mo, y = m.group(1).zfill(2), m.group(2).zfill(2), m.group(3)
             return f"{y}-{mo}-{d}"
-        # Сбер: "02 фев. 2025, 14:30" или "02 февраля 2025"
+        # Сбер: "05 мая 2025, 09:22" или "02 фев. 2025" (сокращение и полная форма в род. падеже)
         m_ru = re.match(r"(\d{1,2})\s+(\w+)\s*\.?\s*(\d{4})", s, re.IGNORECASE)
         if m_ru:
-            day, month_part, year = m_ru.group(1), m_ru.group(2)[:3].lower(), m_ru.group(3)
+            day, month_word, year = m_ru.group(1), m_ru.group(2).strip().lower(), m_ru.group(3)
+            month_part = month_word[:3] if len(month_word) >= 3 else month_word
             if month_part in _RU_MONTHS:
                 return f"{year}-{_RU_MONTHS[month_part]:02d}-{int(day):02d}"
+            if month_word in _RU_MONTHS:
+                return f"{year}-{_RU_MONTHS[month_word]:02d}-{int(day):02d}"
         return None
 
-    for idx, row in enumerate(rows[1:], start=2):
+    for idx, row in enumerate(rows[data_start_row:], start=data_start_row + 1):
         if not any(c is not None and str(c).strip() for c in row):
             continue
         date_str = _to_date(_cell(row, col_date), idx) if col_date is not None else None
@@ -1007,13 +1145,22 @@ async def import_transactions_apply(
     body: ImportApplyRequest,
     user_id: int = Depends(require_premium)
 ):
-    """Применить импорт: добавить к текущим или заменить все транзакции."""
+    """Применить импорт: add — добавить к текущим; replace — удалить транзакции за период [min_date, max_date] из файла и вставить из файла."""
     if body.mode not in ("add", "replace"):
         raise HTTPException(status_code=400, detail="mode must be 'add' or 'replace'")
     db = await get_db()
     async with db.acquire() as conn:
-        if body.mode == "replace":
-            await conn.execute("DELETE FROM transactions WHERE user_id = $1", user_id)
+        if body.mode == "replace" and body.transactions:
+            dates = [t.date[:10] for t in body.transactions if t.date and len(t.date) >= 10]
+            if dates:
+                min_d, max_d = min(dates), max(dates)
+                from datetime import date as date_type
+                min_date = date_type.fromisoformat(min_d)
+                max_date = date_type.fromisoformat(max_d)
+                await conn.execute(
+                    "DELETE FROM transactions WHERE user_id = $1 AND created_at::date >= $2 AND created_at::date <= $3",
+                    user_id, min_date, max_date
+                )
         for t in body.transactions:
             try:
                 from datetime import datetime
@@ -1029,22 +1176,50 @@ async def import_transactions_apply(
             )
     return {"status": "ok", "applied": len(body.transactions)}
 
+# Ликвидные типы для расчёта current целей: активы и пассивы
+_LIQUID_ASSET_TYPES = ("Депозит", "Акции", "Облигации", "Наличные", "Банковский счёт", "Криптовалюта")
+_LIQUID_LIABILITY_TYPES = ("Кредит", "Займ", "Кредитная карта", "Рассрочка")
+
+
+async def _get_liquid_net(conn, user_id: int) -> float:
+    """Текущий ликвидный капитал: сумма ликвидных активов минус сумма ликвидных пассивов. Один и тот же для всех целей."""
+    liquid_assets = await conn.fetchval(
+        """
+        SELECT COALESCE(SUM(v.amount), 0)
+        FROM assets a
+        LEFT JOIN LATERAL (
+            SELECT amount FROM asset_values WHERE asset_id = a.id ORDER BY created_at DESC LIMIT 1
+        ) v ON TRUE
+        WHERE a.user_id = $1 AND a.type = ANY($2::text[])
+        """,
+        user_id, list(_LIQUID_ASSET_TYPES)
+    )
+    liquid_liabilities = await conn.fetchval(
+        """
+        SELECT COALESCE(SUM(v.amount), 0)
+        FROM liabilities l
+        LEFT JOIN LATERAL (
+            SELECT amount FROM liability_values WHERE liability_id = l.id ORDER BY created_at DESC LIMIT 1
+        ) v ON TRUE
+        WHERE l.user_id = $1 AND l.type = ANY($2::text[])
+        """,
+        user_id, list(_LIQUID_LIABILITY_TYPES)
+    )
+    return float(liquid_assets or 0) - float(liquid_liabilities or 0)
+
+
 # Цели
 @app.get("/api/goals")
 async def get_goals(user_id: int = Depends(require_premium)):
-    """Получить список целей"""
+    """Получить список целей. current для каждой цели = ликвидный капитал (ликвидные активы − ликвидные пассивы)."""
     db = await get_db()
     async with db.acquire() as conn:
         rows = await conn.fetch(
-            """
-            SELECT id, title, target, current, description
-            FROM goals
-            WHERE user_id=$1
-            ORDER BY id
-            """,
+            "SELECT id, title, target, description FROM goals WHERE user_id=$1 ORDER BY id",
             user_id
         )
-        return [dict(r) for r in rows]
+        current = await _get_liquid_net(conn, user_id)
+        return [{"id": r["id"], "title": r["title"], "target": float(r["target"]), "current": current, "description": r["description"]} for r in rows]
 
 @app.post("/api/goals")
 async def create_goal(goal: GoalCreate, user_id: int = Depends(require_premium)):
@@ -1074,20 +1249,17 @@ async def delete_goal(goal_id: int, user_id: int = Depends(require_premium)):
 
 @app.get("/api/goals/insight")
 async def get_goals_insight(user_id: int = Depends(require_premium)):
-    """Ценность 3: прогресс по целям + «через N месяцев» (средний темп накопления за 3 мес.)"""
+    """Ценность 3: прогресс по целям + «через N месяцев». current = ликвидный капитал (активы − пассивы)."""
     db = await get_db()
     now = datetime.now()
     since_3m = (now.replace(day=1) - timedelta(days=90)).replace(day=1)
     async with db.acquire() as conn:
         goals_rows = await conn.fetch(
-            "SELECT id, title, target, current FROM goals WHERE user_id=$1 ORDER BY id", user_id
+            "SELECT id, title, target FROM goals WHERE user_id=$1 ORDER BY id", user_id
         )
-        # Средние доходы и расходы за последние 3 месяца для расчёта ежемесячного накопления
+        current = await _get_liquid_net(conn, user_id)
         tx_rows = await conn.fetch(
-            """
-            SELECT amount FROM transactions
-            WHERE user_id=$1 AND created_at >= $2
-            """,
+            "SELECT amount FROM transactions WHERE user_id=$1 AND created_at >= $2",
             user_id, since_3m
         )
     monthly_savings = 0.0
@@ -1098,7 +1270,6 @@ async def get_goals_insight(user_id: int = Depends(require_premium)):
     result = []
     for g in goals_rows:
         target = float(g["target"])
-        current = float(g["current"])
         remaining = max(0, target - current)
         months_to_goal = int(remaining / monthly_savings) if monthly_savings > 0 else None
         result.append({
@@ -1386,6 +1557,94 @@ async def delete_liability(liability_id: int, user_id: int = Depends(require_pre
         )
         return {"status": "ok"}
 
+
+@app.get("/api/capital/summary")
+async def get_capital_summary(user_id: int = Depends(require_premium)):
+    """Текущие суммы активов, пассивов и чистый капитал (на сейчас)."""
+    db = await get_db()
+    async with db.acquire() as conn:
+        assets_rows = await conn.fetch(
+            """
+            SELECT a.id, COALESCE(
+                (SELECT amount FROM asset_values WHERE asset_id = a.id ORDER BY created_at DESC LIMIT 1), 0
+            ) as amount
+            FROM assets a WHERE a.user_id = $1
+            """,
+            user_id
+        )
+        liabs_rows = await conn.fetch(
+            """
+            SELECT l.id, COALESCE(
+                (SELECT amount FROM liability_values WHERE liability_id = l.id ORDER BY created_at DESC LIMIT 1), 0
+            ) as amount
+            FROM liabilities l WHERE l.user_id = $1
+            """,
+            user_id
+        )
+    total_assets = sum(float(r["amount"]) for r in assets_rows)
+    total_liabilities = sum(float(r["amount"]) for r in liabs_rows)
+    return {
+        "assets": round(total_assets, 2),
+        "liabilities": round(total_liabilities, 2),
+        "net": round(total_assets - total_liabilities, 2),
+    }
+
+
+@app.get("/api/capital/history")
+async def get_capital_history(user_id: int = Depends(require_premium)):
+    """Активы и пассивы на последнее число каждого из последних 12 месяцев."""
+    from datetime import date
+    now = datetime.now()
+    month_names_ru = (
+        "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+        "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
+    )
+    result = []
+    db = await get_db()
+    async with db.acquire() as conn:
+        for i in range(11, -1, -1):
+            m = now.month - 1 - i
+            y = now.year
+            while m <= 0:
+                m += 12
+                y -= 1
+            last_day = date(y, m + 1, 1) - timedelta(days=1) if m < 12 else date(y + 1, 1, 1) - timedelta(days=1)
+            end_dt = datetime.combine(last_day, datetime.max.time().replace(microsecond=0))
+            assets_rows = await conn.fetch(
+                """
+                SELECT a.id, COALESCE(
+                    (SELECT amount FROM asset_values
+                     WHERE asset_id = a.id AND created_at <= $2
+                     ORDER BY created_at DESC LIMIT 1), 0
+                ) as amount
+                FROM assets a WHERE a.user_id = $1
+                """,
+                user_id, end_dt
+            )
+            liabs_rows = await conn.fetch(
+                """
+                SELECT l.id, COALESCE(
+                    (SELECT amount FROM liability_values
+                     WHERE liability_id = l.id AND created_at <= $2
+                     ORDER BY created_at DESC LIMIT 1), 0
+                ) as amount
+                FROM liabilities l WHERE l.user_id = $1
+                """,
+                user_id, end_dt
+            )
+            total_assets = sum(float(r["amount"]) for r in assets_rows)
+            total_liabilities = sum(float(r["amount"]) for r in liabs_rows)
+            result.append({
+                "year": y,
+                "month": m,
+                "label": f"{month_names_ru[m - 1]} {y}",
+                "assets": round(total_assets, 2),
+                "liabilities": round(total_liabilities, 2),
+                "net": round(total_assets - total_liabilities, 2),
+            })
+    return result
+
+
 # ============================================
 # AI Functions (GigaChat)
 # ============================================
@@ -1493,11 +1752,12 @@ async def analyze_user_finances_text(user_id: int) -> str:
         else:
             s = "У пользователя нет транзакций.\n"
         
-        goals = await conn.fetch("SELECT title, target, current, created_at FROM goals WHERE user_id=$1", user_id)
+        goals = await conn.fetch("SELECT title, target FROM goals WHERE user_id=$1", user_id)
         if goals:
+            liquid_net = await _get_liquid_net(conn, user_id)
             s += "\nЦели:\n"
             for g in goals:
-                s += f"- {g.get('title','Цель')}: {g['current']}/{g['target']} ₽\n"
+                s += f"- {g.get('title','Цель')}: {liquid_net}/{g['target']} ₽\n"
         
         # Активы
         assets_rows = await conn.fetch(
@@ -1543,11 +1803,29 @@ async def analyze_user_finances_text(user_id: int) -> str:
         return s
 
 
+def _stub_consultation_text(finance_snapshot: str) -> str:
+    """Заглушка консультации для тестовой среды без GigaChat."""
+    return (
+        "📊 *Ваша финансовая консультация (тестовый режим)*\n\n"
+        "Данные для анализа:\n"
+        f"{finance_snapshot[:800]}{'…' if len(finance_snapshot) > 800 else ''}\n\n"
+        "💰 *Рекомендации*\n"
+        "• В продакшене здесь будет персональный отчёт от ИИ.\n"
+        "• Настройте GIGACHAT_* в .env для полной генерации."
+    )
+
+
 async def generate_consultation(user_id: int) -> str:
     """Генерация финансовой консультации"""
     try:
         finance_snapshot = await analyze_user_finances_text(user_id)
-        
+
+        # Тестовая среда без GigaChat: возвращаем заглушку, чтобы генерация «работала»
+        if APP_ENV == "test" and not (G_CLIENT_ID and G_API_URL):
+            stub = _stub_consultation_text(finance_snapshot or "Нет данных.")
+            await save_message(user_id, "assistant", f"CONSULTATION: {stub}")
+            return stub
+
         # Если нет данных
         if not finance_snapshot or ("нет транзакций" in finance_snapshot.lower() and "нет активов" in finance_snapshot.lower()):
             return (
@@ -1697,20 +1975,23 @@ async def get_reports(user_id: int = Depends(require_premium)):
         # График 2: Прогресс по целям
         goals_rows = await conn.fetch(
             """
-            SELECT title, target, current
-            FROM goals
-            WHERE user_id=$1
-            ORDER BY id
+            SELECT title, target FROM goals WHERE user_id=$1 ORDER BY id
             """,
             user_id
         )
-        
+        liquid_net = await _get_liquid_net(conn, user_id)
+        def _goal_progress(current: float, target: float) -> float:
+            """Прогресс 0–100%; при target=0 возвращаем 100%; деление на 0 исключено."""
+            if target <= 0:
+                return 100.0
+            p = (max(0, current) / target) * 100
+            return max(0.0, min(100.0, p))
         goals_data = [
             {
                 'title': g['title'],
                 'target': float(g['target']),
-                'current': float(g['current']),
-                'progress': min(100, (float(g['current']) / float(g['target']) * 100) if g['target'] > 0 else 0)
+                'current': liquid_net,
+                'progress': _goal_progress(liquid_net, float(g['target']))
             }
             for g in goals_rows
         ]
@@ -1848,6 +2129,16 @@ async def check_consultation_limit(user_id: int) -> tuple[bool, int]:
 
 
 # Консультация
+@app.get("/api/consultation/limit")
+async def get_consultation_limit(user_id: int = Depends(require_premium)):
+    """Только лимит консультаций (без генерации). Для отображения счётчика на вкладке ИИ."""
+    can_request, requests_used = await check_consultation_limit(user_id)
+    return {
+        "requests_used": requests_used,
+        "limit_reached": not can_request,
+    }
+
+
 @app.get("/api/consultation")
 async def get_consultation(user_id: int = Depends(require_premium)):
     """Получить AI консультацию (лимит 5 в месяц)"""
@@ -1880,7 +2171,9 @@ async def get_consultation(user_id: int = Depends(require_premium)):
             "consultation": (
                 "⏱️ Генерация консультации заняла слишком много времени.\n\n"
                 "Попробуйте позже."
-            )
+            ),
+            "requests_used": requests_used,
+            "limit_reached": False,
         }
     except Exception as e:
         logging.error(f"Error in consultation endpoint: {e}")
@@ -1891,7 +2184,9 @@ async def get_consultation(user_id: int = Depends(require_premium)):
                 "❌ Произошла ошибка при генерации консультации.\n\n"
                 "Попробуйте позже.\n\n"
                 f"Ошибка: {str(e)[:100]}"
-            )
+            ),
+            "requests_used": requests_used,
+            "limit_reached": False,
         }
 
 

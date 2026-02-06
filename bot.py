@@ -14,7 +14,9 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, LabeledPrice, ErrorEvent
 
-load_dotenv()
+# Загружаем .env из папки, где лежит bot.py (не зависит от текущей директории)
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+load_dotenv(_env_path)
 
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 WEB_APP_URL = (os.getenv("WEB_APP_URL") or "https://finadvisor-ai.ru").strip()
@@ -25,6 +27,8 @@ DB_USER = (os.getenv("DB_USER") or "").strip()
 DB_PASSWORD = os.getenv("DB_PASSWORD")  # может быть пустым в dev
 DB_HOST = (os.getenv("DB_HOST") or "").strip()
 DB_PORT = (os.getenv("DB_PORT") or "5432").strip()
+
+APP_ENV = (os.getenv("APP_ENV") or "").strip().lower()
 
 
 def _check_env():
@@ -49,6 +53,11 @@ def _check_env():
 
 
 _check_env()
+
+# При старте всегда выводим, к какой БД подключаемся (чтобы не перепутать тест и прод)
+print(f"БД: {DB_NAME} @ {DB_HOST}:{DB_PORT}", flush=True)
+if APP_ENV == "test":
+    print("Режим: ТЕСТ (APP_ENV=test)", flush=True)
 
 # Тарифы подписки
 SUBSCRIPTION_PLANS = {

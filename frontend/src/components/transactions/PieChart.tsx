@@ -48,15 +48,19 @@ export function PieChart({ data, total, title, colors = DEFAULT_COLORS }: PieCha
     return `M ${cx} ${cy} L ${start.x} ${start.y} A ${R} ${R} 0 ${largeArc} 1 ${end.x} ${end.y} Z`;
   }
 
+  const totalAngle = 360;
+  const minAngle = 0.5;
+  const rawAngles = entries.map((e) => Math.max(minAngle, (e.amount / total) * totalAngle));
+  const sumRaw = rawAngles.reduce((a, b) => a + b, 0);
+  const scale = sumRaw > 0 ? totalAngle / sumRaw : 1;
   const segments = entries.map((entry, i) => {
-    const percent = (entry.amount / total) * 100;
-    const angle = (percent / 100) * 360;
+    const angle = Math.min(totalAngle, rawAngles[i] * scale);
     const startAngle = currentAngle;
     const endAngle = currentAngle + angle;
     currentAngle = endAngle;
     return {
       ...entry,
-      percent,
+      percent: (entry.amount / total) * 100,
       path: describeArc(center, center, r, startAngle, endAngle),
       color: colors[i % colors.length],
     };

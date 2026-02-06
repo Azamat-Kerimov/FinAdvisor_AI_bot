@@ -78,12 +78,12 @@ export function ConsultationScreen() {
 
   async function loadConsultationLimit() {
     try {
-      const data = await apiRequest<ConsultationResponse>('/api/consultation');
+      const data = await apiRequest<{ requests_used?: number; limit_reached?: boolean }>('/api/consultation/limit');
       setRequestsUsed(data.requests_used || 0);
       if (data.limit_reached) {
-        setConsultationLimit(`Лимит консультаций: ${data.requests_used || 0}/5`);
+        setConsultationLimit(`Лимит консультаций: ${data.requests_used ?? 0}/5`);
       } else {
-        setConsultationLimit(`Консультаций использовано: ${data.requests_used || 0}/5`);
+        setConsultationLimit(`Консультаций использовано: ${data.requests_used ?? 0}/5`);
       }
     } catch (e) {
       console.error('Ошибка загрузки лимита:', e);
@@ -142,6 +142,14 @@ export function ConsultationScreen() {
     } catch (e) {
       alert('Ошибка: ' + (e instanceof Error ? e.message : String(e)));
     }
+  }
+
+  function startEditGoal(goal: Goal) {
+    setGoalTitle(goal.title);
+    setGoalTarget(String(goal.target));
+    setGoalDescription(goal.description || '');
+    setEditingGoalId(goal.id);
+    setShowGoalForm(true);
   }
 
   function resetGoalForm() {
@@ -242,21 +250,12 @@ export function ConsultationScreen() {
 
   return (
     <>
-      <PageHeader
-        title="Консультация"
-        rightAction={
-          <Button
-            variant="primary"
-            onClick={() => setShowGoalForm(!showGoalForm)}
-            className="text-xs px-3 py-1.5"
-          >
-            {showGoalForm ? '✕' : '🎯'}
-          </Button>
-        }
-      />
+      <PageHeader title="Консультация ИИ" />
 
+      <Card className="p-4 mb-4">
+        <h2 className="text-lg font-bold text-slate-900 mb-3">Цели</h2>
       {showGoalForm && (
-        <Card className="p-4 mb-4">
+        <div className="pt-3 border-t border-slate-200">
           <form onSubmit={handleGoalSubmit} className="space-y-3">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">
@@ -298,63 +297,95 @@ export function ConsultationScreen() {
               />
             </div>
             <div className="flex gap-2">
-              <Button type="submit" variant="primary" className="flex-1">
+              <Button type="submit" variant="primary" className="flex-[65_1_0] py-3.5">
                 {editingGoalId ? 'Сохранить' : 'Добавить'}
               </Button>
-              <Button type="button" variant="secondary" onClick={resetGoalForm}>
+              <Button type="button" variant="secondary" onClick={resetGoalForm} className="flex-[35_1_0] py-3.5">
                 Отмена
               </Button>
             </div>
           </form>
-        </Card>
+        </div>
       )}
-
-      <Card className="p-4 mb-4">
-        <h2 className="text-lg font-bold text-slate-900 mb-3">Цели</h2>
-        {loading ? (
-          <div className="text-center py-4 text-muted text-sm">Загрузка...</div>
-        ) : goals.length === 0 ? (
-          <div className="text-center py-4 text-muted text-sm">
-            Нет целей. Добавьте цель выше или отправьте сообщение ИИ.
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {goals.map((goal) => {
-              const progress = goal.target > 0 ? (goal.current / goal.target) * 100 : 0;
-              return (
-                <div key={goal.id} className="space-y-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-slate-900">{goal.title}</p>
-                      {goal.description && (
-                        <p className="text-sm text-slate-600">{goal.description}</p>
-                      )}
+      {!showGoalForm && (
+          <>
+            {loading ? (
+              <div className="text-center py-4 text-muted text-sm">Загрузка...</div>
+            ) : goals.length === 0 ? (
+              <div className="text-center py-4 text-muted text-sm">
+                Нет целей. Нажмите «Добавить цель» или отправьте сообщение ИИ.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {goals.map((goal) => {
+                  const progress = goal.target <= 0 ? 100 : Math.max(0, Math.min(100, (Math.max(0, goal.current) / goal.target) * 100));
+                  return (
+                    <div key={goal.id} className="space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-slate-900">{goal.title}</p>
+                          {goal.description && (
+                            <p className="text-sm text-slate-600">{goal.description}</p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => startEditGoal(goal)}
+                            className="rounded-lg bg-slate-100 p-2.5 text-slate-600 transition-colors hover:bg-slate-200 inline-flex items-center justify-center"
+                            title="Редактировать"
+                          >
+                            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteGoal(goal.id)}
+                            className="rounded-lg bg-red-50 p-2.5 text-red-600 transition-colors hover:bg-red-100 inline-flex items-center justify-center"
+                            title="Удалить"
+                          >
+                            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-600">
+                            {formatMoney(goal.current)} ₽ / {formatMoney(goal.target)} ₽
+                          </span>
+                          <span className="font-medium">{Math.round(progress)}%</span>
+                        </div>
+                        <div className="w-full bg-slate-200 rounded-full h-2">
+                          <div
+                            className="bg-slate-800 h-2 rounded-full transition-all"
+                            style={{ width: `${progress}%` }}
+                          />
+                        </div>
+                      </div>
                     </div>
-                    <Button
-                      variant="ghost"
-                      onClick={() => handleDeleteGoal(goal.id)}
-                      className="text-xs px-2 py-1 text-red-600"
-                    >
-                      🗑️
-                    </Button>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-slate-600">
-                        {formatMoney(goal.current)} ₽ / {formatMoney(goal.target)} ₽
-                      </span>
-                      <span className="font-medium">{Math.round(progress)}%</span>
-                    </div>
-                    <div className="w-full bg-slate-200 rounded-full h-2">
-                      <div
-                        className="bg-slate-800 h-2 rounded-full transition-all"
-                        style={{ width: `${Math.min(100, progress)}%` }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+        {!showGoalForm && (
+          <div className="mt-3 pt-3 border-t border-slate-200">
+            <Button
+              variant="primary"
+              onClick={() => setShowGoalForm(true)}
+              className="w-full py-3.5"
+            >
+              🎯 Добавить цель
+            </Button>
+            <p className="mt-2 text-xs text-slate-500">
+              Прогресс цели = Ликвидный капитал / Целевая сумма.
+              <br />
+              Ликвидный капитал = сумма ликвидных активов (депозит, акции, облигации, наличные, банковский счёт, криптовалюта) − обязательства, уменьшающие ликвидный капитал (кредит, займ, кредитная карта, рассрочка). Процент от 0% до 100%; при целевой сумме 0 — 100%. Суммы считаются неотрицательными.
+            </p>
           </div>
         )}
       </Card>
@@ -370,7 +401,7 @@ export function ConsultationScreen() {
             placeholder="Например: Хочу накопить 500 000 на машину за год или оставьте пустым"
             rows={3}
           />
-          <Button type="submit" variant="primary" disabled={sendingMessage || !message.trim()} className="w-full">
+          <Button type="submit" variant="primary" disabled={sendingMessage || !message.trim()} className="w-full py-3.5">
             {sendingMessage ? 'Отправка...' : 'Отправить'}
           </Button>
         </form>
@@ -391,10 +422,13 @@ export function ConsultationScreen() {
           variant="primary"
           onClick={handleGetConsultation}
           disabled={loadingConsultation}
-          className="w-full mb-3"
+          className="w-full mb-3 py-3.5"
         >
           {loadingConsultation ? 'Генерация...' : 'Получить консультацию'}
         </Button>
+        <p className="text-xs text-muted mb-3">
+          Для генерации ответа используются вся информация о транзакциях, капитале и ваши цели, а также история ваших запросов. Заполните остальные вкладки для более качественного ответа.
+        </p>
 
         {consultationError && (
           <div className="p-3 bg-red-50 border border-red-200 rounded-button text-sm text-red-700 mb-3">
