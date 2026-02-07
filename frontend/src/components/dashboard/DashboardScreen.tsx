@@ -166,11 +166,11 @@ export function DashboardScreen() {
             <div className="grid grid-cols-3 gap-3 mb-4">
               <div className="rounded-lg p-3 border border-expense bg-white">
                 <p className="text-xs text-slate-600 mb-0.5">Расходы</p>
-                <p className="text-sm font-semibold text-slate-900">{formatMoney(stats.total_expense)} ₽</p>
+                <p className="text-xs font-semibold text-slate-900 break-all">{formatMoney(stats.total_expense)} ₽</p>
               </div>
               <div className="rounded-lg p-3 border border-income bg-white">
                 <p className="text-xs text-slate-600 mb-0.5">Доходы</p>
-                <p className="text-sm font-semibold text-slate-900">{formatMoney(stats.total_income)} ₽</p>
+                <p className="text-xs font-semibold text-slate-900 break-all">{formatMoney(stats.total_income)} ₽</p>
               </div>
               <div
                 className={`rounded-lg p-3 border ${
@@ -179,7 +179,7 @@ export function DashboardScreen() {
               >
                 <p className="text-xs text-slate-600 mb-0.5">Разница</p>
                 <p
-                  className={`text-sm font-semibold ${
+                  className={`text-xs font-semibold break-all ${
                     (stats.total_income - stats.total_expense) >= 0 ? 'text-income' : 'text-expense'
                   }`}
                 >
@@ -217,11 +217,11 @@ export function DashboardScreen() {
             <div className="grid grid-cols-3 gap-3 mb-4">
               <div className="rounded-lg p-3 border border-income bg-white">
                 <p className="text-xs text-slate-600 mb-0.5">Активы</p>
-                <p className="text-sm font-semibold text-slate-900">{formatMoney(capitalSummary.assets)} ₽</p>
+                <p className="text-xs font-semibold text-slate-900 break-all">{formatMoney(capitalSummary.assets)} ₽</p>
               </div>
               <div className="rounded-lg p-3 border border-expense bg-white">
                 <p className="text-xs text-slate-600 mb-0.5">Пассивы</p>
-                <p className="text-sm font-semibold text-slate-900">{formatMoney(capitalSummary.liabilities)} ₽</p>
+                <p className="text-xs font-semibold text-slate-900 break-all">{formatMoney(capitalSummary.liabilities)} ₽</p>
               </div>
               <div
                 className={`rounded-lg p-3 border ${
@@ -230,7 +230,7 @@ export function DashboardScreen() {
               >
                 <p className="text-xs text-slate-600 mb-0.5">Чистый капитал</p>
                 <p
-                  className={`text-sm font-semibold ${
+                  className={`text-xs font-semibold break-all ${
                     capitalSummary.net >= 0 ? 'text-income' : 'text-expense'
                   }`}
                 >
@@ -291,7 +291,7 @@ export function DashboardScreen() {
   );
 }
 
-/** Гистограмма: разница по месяцам. Ось с шагом кратным 1000/10k/100k/1M, подписи в тыс/млн, масштаб по оси. */
+/** Гистограмма: разница по месяцам. Высота столбца привязана к значению по оси Y; подписи у концов столбцов. */
 function DifferenceBarChart({
   data,
 }: {
@@ -316,7 +316,7 @@ function DifferenceBarChart({
         <div className="flex gap-0.5" style={{ height: chartHeight }}>
           {data.map((d) => {
             const isPositive = d.difference >= 0;
-            const heightPct = (Math.abs(d.difference) / maxTick) * 50;
+            const heightPctOfHalf = (Math.abs(d.difference) / maxTick) * 100;
             return (
               <div key={d.label} className="flex-1 min-w-0 flex flex-col justify-center items-center" style={{ minWidth: 0 }}>
                 <div className="w-full flex-1 flex flex-col justify-end min-h-0 items-center">
@@ -325,13 +325,13 @@ function DifferenceBarChart({
                   </span>
                   <div
                     className={`w-full rounded-t min-h-[2px] ${isPositive ? 'bg-income' : 'bg-transparent'}`}
-                    style={{ height: isPositive ? `${heightPct}%` : 0, maxHeight: '50%' }}
+                    style={{ height: isPositive ? `${heightPctOfHalf}%` : 0, maxHeight: '100%' }}
                   />
                 </div>
                 <div className="w-full flex-1 flex flex-col justify-start min-h-0 items-center">
                   <div
                     className={`w-full rounded-b min-h-[2px] ${!isPositive ? 'bg-expense' : 'bg-transparent'}`}
-                    style={{ height: !isPositive ? `${heightPct}%` : 0, maxHeight: '50%' }}
+                    style={{ height: !isPositive ? `${heightPctOfHalf}%` : 0, maxHeight: '100%' }}
                   />
                   <span className="text-[9px] font-medium text-slate-700 whitespace-nowrap z-10 w-full text-center">
                     {!isPositive ? formatDiffLabel(d.difference) : ''}
@@ -402,18 +402,27 @@ function FinancialPathChart({ data }: { data: CapitalHistoryItem[] }) {
                     {d.liabilities > 0 ? formatShortValueOnly(-d.liabilities) : ''}
                   </span>
                 </div>
-                <>
-                  <span
-                    className="absolute left-1/2 -translate-x-1/2 text-[8px] font-medium text-blue-600 whitespace-nowrap z-20"
-                    style={{ top: `${netToY(d.net)}%`, marginTop: -18 }}
-                  >
-                    {formatShortValueOnly(d.net)}
-                  </span>
-                  <div
-                    className="absolute left-1/2 w-2 h-2 rounded-full border-2 border-blue-600 bg-white z-20"
-                    style={{ top: `${netToY(d.net)}%`, marginLeft: -4, marginTop: -4 }}
-                  />
-                </>
+                {(() => {
+                  const netY = netToY(d.net);
+                  const assetTopPct = 50 - assetRatio(d.assets) * 50;
+                  const noDebt = d.liabilities <= 0;
+                  const nvOverlapsAssets = noDebt && netY > 10 && netY < assetTopPct + 14;
+                  const labelOffset = nvOverlapsAssets ? -22 : -18;
+                  return (
+                    <>
+                      <span
+                        className="absolute left-1/2 text-[8px] font-medium text-blue-600 whitespace-nowrap z-20"
+                        style={{ top: `${netY}%`, marginTop: labelOffset, transform: 'translate(-50%, 0)' }}
+                      >
+                        {formatShortValueOnly(d.net)}
+                      </span>
+                      <div
+                        className="absolute left-1/2 w-2 h-2 rounded-full border-2 border-blue-600 bg-white z-20"
+                        style={{ top: `${netY}%`, marginLeft: -4, marginTop: -4 }}
+                      />
+                    </>
+                  );
+                })()}
               </div>
             </div>
           ))}

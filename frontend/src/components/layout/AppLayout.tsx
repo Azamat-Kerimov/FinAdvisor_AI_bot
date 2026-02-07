@@ -25,7 +25,7 @@ export function AppLayout({ children, activeScreen, onNavigate }: AppLayoutProps
           Тестовая среда | БД: {envInfo?.db_name ?? '—'} @ {envInfo?.db_host ?? '—'}
         </div>
       )}
-      <main className="flex-1 w-full max-w-[480px] mx-auto px-4 sm:px-6 pt-5 pb-24">
+      <main className="flex-1 w-full max-w-[480px] mx-auto px-4 sm:px-6 pt-10 pb-24">
         {children}
       </main>
       <BottomNav active={activeScreen} onNavigate={onNavigate} />

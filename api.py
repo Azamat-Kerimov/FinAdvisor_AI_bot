@@ -617,27 +617,47 @@ async def get_transactions(
     limit: int = 100,
     month: Optional[int] = None,
     year: Optional[int] = None,
-    category: Optional[str] = None,
+    categories: Optional[List[str]] = Query(None, alias="category"),  # мультивыбор: category=Cat1&category=Cat2
+    period: Optional[List[str]] = Query(None, alias="period"),  # мультивыбор периодов: period=2025-1&period=2025-2
     type_: Optional[str] = Query(None, alias="type"),  # "income" | "expense"
     user_id: int = Depends(require_premium)
 ):
-    """Получить список транзакций с фильтрами (месяц, год, категория, тип)"""
+    """Получить список транзакций с фильтрами (месяц, год, категория/категории, периоды, тип)"""
     db = await get_db()
     async with db.acquire() as conn:
         conditions = ["t.user_id = $1"]
         params: List = [user_id]
         n = 2
-        if month is not None and year is not None:
-            from datetime import date
-            start = date(year, month, 1)
-            end = date(year, month + 1, 1) if month < 12 else date(year + 1, 1, 1)
+        if period and len(period) > 0:
+            from datetime import date as date_type
+            period_conds = []
+            for p in period:
+                parts = p.strip().split("-")
+                if len(parts) == 2:
+                    try:
+                        y, m = int(parts[0]), int(parts[1])
+                        if 1 <= m <= 12:
+                            start = date_type(y, m, 1)
+                            end = date_type(y, m + 1, 1) if m < 12 else date_type(y + 1, 1, 1)
+                            period_conds.append(f"(t.created_at >= ${n}::timestamp AND t.created_at < ${n + 1}::timestamp)")
+                            params.extend([start, end])
+                            n += 2
+                    except ValueError:
+                        pass
+            if period_conds:
+                conditions.append("(" + " OR ".join(period_conds) + ")")
+        elif month is not None and year is not None:
+            from datetime import date as date_type
+            start = date_type(year, month, 1)
+            end = date_type(year, month + 1, 1) if month < 12 else date_type(year + 1, 1, 1)
             conditions.append(f"t.created_at >= ${n}::timestamp")
             conditions.append(f"t.created_at < ${n + 1}::timestamp")
             params.extend([start, end])
             n += 2
-        if category:
-            conditions.append(f"c.name = ${n}")
-            params.append(category)
+        cat_list = categories or []
+        if cat_list:
+            conditions.append(f"c.name = ANY(${n}::text[])")
+            params.append(cat_list)
             n += 1
         if type_ == "income":
             conditions.append("t.amount >= 0")
@@ -654,6 +674,85 @@ async def get_transactions(
             """
         rows = await conn.fetch(q, *params)
         return [_row_to_dict(r) for r in rows]
+
+
+TRANSFER_CATEGORIES = ("Переводы людям", "Переводы от людей")
+
+
+@app.get("/api/transactions/summary")
+async def get_transactions_summary(
+    month: Optional[int] = None,
+    year: Optional[int] = None,
+    categories: Optional[List[str]] = Query(None, alias="category"),
+    period: Optional[List[str]] = Query(None, alias="period"),
+    type_: Optional[str] = Query(None, alias="type"),
+    exclude_transfers: bool = Query(False, alias="excludeTransfers"),
+    user_id: int = Depends(require_premium),
+):
+    """Сводка по транзакциям (суммы и количество) без лимита — для карточек Расходы/Доходы."""
+    db = await get_db()
+    async with db.acquire() as conn:
+        conditions = ["t.user_id = $1"]
+        params: List = [user_id]
+        n = 2
+        if period and len(period) > 0:
+            from datetime import date as date_type
+            period_conds = []
+            for p in period:
+                parts = p.strip().split("-")
+                if len(parts) == 2:
+                    try:
+                        y, m = int(parts[0]), int(parts[1])
+                        if 1 <= m <= 12:
+                            start = date_type(y, m, 1)
+                            end = date_type(y, m + 1, 1) if m < 12 else date_type(y + 1, 1, 1)
+                            period_conds.append(f"(t.created_at >= ${n}::timestamp AND t.created_at < ${n + 1}::timestamp)")
+                            params.extend([start, end])
+                            n += 2
+                    except ValueError:
+                        pass
+            if period_conds:
+                conditions.append("(" + " OR ".join(period_conds) + ")")
+        elif month is not None and year is not None:
+            from datetime import date as date_type
+            start = date_type(year, month, 1)
+            end = date_type(year, month + 1, 1) if month < 12 else date_type(year + 1, 1, 1)
+            conditions.append(f"t.created_at >= ${n}::timestamp")
+            conditions.append(f"t.created_at < ${n + 1}::timestamp")
+            params.extend([start, end])
+            n += 2
+        cat_list_summary = categories or []
+        if cat_list_summary:
+            conditions.append(f"c.name = ANY(${n}::text[])")
+            params.append(cat_list_summary)
+            n += 1
+        if exclude_transfers:
+            conditions.append(f"c.name NOT IN (${n}, ${n + 1})")
+            params.extend(TRANSFER_CATEGORIES)
+            n += 2
+        if type_ == "income":
+            conditions.append("t.amount >= 0")
+        elif type_ == "expense":
+            conditions.append("t.amount < 0")
+        where_sql = " AND ".join(conditions)
+        q = f"""
+            SELECT
+                COALESCE(SUM(CASE WHEN t.amount < 0 THEN -t.amount ELSE 0 END), 0) AS total_expense,
+                COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0) AS total_income,
+                COUNT(CASE WHEN t.amount < 0 THEN 1 END)::int AS count_expense,
+                COUNT(CASE WHEN t.amount > 0 THEN 1 END)::int AS count_income
+            FROM transactions t
+            JOIN categories c ON c.id = t.category_id
+            WHERE {where_sql}
+            """
+        row = await conn.fetchrow(q, *params)
+        return {
+            "total_expense": float(row["total_expense"]),
+            "total_income": float(row["total_income"]),
+            "count_expense": row["count_expense"],
+            "count_income": row["count_income"],
+        }
+
 
 @app.post("/api/transactions")
 async def create_transaction(transaction: TransactionCreate, user_id: int = Depends(require_premium)):

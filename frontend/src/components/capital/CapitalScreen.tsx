@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiRequest } from '@/lib/api';
@@ -265,10 +266,7 @@ export function CapitalScreen() {
 
   return (
     <>
-      {/* Хедер */}
-      <div className="mb-4">
-        <h1 className="text-lg font-bold text-slate-900">Капитал</h1>
-      </div>
+      <PageHeader title="Капитал" />
 
       {/* Поиск */}
       <div className="mb-4">

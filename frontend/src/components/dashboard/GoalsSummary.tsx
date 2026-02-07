@@ -55,13 +55,16 @@ export function GoalsSummary({ variant = 'light' }: GoalsSummaryProps) {
         {data.goals.slice(0, 3).map((goal) => {
           const progress = goal.target <= 0 ? 100 : Math.max(0, Math.min(100, (Math.max(0, goal.current) / goal.target) * 100));
           return (
-            <div key={goal.id} className="space-y-1">
+            <div key={goal.id} className="space-y-2">
+              <p className={isDark ? 'font-medium text-white' : 'font-medium text-slate-900'}>
+                {goal.title}
+              </p>
               <div className="flex justify-between text-sm">
-                <span className={isDark ? 'font-medium text-white' : 'font-medium text-slate-700'}>
-                  {goal.title}
-                </span>
                 <span className={isDark ? 'text-slate-400' : 'text-slate-600'}>
-                  {formatMoney(goal.current)} / {formatMoney(goal.target)} ₽
+                  {formatMoney(goal.current)} ₽ / {formatMoney(goal.target)} ₽
+                </span>
+                <span className={isDark ? 'font-medium text-slate-300' : 'font-medium text-slate-700'}>
+                  {Math.round(progress)}%
                 </span>
               </div>
               <div className={`w-full rounded-full h-2 ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`}>
@@ -72,7 +75,7 @@ export function GoalsSummary({ variant = 'light' }: GoalsSummaryProps) {
               </div>
               {goal.months_to_goal !== null && goal.months_to_goal > 0 && (
                 <p className={isDark ? 'text-xs text-slate-400' : 'text-xs text-muted'}>
-                  Осталось: {formatMoney(goal.remaining)} ₽ (~{goal.months_to_goal} мес.)
+                  Осталось: {formatMoney(goal.remaining)} ₽
                 </p>
               )}
             </div>

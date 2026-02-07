@@ -43,6 +43,9 @@ export function ConsultationScreen() {
   
   const [history, setHistory] = useState<ConsultationHistoryItem[]>([]);
   const [selectedHistoryIndex, setSelectedHistoryIndex] = useState<number | null>(null);
+  const [openHelp, setOpenHelp] = useState<'addGoal' | 'send' | 'consultation' | null>(null);
+  const HISTORY_PAGE_SIZE = 3;
+  const [historyPage, setHistoryPage] = useState(1);
   
   const [goalTitle, setGoalTitle] = useState('');
   const [goalTarget, setGoalTarget] = useState('');
@@ -71,6 +74,7 @@ export function ConsultationScreen() {
     try {
       const data = await apiRequest<ConsultationHistoryItem[]>('/api/consultation/history');
       setHistory(data);
+      setHistoryPage(1);
     } catch (e) {
       console.error('Ошибка загрузки истории:', e);
     }
@@ -374,23 +378,33 @@ export function ConsultationScreen() {
         )}
         {!showGoalForm && (
           <div className="mt-3 pt-3 border-t border-slate-200">
-            <Button
-              variant="primary"
-              onClick={() => setShowGoalForm(true)}
-              className="w-full py-3.5"
-            >
-              🎯 Добавить цель
-            </Button>
-            <p className="mt-2 text-xs text-slate-500">
-              Прогресс цели = Ликвидный капитал / Целевая сумма.
-              <br />
-              Ликвидный капитал = сумма ликвидных активов (депозит, акции, облигации, наличные, банковский счёт, криптовалюта) − обязательства, уменьшающие ликвидный капитал (кредит, займ, кредитная карта, рассрочка). Процент от 0% до 100%; при целевой сумме 0 — 100%. Суммы считаются неотрицательными.
-            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="primary"
+                onClick={() => setShowGoalForm(true)}
+                className="flex-1 py-3.5"
+              >
+                🎯 Добавить цель
+              </Button>
+              <button
+                type="button"
+                onClick={() => setOpenHelp(openHelp === 'addGoal' ? null : 'addGoal')}
+                className="rounded-full w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200 shrink-0"
+                title="Пояснения"
+              >
+                ?
+              </button>
+            </div>
+            {openHelp === 'addGoal' && (
+              <p className="mt-2 p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-600">
+                Прогресс цели = Ликвидный капитал / Целевая сумма. Ликвидный капитал = сумма ликвидных активов (депозит, акции, облигации, наличные, банковский счёт, криптовалюта) − обязательства, уменьшающие ликвидный капитал (кредит, займ, кредитная карта, рассрочка).
+              </p>
+            )}
           </div>
         )}
       </Card>
 
-      {/* Блок "Отправить сообщение" - перемещён выше */}
+      {/* Блок "Отправить сообщение" */}
       <Card className="p-4 mb-4">
         <h2 className="text-lg font-bold text-slate-900 mb-3">Отправить сообщение</h2>
         <form onSubmit={handleSendMessage} className="space-y-2">
@@ -401,13 +415,25 @@ export function ConsultationScreen() {
             placeholder="Например: Хочу накопить 500 000 на машину за год или оставьте пустым"
             rows={3}
           />
-          <Button type="submit" variant="primary" disabled={sendingMessage || !message.trim()} className="w-full py-3.5">
-            {sendingMessage ? 'Отправка...' : 'Отправить'}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button type="submit" variant="primary" disabled={sendingMessage || !message.trim()} className="flex-1 py-3.5">
+              {sendingMessage ? 'Отправка...' : 'Отправить'}
+            </Button>
+            <button
+              type="button"
+              onClick={() => setOpenHelp(openHelp === 'send' ? null : 'send')}
+              className="rounded-full w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200 shrink-0"
+              title="Пояснения"
+            >
+              ?
+            </button>
+          </div>
+          {openHelp === 'send' && (
+            <p className="mt-2 p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-600">
+              ИИ извлечёт цели из сообщения и добавит их автоматически. Для пассивного дохода ИИ рассчитает необходимый капитал.
+            </p>
+          )}
         </form>
-        <p className="text-xs text-muted mt-2">
-          ИИ извлечёт цели из сообщения и добавит их автоматически. Для пассивного дохода ИИ рассчитает необходимый капитал.
-        </p>
       </Card>
 
       {/* Блок "Консультация ИИ" */}
@@ -418,17 +444,29 @@ export function ConsultationScreen() {
             <span className="text-xs text-slate-500">{consultationLimit}</span>
           )}
         </div>
-        <Button
-          variant="primary"
-          onClick={handleGetConsultation}
-          disabled={loadingConsultation}
-          className="w-full mb-3 py-3.5"
-        >
-          {loadingConsultation ? 'Генерация...' : 'Получить консультацию'}
-        </Button>
-        <p className="text-xs text-muted mb-3">
-          Для генерации ответа используются вся информация о транзакциях, капитале и ваши цели, а также история ваших запросов. Заполните остальные вкладки для более качественного ответа.
-        </p>
+        <div className="flex items-center gap-2 mb-3">
+          <Button
+            variant="primary"
+            onClick={handleGetConsultation}
+            disabled={loadingConsultation}
+            className="flex-1 py-3.5"
+          >
+            {loadingConsultation ? 'Генерация...' : 'Получить консультацию'}
+          </Button>
+          <button
+            type="button"
+            onClick={() => setOpenHelp(openHelp === 'consultation' ? null : 'consultation')}
+            className="rounded-full w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200 shrink-0"
+            title="Пояснения"
+          >
+            ?
+          </button>
+        </div>
+        {openHelp === 'consultation' && (
+          <p className="mb-3 p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-600">
+            Для генерации ответа используются вся информация о транзакциях, капитале и ваши цели, а также история ваших запросов. Заполните остальные вкладки для более качественного ответа.
+          </p>
+        )}
 
         {consultationError && (
           <div className="p-3 bg-red-50 border border-red-200 rounded-button text-sm text-red-700 mb-3">
@@ -443,45 +481,83 @@ export function ConsultationScreen() {
         )}
       </Card>
 
-      {/* История консультаций */}
+      {/* История консультаций: последние первые, по 3 на странице */}
       {history.length > 0 && (
         <Card className="p-4">
           <h2 className="text-lg font-bold text-slate-900 mb-3">История консультаций</h2>
-          <div className="space-y-2">
-            {history.map((item, index) => (
-              <button
-                key={index}
-                type="button"
-                onClick={() => setSelectedHistoryIndex(selectedHistoryIndex === index ? null : index)}
-                className={`w-full rounded-lg border-2 p-3 text-left transition-colors ${
-                  selectedHistoryIndex === index
-                    ? 'border-blue-500 bg-blue-50'
-                    : 'border-slate-200 bg-white hover:border-slate-300'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-slate-900">
-                    Консультация от {formatDate(item.date)}
-                  </span>
-                  <svg
-                    className={`h-4 w-4 text-slate-400 transition-transform ${
-                      selectedHistoryIndex === index ? 'rotate-180' : ''
-                    }`}
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
+          {(() => {
+            const totalPages = Math.ceil(history.length / HISTORY_PAGE_SIZE);
+            const start = (historyPage - 1) * HISTORY_PAGE_SIZE;
+            const pageItems = history.slice(start, start + HISTORY_PAGE_SIZE);
+            const globalIndex = (i: number) => start + i;
+            return (
+              <>
+                <div className="space-y-2">
+                  {pageItems.map((item, i) => {
+                    const index = globalIndex(i);
+                    return (
+                      <button
+                        key={index}
+                        type="button"
+                        onClick={() => setSelectedHistoryIndex(selectedHistoryIndex === index ? null : index)}
+                        className={`w-full rounded-lg border-2 p-3 text-left transition-colors ${
+                          selectedHistoryIndex === index
+                            ? 'border-blue-500 bg-blue-50'
+                            : 'border-slate-200 bg-white hover:border-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium text-slate-900">
+                            Консультация от {formatDate(item.date)}
+                          </span>
+                          <svg
+                            className={`h-4 w-4 text-slate-400 transition-transform ${
+                              selectedHistoryIndex === index ? 'rotate-180' : ''
+                            }`}
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </div>
+                        {selectedHistoryIndex === index && (
+                          <div className="mt-3 pt-3 border-t border-slate-200 text-sm text-slate-700 whitespace-pre-wrap">
+                            {item.content}
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
-                {selectedHistoryIndex === index && (
-                  <div className="mt-3 pt-3 border-t border-slate-200 text-sm text-slate-700 whitespace-pre-wrap">
-                    {item.content}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-200">
+                    <span className="text-sm text-slate-500">
+                      {start + 1}–{Math.min(start + HISTORY_PAGE_SIZE, history.length)} из {history.length}
+                    </span>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={historyPage <= 1}
+                        onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
+                        className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm disabled:opacity-50"
+                      >
+                        Назад
+                      </button>
+                      <button
+                        type="button"
+                        disabled={historyPage >= totalPages}
+                        onClick={() => setHistoryPage((p) => p + 1)}
+                        className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm disabled:opacity-50"
+                      >
+                        Вперёд
+                      </button>
+                    </div>
                   </div>
                 )}
-              </button>
-            ))}
-          </div>
+              </>
+            );
+          })()}
         </Card>
       )}
     </>

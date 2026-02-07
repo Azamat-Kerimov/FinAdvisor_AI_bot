@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiRequest, getApiHeaders } from '@/lib/api';
@@ -26,13 +27,33 @@ export function TransactionsScreen() {
   const [categoriesLoading, setCategoriesLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   
-  // Фильтры
+  // Фильтры (мультивыбор: периоды и категории)
   const [selectedMonth, setSelectedMonth] = useState<number | null>(null);
-  const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
+  const [selectedYear] = useState<number>(new Date().getFullYear());
+  const [selectedPeriods, setSelectedPeriods] = useState<string[]>([]);
   const [selectedType, setSelectedType] = useState<'all' | 'income' | 'expense'>('all');
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [excludeTransfers, setExcludeTransfers] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  
+  const [filterCategoryOpen, setFilterCategoryOpen] = useState(false);
+  const [filterPeriodOpen, setFilterPeriodOpen] = useState(false);
+  const filterPeriodRef = useRef<HTMLDivElement>(null);
+  const filterCategoryRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+      if (filterPeriodOpen && filterPeriodRef.current && !filterPeriodRef.current.contains(target)) {
+        setFilterPeriodOpen(false);
+      }
+      if (filterCategoryOpen && filterCategoryRef.current && !filterCategoryRef.current.contains(target)) {
+        setFilterCategoryOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [filterPeriodOpen, filterCategoryOpen]);
+
   // Модальные окна
   const [showAddModal, setShowAddModal] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -50,27 +71,63 @@ export function TransactionsScreen() {
   const [formType, setFormType] = useState<'income' | 'expense'>('expense');
   const [formDescription, setFormDescription] = useState('');
 
+  const [summary, setSummary] = useState<{
+    total_expense: number;
+    total_income: number;
+    count_expense: number;
+    count_income: number;
+  } | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+
   useEffect(() => {
     loadTransactions();
     loadCategories();
-  }, [selectedMonth, selectedYear, selectedType, selectedCategory]);
+  }, [selectedMonth, selectedYear, selectedPeriods, selectedType, selectedCategories]);
+
+  useEffect(() => {
+    loadSummary();
+  }, [selectedMonth, selectedYear, selectedPeriods, selectedType, selectedCategories, excludeTransfers]);
+
+  async function loadSummary() {
+    setSummaryLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (selectedPeriods.length > 0) {
+        selectedPeriods.forEach((p) => params.append('period', p));
+      } else if (selectedMonth !== null) {
+        params.append('month', selectedMonth.toString());
+        params.append('year', selectedYear.toString());
+      }
+      if (selectedType !== 'all') params.append('type', selectedType);
+      selectedCategories.forEach((c) => params.append('category', c));
+      if (excludeTransfers) params.append('excludeTransfers', 'true');
+      const data = await apiRequest<{
+        total_expense: number;
+        total_income: number;
+        count_expense: number;
+        count_income: number;
+      }>(`/api/transactions/summary?${params}`);
+      setSummary(data);
+    } catch (e) {
+      setSummary(null);
+    } finally {
+      setSummaryLoading(false);
+    }
+  }
 
   async function loadTransactions() {
     setLoading(true);
     try {
       const params = new URLSearchParams();
       params.append('limit', '1000');
-      if (selectedMonth !== null) {
+      if (selectedPeriods.length > 0) {
+        selectedPeriods.forEach((p) => params.append('period', p));
+      } else if (selectedMonth !== null) {
         params.append('month', selectedMonth.toString());
         params.append('year', selectedYear.toString());
       }
-      if (selectedType !== 'all') {
-        params.append('type', selectedType);
-      }
-      if (selectedCategory) {
-        params.append('category', selectedCategory);
-      }
-      
+      if (selectedType !== 'all') params.append('type', selectedType);
+      selectedCategories.forEach((c) => params.append('category', c));
       const data = await apiRequest<Transaction[]>(`/api/transactions?${params}`);
       setTransactions(data);
     } catch (e) {
@@ -93,34 +150,39 @@ export function TransactionsScreen() {
     }
   }
 
+  const TRANSFER_CATEGORIES = ['Переводы людям', 'Переводы от людей'];
+
   const filteredTransactions = useMemo(() => {
     let filtered = [...transactions];
-    
+    if (excludeTransfers) {
+      filtered = filtered.filter((tx) => !TRANSFER_CATEGORIES.includes(tx.category));
+    }
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(
-        tx =>
+        (tx) =>
           tx.description?.toLowerCase().includes(query) ||
           tx.category.toLowerCase().includes(query) ||
           tx.amount.toString().includes(query)
       );
     }
-    
     return filtered;
-  }, [transactions, searchQuery]);
+  }, [transactions, searchQuery, excludeTransfers]);
 
-
-  const expenseTotal = useMemo(() => {
-    return filteredTransactions
-      .filter(tx => tx.amount < 0)
-      .reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
-  }, [filteredTransactions]);
-
-  const incomeTotal = useMemo(() => {
-    return filteredTransactions
-      .filter(tx => tx.amount > 0)
-      .reduce((sum, tx) => sum + tx.amount, 0);
-  }, [filteredTransactions]);
+  const computedExpense = useMemo(
+    () => filteredTransactions.filter((tx) => tx.amount < 0).reduce((sum, tx) => sum + Math.abs(tx.amount), 0),
+    [filteredTransactions]
+  );
+  const computedIncome = useMemo(
+    () => filteredTransactions.filter((tx) => tx.amount > 0).reduce((sum, tx) => sum + tx.amount, 0),
+    [filteredTransactions]
+  );
+  const expenseTotal = summary != null ? summary.total_expense : computedExpense;
+  const incomeTotal = summary != null ? summary.total_income : computedIncome;
+  const expenseCount =
+    summary != null ? summary.count_expense : filteredTransactions.filter((tx) => tx.amount < 0).length;
+  const incomeCount =
+    summary != null ? summary.count_income : filteredTransactions.filter((tx) => tx.amount > 0).length;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -289,10 +351,14 @@ export function TransactionsScreen() {
     return options;
   }, []);
 
-  const expenseCategories = categories.filter(c => c.type === 'Расход');
-  const incomeCategories = categories.filter(c => c.type === 'Доход');
+  const isExpenseCategory = (c: Category) =>
+    c.type === 'Расход' || (c.type as string).toLowerCase() === 'expense';
+  const isIncomeCategory = (c: Category) =>
+    c.type === 'Доход' || (c.type as string).toLowerCase() === 'income';
+  const expenseCategories = categories.filter(isExpenseCategory);
+  const incomeCategories = categories.filter(isIncomeCategory);
 
-  /** Фильтр списка по типу: all | expense | income (карточки Расходы/Доходы) */
+  /** Фильтр по типу: по клику на карточки Расходы/Доходы (синхронно с selectedType для API) */
   const [listFilter, setListFilter] = useState<'all' | 'expense' | 'income'>('all');
   /** Раскрытые месяцы в списке (ключ "YYYY-MM") */
   const [expandedMonths, setExpandedMonths] = useState<Set<string>>(new Set());
@@ -361,10 +427,7 @@ export function TransactionsScreen() {
 
   return (
     <>
-      {/* Хедер */}
-      <div className="mb-4">
-        <h1 className="text-lg font-bold text-slate-900">Транзакции</h1>
-      </div>
+      <PageHeader title="Транзакции" />
 
       {/* Поиск */}
       <div className="mb-4">
@@ -407,7 +470,10 @@ export function TransactionsScreen() {
 
         <button
           type="button"
-          onClick={() => setShowAddModal(true)}
+          onClick={() => {
+            setShowAddModal(true);
+            loadCategories();
+          }}
           className="flex flex-col items-center gap-2 rounded-xl border border-slate-300 bg-white p-3 text-left transition-shadow hover:shadow-lg"
         >
           <svg className="h-[1.725rem] w-[1.725rem] text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -422,103 +488,169 @@ export function TransactionsScreen() {
         </button>
       </div>
 
-      {/* Фильтры: уже, в одну линию, ниже кнопок */}
+      {/* Фильтры: мультивыбор периодов и категорий (тип — по клику на карточки Расходы/Доходы) */}
       <div className="mb-4 flex flex-wrap gap-1.5">
-        <div className="relative min-w-0 flex-1 basis-24">
-          <select
-            value={selectedMonth !== null ? `${selectedYear}-${selectedMonth}` : ''}
-            onChange={(e) => {
-              if (e.target.value) {
-                const [y, m] = e.target.value.split('-').map(Number);
-                setSelectedYear(y);
-                setSelectedMonth(m);
-              } else {
-                setSelectedMonth(null);
-              }
-            }}
-            className="w-full appearance-none rounded-full border border-slate-300 bg-white px-3 py-1.5 pr-7 text-xs focus:border-blue-500 focus:outline-none"
+        <div className="relative min-w-0 flex-1 basis-28" ref={filterPeriodRef}>
+          <button
+            type="button"
+            onClick={() => setFilterPeriodOpen(!filterPeriodOpen)}
+            className="w-full rounded-full border border-slate-300 bg-white px-3 py-1.5 pr-7 text-xs text-left focus:border-blue-500 focus:outline-none flex items-center justify-between"
           >
-            <option value="">Все периоды</option>
-            {periodOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-          <svg
-            className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
+            <span className="truncate">
+              {selectedPeriods.length === 0
+                ? 'Все периоды'
+                : selectedPeriods.length === 1
+                  ? periodOptions.find((o) => o.value === selectedPeriods[0])?.label ?? selectedPeriods[0]
+                  : `Периоды (${selectedPeriods.length})`}
+            </span>
+            <svg className="h-3.5 w-3.5 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {filterPeriodOpen && (
+            <div className="absolute left-0 right-0 top-full mt-1 z-20 max-h-48 overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg py-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedPeriods([]);
+                  setSelectedMonth(null);
+                  setFilterPeriodOpen(false);
+                }}
+                className="w-full px-3 py-1.5 text-left text-xs hover:bg-slate-50"
+              >
+                Все периоды
+              </button>
+              {periodOptions.map((opt) => {
+                const checked = selectedPeriods.includes(opt.value);
+                return (
+                  <label
+                    key={opt.value}
+                    className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer text-xs"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => {
+                        setSelectedPeriods((prev) =>
+                          checked ? prev.filter((p) => p !== opt.value) : [...prev, opt.value]
+                        );
+                      }}
+                      className="rounded border-slate-300"
+                    />
+                    {opt.label}
+                  </label>
+                );
+              })}
+            </div>
+          )}
         </div>
-        <div className="relative min-w-0 flex-1 basis-24">
-          <select
-            value={selectedType}
-            onChange={(e) => setSelectedType(e.target.value as 'all' | 'income' | 'expense')}
-            className="w-full appearance-none rounded-full border border-slate-300 bg-white px-3 py-1.5 pr-7 text-xs focus:border-blue-500 focus:outline-none"
+        <div className="relative min-w-0 flex-1 basis-28" ref={filterCategoryRef}>
+          <button
+            type="button"
+            onClick={() => setFilterCategoryOpen(!filterCategoryOpen)}
+            className="w-full rounded-full border border-slate-300 bg-white px-3 py-1.5 pr-7 text-xs text-left focus:border-blue-500 focus:outline-none flex items-center justify-between"
           >
-            <option value="all">Все типы</option>
-            <option value="expense">Расходы</option>
-            <option value="income">Доходы</option>
-          </select>
-          <svg
-            className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
+            <span className="truncate">
+              {selectedCategories.length === 0
+                ? 'Все категории'
+                : selectedCategories.length === 1
+                  ? selectedCategories[0]
+                  : `Категории (${selectedCategories.length})`}
+            </span>
+            <svg className="h-3.5 w-3.5 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {filterCategoryOpen && (
+            <div className="absolute left-0 right-0 top-full mt-1 z-20 max-h-48 overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg py-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedCategories([]);
+                  setFilterCategoryOpen(false);
+                }}
+                className="w-full px-3 py-1.5 text-left text-xs hover:bg-slate-50"
+              >
+                Все категории
+              </button>
+              {categoriesLoading ? (
+                <div className="px-3 py-2 text-xs text-slate-500">Загрузка...</div>
+              ) : (
+                categories.map((cat) => {
+                  const checked = selectedCategories.includes(cat.name);
+                  return (
+                    <label
+                      key={cat.id}
+                      className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer text-xs"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          setSelectedCategories((prev) =>
+                            checked ? prev.filter((c) => c !== cat.name) : [...prev, cat.name]
+                          );
+                        }}
+                        className="rounded border-slate-300"
+                      />
+                      {cat.name}
+                    </label>
+                  );
+                })
+              )}
+            </div>
+          )}
         </div>
-        <div className="relative min-w-0 flex-1 basis-28">
-          <select
-            value={selectedCategory || ''}
-            onChange={(e) => setSelectedCategory(e.target.value || null)}
-            className="w-full appearance-none rounded-full border border-slate-300 bg-white px-3 py-1.5 pr-7 text-xs focus:border-blue-500 focus:outline-none"
-          >
-            <option value="">Все категории</option>
-            {categoriesLoading ? (
-              <option value="" disabled>Загрузка...</option>
-            ) : categories.length === 0 ? (
-              <option value="" disabled>Нет категорий</option>
-            ) : (
-              categories.map(cat => (
-                <option key={cat.id} value={cat.name}>{cat.name}</option>
-              ))
-            )}
-          </select>
-          <svg
-            className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
-        </div>
+      </div>
+
+      {/* Чекбокс "Исключить переводы" */}
+      <div className="mb-4 flex items-center gap-2">
+        <input
+          type="checkbox"
+          id="exclude-transfers"
+          checked={excludeTransfers}
+          onChange={(e) => setExcludeTransfers(e.target.checked)}
+          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+        />
+        <label htmlFor="exclude-transfers" className="text-sm text-slate-700 cursor-pointer">
+          Исключить переводы
+        </label>
       </div>
 
       {/* Карточки Расходы/Доходы — подпись сверху, сумма слева, ring при выборе */}
       <div className="mb-4 grid grid-cols-2 gap-3">
         <Card
           className={`cursor-pointer p-4 transition-shadow hover:shadow-lg ${listFilter === 'expense' ? 'ring-2 ring-red-500' : ''}`}
-          onClick={() => setListFilter(listFilter === 'expense' ? 'all' : 'expense')}
+          onClick={() => {
+            const next = listFilter === 'expense' ? 'all' : 'expense';
+            setListFilter(next);
+            setSelectedType(next);
+          }}
         >
           <div className="text-sm text-slate-600">Расходы</div>
-          <div className="mt-1 text-2xl font-bold text-slate-900">{formatMoney(expenseTotal)} ₽</div>
-          <div className="mt-1 text-xs text-slate-500">{filteredTransactions.filter(tx => tx.amount < 0).length} записей</div>
+          <div className="mt-1 text-2xl font-bold text-slate-900">
+            {summaryLoading ? '…' : formatMoney(expenseTotal)} ₽
+          </div>
+          <div className="mt-1 text-xs text-slate-500">
+            {expenseCount} {expenseCount === 1 ? 'запись' : 'записей'}
+          </div>
         </Card>
 
         <Card
           className={`cursor-pointer p-4 transition-shadow hover:shadow-lg ${listFilter === 'income' ? 'ring-2 ring-green-500' : ''}`}
-          onClick={() => setListFilter(listFilter === 'income' ? 'all' : 'income')}
+          onClick={() => {
+            const next = listFilter === 'income' ? 'all' : 'income';
+            setListFilter(next);
+            setSelectedType(next);
+          }}
         >
           <div className="text-sm text-slate-600">Доходы</div>
-          <div className="mt-1 text-2xl font-bold text-slate-900">{formatMoney(incomeTotal)} ₽</div>
-          <div className="mt-1 text-xs text-slate-500">{filteredTransactions.filter(tx => tx.amount > 0).length} записей</div>
+          <div className="mt-1 text-2xl font-bold text-slate-900">
+            {summaryLoading ? '…' : formatMoney(incomeTotal)} ₽
+          </div>
+          <div className="mt-1 text-xs text-slate-500">
+            {incomeCount} {incomeCount === 1 ? 'запись' : 'записей'}
+          </div>
         </Card>
       </div>
 
@@ -693,18 +825,37 @@ export function TransactionsScreen() {
                   required
                 >
                   <option value="">
-                    {categoriesLoading ? 'Загрузка категорий...' : (formType === 'expense' ? expenseCategories.length === 0 ? 'Нет категорий расходов' : 'Выберите категорию' : incomeCategories.length === 0 ? 'Нет категорий доходов' : 'Выберите категорию')}
+                    {categoriesLoading
+                      ? 'Загрузка категорий...'
+                      : formType === 'expense'
+                        ? expenseCategories.length === 0
+                          ? 'Нет категорий расходов'
+                          : 'Выберите категорию'
+                        : incomeCategories.length === 0
+                          ? 'Нет категорий доходов'
+                          : 'Выберите категорию'}
                   </option>
-                  {formType === 'expense' ? (
-                    expenseCategories.map(cat => (
-                      <option key={cat.id} value={cat.id}>{cat.name}</option>
-                    ))
-                  ) : (
-                    incomeCategories.map(cat => (
-                      <option key={cat.id} value={cat.id}>{cat.name}</option>
-                    ))
-                  )}
+                  {formType === 'expense'
+                    ? expenseCategories.map((cat) => (
+                        <option key={cat.id} value={cat.id}>
+                          {cat.name}
+                        </option>
+                      ))
+                    : incomeCategories.map((cat) => (
+                        <option key={cat.id} value={cat.id}>
+                          {cat.name}
+                        </option>
+                      ))}
                 </select>
+                {!categoriesLoading && (formType === 'expense' ? expenseCategories : incomeCategories).length === 0 && (
+                  <button
+                    type="button"
+                    onClick={() => loadCategories()}
+                    className="mt-1 text-xs text-blue-600 hover:underline"
+                  >
+                    Обновить список категорий
+                  </button>
+                )}
               </div>
 
               <div>
