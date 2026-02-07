@@ -12,6 +12,40 @@ alwaysApply: true
 - **.env:** Only file allowed to differ on VPS. Never commit .env. All other files must match GitHub.
 - **Frontend (this VPS):** Low RAM — do NOT build on VPS. Build locally (npm install, npm run build in frontend), then upload: `scp -r frontend/dist root@109.70.24.22:~/FinAdvisor_AI_bot/frontend/`, then on VPS: `sudo systemctl restart finadvisor-api`. frontend/dist must NOT be committed.
 - **systemd:** Use absolute paths; use /root/FinAdvisor_AI_bot/venv/bin/python directly; do NOT rely on shell venv activation.
-- **User instructions:** ALWAYS give clear step-by-step instructions from the current point. No vague "if needed" — each step must state where (local vs VPS) and the exact command in a code block. Use labels: "CMD (локальный):" and "CMD (VPS):" with the full command below. On local machine always use Windows CMD (not PowerShell). Prod VPS IP is always 109.70.24.22 (e.g. for scp).
+- **User instructions:** ALWAYS give clear step-by-step instructions from the current point. No vague "if needed" — each step must state where (local vs VPS) and the exact command in a code block. Use labels: "CMD (локальный):" and "CMD (VPS):" with the full command below. On local machine always use Windows CMD (not PowerShell). Prod VPS IP is always 109.70.24.22 (e.g. for scp). **При запросе «как обновить» / «скрипты для обновления» / после правок под прод — всегда присылать полный список команд из раздела «Скрипты обновления (полный список)» ниже.**
 - **Goal:** Zero manual fixes on VPS, zero merge conflicts, zero "local changes would be overwritten."
 - If an instruction violates these rules, DO NOT propose it.
+
+---
+
+## Скрипты обновления (полный список)
+
+**При любом запросе на обновление/деплой или после исправлений под прод** — всегда присылать этот полный список команд (скопировать блоком ниже).
+
+### Локально (Windows CMD, корень репозитория)
+
+```cmd
+git branch
+git add .
+git commit -m "описание изменений"
+git push origin main
+cd frontend
+npm install
+npm run build
+cd ..
+scp -r frontend\dist root@109.70.24.22:~/FinAdvisor_AI_bot/frontend/
+```
+
+*(Если `package.json` не менялся, `npm install` можно пропустить. В PowerShell вместо `frontend\dist` использовать `frontend/dist`.)*
+
+### VPS (SSH, IP 109.70.24.22)
+
+```bash
+cd /root/FinAdvisor_AI_bot
+git fetch
+git reset --hard origin/main
+git clean -fd -e .env -e venv
+sudo systemctl restart finadvisor-api finadvisorbot
+```
+
+*(После заливки `frontend/dist` с локальной машины (scp) один раз перезапустить API: `sudo systemctl restart finadvisor-api`.)*

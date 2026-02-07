@@ -174,6 +174,16 @@ def validate_telegram_webapp(init_data: str) -> dict:
         user = json.loads(user_str) if user_str else {}
         
         return user
+    except HTTPException:
+        raise
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid user JSON: {str(e)}")
+    except Exception as e:
+        import logging
+        logging.error(f"Validation error: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=401, detail=f"Validation error: {str(e)}")
 
 
 def _username_from_telegram_user(user: dict) -> Optional[str]:
