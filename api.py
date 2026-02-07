@@ -174,16 +174,23 @@ def validate_telegram_webapp(init_data: str) -> dict:
         user = json.loads(user_str) if user_str else {}
         
         return user
-    except HTTPException:
-        raise
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid user JSON: {str(e)}")
-    except Exception as e:
-        import logging
-        logging.error(f"Validation error: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-        raise HTTPException(status_code=401, detail=f"Validation error: {str(e)}")
+
+
+def _username_from_telegram_user(user: dict) -> Optional[str]:
+    """Из объекта user в initData достать username (snake_case или camelCase)."""
+    v = user.get('username') or user.get('userName')
+    return (v or '').strip() or None
+
+
+def _display_name_from_telegram_user(user: dict) -> Optional[str]:
+    """Имя для отображения: username или first_name + last_name (snake/camelCase)."""
+    u = _username_from_telegram_user(user)
+    if u:
+        return u
+    first = (user.get('first_name') or user.get('firstName') or '').strip()
+    last = (user.get('last_name') or user.get('lastName') or '').strip()
+    return (' '.join((first, last)).strip() or None) if (first or last) else None
+
 
 def _is_test_user_request(request: Request) -> bool:
     """Проверка: запрос с тестовым user_id (без Telegram)."""
@@ -217,16 +224,24 @@ async def get_user_id(request: Request) -> int:
         if not tg_id:
             raise HTTPException(status_code=401, detail="Invalid user")
         
-        # Получаем или создаем пользователя
+        # Получаем или создаем пользователя (username или first_name + last_name)
+        display_name = _display_name_from_telegram_user(user)
         db = await get_db()
         async with db.acquire() as conn:
-            row = await conn.fetchrow("SELECT id FROM users WHERE tg_id=$1", tg_id)
+            row = await conn.fetchrow("SELECT id, username FROM users WHERE tg_id=$1", tg_id)
             if not row:
                 await conn.execute(
                     "INSERT INTO users (tg_id, username, created_at) VALUES ($1, $2, NOW())",
-                    tg_id, user.get('username')
+                    tg_id, display_name
                 )
                 row = await conn.fetchrow("SELECT id FROM users WHERE tg_id=$1", tg_id)
+            else:
+                # Обновить username, если в БД пусто, а в initData есть имя
+                if display_name and (not row['username'] or row['username'] != display_name):
+                    await conn.execute(
+                        "UPDATE users SET username=$1 WHERE tg_id=$2",
+                        display_name, tg_id
+                    )
             return row['id']
     except HTTPException:
         raise
@@ -411,18 +426,26 @@ async def auth_telegram(request: Request):
         if not tg_id:
             raise HTTPException(status_code=401, detail="Invalid user")
         
-        # Получаем или создаем пользователя с 2 бесплатными месяцами
+        # Получаем или создаем пользователя с 2 бесплатными месяцами (username или first_name + last_name)
+        display_name = _display_name_from_telegram_user(user)
         db = await get_db()
         async with db.acquire() as conn:
-            row = await conn.fetchrow("SELECT id, premium_until FROM users WHERE tg_id=$1", tg_id)
+            row = await conn.fetchrow("SELECT id, premium_until, username FROM users WHERE tg_id=$1", tg_id)
             if not row:
                 # Новый пользователь - даем 2 бесплатных месяца
                 free_months_until = datetime.now() + timedelta(days=60)
                 await conn.execute(
                     "INSERT INTO users (tg_id, username, created_at, premium_until) VALUES ($1, $2, NOW(), $3)",
-                    tg_id, user.get('username'), free_months_until
+                    tg_id, display_name, free_months_until
                 )
                 row = await conn.fetchrow("SELECT id, premium_until FROM users WHERE tg_id=$1", tg_id)
+            else:
+                # Обновить username, если в БД пусто, а в initData есть имя
+                if display_name and (not row['username'] or row['username'] != display_name):
+                    await conn.execute(
+                        "UPDATE users SET username=$1 WHERE tg_id=$2",
+                        display_name, tg_id
+                    )
             
             premium_until = row['premium_until']
             premium_active = premium_until and premium_until > datetime.now()
