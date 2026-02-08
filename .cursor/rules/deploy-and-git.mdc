@@ -6,7 +6,9 @@ alwaysApply: true
 # Git and Deployment Rules (MUST FOLLOW)
 
 - **Source of truth:** GitHub. VPS local files must NEVER override GitHub state.
-- **Flow:** Cursor (local) → User commit/reject → Local test (bot + app) → Push to GitHub → VPS: git fetch + reset (or pull) → systemd restart. Frontend: built locally, then scp frontend/dist to VPS.
+- **Flow:** Cursor (local) → User commit/reject → **Автотесты (обязательно перед деплоем)** → Push to GitHub → VPS: git fetch + reset (or pull) → systemd restart. Frontend: built locally, then scp frontend/dist to VPS.
+- **Перед деплоем:** обязательно пройти автотесты (`scripts\run_tests.cmd` или `venv\Scripts\python -m pytest _unpublished/tests/ -v`). API должен быть запущен с `APP_ENV=test` на http://localhost:8000.
+- **При запросе «задеплоить» / «deploy»:** всегда предлагать сначала запустить автотесты и присылать полный список команд с шагом автотестов.
 - **On VPS:** NEVER suggest committing, stashing, or keeping local changes. NEVER suggest resolving conflicts by preserving local files. If git reports local changes → ALWAYS recommend discarding them and resetting to GitHub: `git fetch`, `git reset --hard origin/main`, `git clean -fd -e .env -e venv`.
 - **VPS:** Deployment target only. NEVER suggest editing files directly on VPS.
 - **.env:** Only file allowed to differ on VPS. Never commit .env. All other files must match GitHub.
@@ -23,6 +25,16 @@ alwaysApply: true
 **При любом запросе на обновление/деплой или после исправлений под прод** — всегда присылать этот полный список команд (скопировать блоком ниже).
 
 ### Локально (Windows CMD, корень репозитория)
+
+**1. Автотесты (обязательно перед деплоем).** В отдельном терминале запустить API с `APP_ENV=test` на порту 8000, затем:
+
+```cmd
+scripts\run_tests.cmd
+```
+
+(или `venv\Scripts\python -m pytest _unpublished/tests/ -v`). Все тесты должны пройти.
+
+**2. Git, сборка фронта, заливка на VPS:**
 
 ```cmd
 git branch
