@@ -1,4 +1,4 @@
-export type NavScreen = 'dashboard' | 'transactions' | 'capital' | 'consultation';
+export type NavScreen = 'dashboard' | 'transactions' | 'capital' | 'consultation' | 'profile' | 'help';
 
 interface BottomNavProps {
   active: NavScreen;
@@ -9,7 +9,9 @@ const items: { id: NavScreen; label: string; icon: string }[] = [
   { id: 'dashboard', label: 'Главная', icon: '🏠' },
   { id: 'transactions', label: 'Транзакции', icon: '💰' },
   { id: 'capital', label: 'Капитал', icon: '💼' },
-  { id: 'consultation', label: 'Консультации ИИ', icon: '🤖' },
+  { id: 'consultation', label: 'ИИ', icon: '🤖' },
+  { id: 'profile', label: 'Профиль', icon: '👤' },
+  { id: 'help', label: 'Помощь', icon: '❓' },
 ];
 
 /** Нижняя навигация (mobile). Масштабирование: на desktop рендерить Sidebar с теми же items. */

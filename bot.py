@@ -132,21 +132,21 @@ async def get_or_create_user(tg_id: int, username: Optional[str] = None, display
 
 
 def format_premium_status(premium_until: Optional[datetime]) -> str:
-    """Форматировать статус подписки"""
+    """Форматировать статус пакета VIP"""
     if premium_until and premium_until > datetime.now():
-        return f"✅ Активна до {premium_until.strftime('%d.%m.%Y')}"
-    return "❌ Неактивна"
+        return f"✅ Пакет VIP активен до {premium_until.strftime('%d.%m.%Y')}"
+    return "❌ Пакет VIP не оформлен"
 
 
 def get_main_keyboard(has_premium: bool = False) -> InlineKeyboardMarkup:
-    """Главное меню: WebApp и кнопка подписки всегда доступны."""
+    """Главное меню: WebApp и кнопка пакета VIP всегда доступны."""
     buttons = [
         [InlineKeyboardButton(
             text="🚀 Открыть FinAdvisor",
             web_app=WebAppInfo(url=WEB_APP_URL)
         )],
         [InlineKeyboardButton(
-            text="💳 Продлить подписку" if has_premium else "💳 Оформить подписку",
+            text="💳 Продлить пакет VIP" if has_premium else "💳 Оформить пакет VIP",
             callback_data="subscribe_from_main"
         )]
     ]
@@ -160,7 +160,7 @@ async def cmd_start(m: types.Message):
         m.from_user.id, m.from_user.username, _display_name(m.from_user)
     )
     
-    # Получаем статус подписки
+    # Получаем статус пакета VIP
     async with db.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT premium_until FROM users WHERE id=$1", user_id
@@ -179,17 +179,17 @@ async def cmd_start(m: types.Message):
     if is_new_user and premium_until:
         message_text += (
             f"🎁 **Подарок для новых пользователей!**\n"
-            f"Вы получили 2 бесплатных месяца подписки!\n\n"
+            f"Вы получили 2 бесплатных месяца пакета VIP!\n\n"
         )
     
-    message_text += f"📊 Статус подписки: {status_text}\n\n"
+    message_text += f"📊 Статус: {status_text}\n\n"
     
     if premium_until and premium_until > datetime.now():
         days_left = (premium_until - datetime.now()).days
-        message_text += f"⏰ Подписка истекает через {days_left} дн.\n\n"
+        message_text += f"⏰ Пакет VIP истекает через {days_left} дн.\n\n"
     
     if not has_premium and PAYMENT_PROVIDER_TOKEN:
-        message_text += "💳 Оформите подписку, чтобы продлить доступ ко всем функциям.\n\n"
+        message_text += "💳 Оформите пакет VIP для расширенных возможностей. Приложение бесплатно: 1 консультация ИИ в месяц.\n\n"
     
     message_text += "Нажми кнопку ниже, чтобы открыть приложение:"
     
@@ -204,12 +204,12 @@ async def cmd_start(m: types.Message):
 async def cmd_subscribe(m: types.Message):
     """Команда /subscribe - выбор тарифа и оплата"""
     if not PAYMENT_PROVIDER_TOKEN:
-        await m.answer(
-            "💳 Оплата подписки\n\n"
-            "⚠️ Платежи временно недоступны.\n"
-            "Обратитесь к администратору для активации.",
-            reply_markup=get_main_keyboard()
-        )
+    await m.answer(
+        "💳 Оплата пакета VIP\n\n"
+        "⚠️ Платежи временно недоступны.\n"
+        "Обратитесь к администратору для активации.",
+        reply_markup=get_main_keyboard()
+    )
         return
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -221,11 +221,11 @@ async def cmd_subscribe(m: types.Message):
     ])
     
     await m.answer(
-        "💳 Оплата подписки\n\n"
+        "💳 Оплата пакета VIP\n\n"
         "Выберите тариф:\n"
         "• 📅 Месяц — 299 ₽ (30 дней)\n"
         "• 📆 Год — 2990 ₽ (365 дней, экономия 20%)\n\n"
-        "После оплаты вы получите полный доступ ко всем функциям FinAdvisor.",
+        "Приложение бесплатно: 1 консультация ИИ в месяц. Пакет VIP: 5 консультаций в месяц и приоритетная генерация.",
         reply_markup=keyboard
     )
 
@@ -249,11 +249,11 @@ async def back_to_main(c: types.CallbackQuery):
     message_text = (
         f"Привет, {c.from_user.first_name or 'пользователь'}! 👋\n\n"
         f"Я FinAdvisor — твой персональный финансовый помощник.\n\n"
-        f"📊 Статус подписки: {status_text}\n\n"
+        f"📊 Статус: {status_text}\n\n"
     )
     
     if not has_premium and PAYMENT_PROVIDER_TOKEN:
-        message_text += "💳 Оформите подписку, чтобы получить полный доступ ко всем функциям.\n\n"
+        message_text += "💳 Оформите пакет VIP для расширенных возможностей. Бесплатно: 1 консультация ИИ в месяц.\n\n"
     
     message_text += "Нажми кнопку ниже, чтобы открыть приложение:"
     
@@ -409,15 +409,15 @@ async def successful_payment_handler(m: types.Message):
     
     await m.answer(
         f"✅ Оплата успешно обработана!\n\n"
-        f"📊 Статус подписки: {status_text}\n\n"
-        f"Спасибо за подписку! Теперь у вас есть полный доступ ко всем функциям FinAdvisor.",
+        f"📊 Статус: {status_text}\n\n"
+        f"Спасибо за пакет VIP! Теперь у вас 5 консультаций ИИ в месяц и приоритетная генерация.",
         reply_markup=get_main_keyboard()
     )
 
 
 @dp.message(Command("status"))
 async def cmd_status(m: types.Message):
-    """Команда /status - показать статус подписки"""
+    """Команда /status - показать статус пакета VIP"""
     user_id, _ = await get_or_create_user(
         m.from_user.id, m.from_user.username, _display_name(m.from_user)
     )
@@ -432,7 +432,7 @@ async def cmd_status(m: types.Message):
     has_premium = premium_until and premium_until > datetime.now()
     
     await m.answer(
-        f"📊 Статус подписки\n\n{status_text}",
+        f"📊 Статус\n\n{status_text}",
         reply_markup=get_main_keyboard(has_premium=has_premium)
     )
 
@@ -474,11 +474,7 @@ async def send_monthly_reports():
 
     async with db.acquire() as conn:
         rows = await conn.fetch(
-            """
-            SELECT u.tg_id, u.id
-            FROM users u
-            WHERE u.premium_until > NOW() AND u.tg_id IS NOT NULL
-            """
+            "SELECT u.tg_id, u.id FROM users u WHERE u.tg_id IS NOT NULL"
         )
         for row in rows:
             tg_id = row["tg_id"]
@@ -486,11 +482,12 @@ async def send_monthly_reports():
             try:
                 tx_rows = await conn.fetch(
                     """
-                    SELECT category, SUM(ABS(amount)) as total
-                    FROM transactions
-                    WHERE user_id=$1 AND amount < 0
-                      AND created_at >= $2 AND created_at <= $3
-                    GROUP BY category ORDER BY total DESC LIMIT 5
+                    SELECT c.name AS category, SUM(ABS(t.amount)) AS total
+                    FROM transactions t
+                    JOIN categories c ON c.id = t.category_id
+                    WHERE t.user_id = $1 AND t.amount < 0
+                      AND t.created_at >= $2 AND t.created_at <= $3
+                    GROUP BY c.name ORDER BY total DESC LIMIT 5
                     """,
                     user_id, period_start, period_end
                 )
@@ -498,7 +495,8 @@ async def send_monthly_reports():
                 if not tx_rows or total <= 0:
                     text = (
                         f"📊 Месячный отчёт FinAdvisor за {month_label}\n\n"
-                        "За выбранный месяц операций не найдено. Обновите данные в приложении — так отчёты будут полезнее."
+                        "За выбранный месяц операций не найдено. Обновите данные в приложении — так отчёты будут полезнее.\n\n"
+                        "Бесплатно: 1 консультация ИИ в месяц в приложении."
                     )
                 else:
                     top = ", ".join(
@@ -509,7 +507,7 @@ async def send_monthly_reports():
                         f"📊 Месячный отчёт FinAdvisor за {month_label}\n\n"
                         f"Расходы: {int(total):,} ₽\n".replace(",", " ")
                         + (f"Топ категорий: {top}\n\n" if top else "\n")
-                        
+                        + "Бесплатно: 1 консультация ИИ в месяц в приложении."
                     )
                 kb = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🚀 Открыть FinAdvisor", web_app=WebAppInfo(url=WEB_APP_URL))],

@@ -4,6 +4,8 @@ import { DashboardScreen } from '@/components/dashboard/DashboardScreen';
 import { TransactionsScreen } from '@/components/transactions/TransactionsScreen';
 import { CapitalScreen } from '@/components/capital/CapitalScreen';
 import { ConsultationScreen } from '@/components/consultation/ConsultationScreen';
+import { ProfileScreen } from '@/components/profile/ProfileScreen';
+import { HelpScreen } from '@/components/help/HelpScreen';
 import type { NavScreen } from '@/components/layout/BottomNav';
 
 function App() {
@@ -15,6 +17,8 @@ function App() {
       {screen === 'transactions' && <TransactionsScreen />}
       {screen === 'capital' && <CapitalScreen />}
       {screen === 'consultation' && <ConsultationScreen />}
+      {screen === 'profile' && <ProfileScreen />}
+      {screen === 'help' && <HelpScreen />}
     </AppLayout>
   );
 }

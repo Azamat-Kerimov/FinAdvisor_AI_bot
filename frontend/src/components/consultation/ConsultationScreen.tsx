@@ -3,6 +3,7 @@ import { PageHeader } from '@/components/layout/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiRequest } from '@/lib/api';
+import { useConsultationActions } from '@/hooks/useStats';
 
 interface Goal {
   id: number;
@@ -22,11 +23,19 @@ interface ConsultationResponse {
 interface ConsultationHistoryItem {
   content: string;
   date: string;
+  follow_ups?: Array<{ question: string | null; answer: string | null }>;
 }
 
 interface MessageResponse {
   goals_added: Array<{ title: string; target: number }>;
   reply: string;
+}
+
+interface FollowUpResponse {
+  reply: string;
+  sessions_used: number;
+  limit: number;
+  limit_reached?: boolean;
 }
 
 export function ConsultationScreen() {
@@ -38,9 +47,10 @@ export function ConsultationScreen() {
   const [consultation, setConsultation] = useState<string | null>(null);
   const [loadingConsultation, setLoadingConsultation] = useState(false);
   const [consultationError, setConsultationError] = useState<string | null>(null);
-  const [, setRequestsUsed] = useState<number>(0);
   const [consultationLimit, setConsultationLimit] = useState<string>('');
-  
+  const [canFollowupToday, setCanFollowupToday] = useState(false);
+  const [, setSessionsLimit] = useState<number>(5);
+
   const [history, setHistory] = useState<ConsultationHistoryItem[]>([]);
   const [selectedHistoryIndex, setSelectedHistoryIndex] = useState<number | null>(null);
   const [openHelp, setOpenHelp] = useState<'addGoal' | 'send' | 'consultation' | null>(null);
@@ -52,6 +62,13 @@ export function ConsultationScreen() {
   const [goalDescription, setGoalDescription] = useState('');
   const [message, setMessage] = useState('');
   const [sendingMessage, setSendingMessage] = useState(false);
+
+  const [followUpMessage, setFollowUpMessage] = useState('');
+  const [followUpReply, setFollowUpReply] = useState<string | null>(null);
+  const [loadingFollowUp, setLoadingFollowUp] = useState(false);
+  const [followUpError, setFollowUpError] = useState<string | null>(null);
+
+  const { data: consultationActions, loading: actionsLoading, refetch: refetchActions } = useConsultationActions();
 
   useEffect(() => {
     loadGoals();
@@ -82,12 +99,20 @@ export function ConsultationScreen() {
 
   async function loadConsultationLimit() {
     try {
-      const data = await apiRequest<{ requests_used?: number; limit_reached?: boolean }>('/api/consultation/limit');
-      setRequestsUsed(data.requests_used || 0);
+      const data = await apiRequest<{
+        sessions_used?: number;
+        limit?: number;
+        limit_reached?: boolean;
+        can_followup_today?: boolean;
+      }>('/api/consultation/limit');
+      const used = data.sessions_used ?? 0;
+      const limit = data.limit ?? 5;
+      setSessionsLimit(limit);
+      setCanFollowupToday(!!data.can_followup_today);
       if (data.limit_reached) {
-        setConsultationLimit(`Лимит консультаций: ${data.requests_used ?? 0}/5`);
+        setConsultationLimit(`Сессий в этом месяце: ${used}/${limit}`);
       } else {
-        setConsultationLimit(`Консультаций использовано: ${data.requests_used ?? 0}/5`);
+        setConsultationLimit(`Сессий в этом месяце: ${used}/${limit} (1 сессия = день консультации + уточнения)`);
       }
     } catch (e) {
       console.error('Ошибка загрузки лимита:', e);
@@ -170,12 +195,15 @@ export function ConsultationScreen() {
     setConsultation(null);
     try {
       const data = await apiRequest<ConsultationResponse>('/api/consultation');
-      setRequestsUsed(data.requests_used || 0);
-      
+      const used = (data as { sessions_used?: number }).sessions_used ?? 0;
+      const limit = (data as { limit?: number }).limit ?? 5;
+      setSessionsLimit(limit);
+      setCanFollowupToday(true);
+
       if (data.limit_reached) {
-        setConsultationError(data.error || `Лимит консультаций исчерпан (${data.requests_used}/5)`);
+        setConsultationError(data.error || `Лимит сессий исчерпан (${used}/${limit})`);
         setConsultation(null);
-        setConsultationLimit(`Лимит консультаций: ${data.requests_used || 0}/5`);
+        setConsultationLimit(`Сессий в этом месяце: ${used}/${limit}`);
       } else if (data.consultation) {
         // Проверяем, не является ли это сообщением об ошибке
         const consultationText = data.consultation;
@@ -186,12 +214,17 @@ export function ConsultationScreen() {
           setConsultation(consultationText);
           setConsultationError(null);
           loadHistory();
+          refetchActions();
         }
-        setConsultationLimit(`Консультаций использовано: ${data.requests_used || 0}/5`);
+        const su = (data as { sessions_used?: number }).sessions_used ?? 0;
+        const lim = (data as { limit?: number }).limit ?? 5;
+        setConsultationLimit(`Сессий в этом месяце: ${su}/${lim}`);
       } else if (data.error) {
         setConsultationError(data.error);
         setConsultation(null);
-        setConsultationLimit(`Консультаций использовано: ${data.requests_used || 0}/5`);
+        const su = (data as { sessions_used?: number }).sessions_used ?? 0;
+        const lim = (data as { limit?: number }).limit ?? 5;
+        setConsultationLimit(`Сессий в этом месяце: ${su}/${lim}`);
       } else {
         setConsultationError('Не удалось получить консультацию');
         setConsultation(null);
@@ -204,6 +237,33 @@ export function ConsultationScreen() {
       setConsultation(null);
     } finally {
       setLoadingConsultation(false);
+    }
+  }
+
+  async function handleFollowUp(e: React.FormEvent) {
+    e.preventDefault();
+    const msg = followUpMessage.trim();
+    if (!msg) return;
+    setLoadingFollowUp(true);
+    setFollowUpError(null);
+    setFollowUpReply(null);
+    try {
+      const data = await apiRequest<FollowUpResponse>('/api/consultation/follow-up', {
+        method: 'POST',
+        body: JSON.stringify({ message: msg }),
+      });
+      setFollowUpReply(data.reply);
+      setFollowUpMessage('');
+      const su = data.sessions_used ?? 0;
+      const lim = data.limit ?? 5;
+      setConsultationLimit(`Сессий в этом месяце: ${su}/${lim}`);
+      loadHistory();
+      refetchActions();
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      setFollowUpError(errorMsg);
+    } finally {
+      setLoadingFollowUp(false);
     }
   }
 
@@ -402,38 +462,37 @@ export function ConsultationScreen() {
             )}
           </div>
         )}
-      </Card>
 
-      {/* Блок "Отправить сообщение" */}
-      <Card className="p-4 mb-4">
-        <h2 className="text-lg font-bold text-slate-900 mb-3">Отправить сообщение</h2>
-        <form onSubmit={handleSendMessage} className="space-y-2">
-          <textarea
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            className="w-full px-3 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400"
-            placeholder="Например: Хочу накопить 500 000 на машину за год или оставьте пустым"
-            rows={3}
-          />
-          <div className="flex items-center gap-2">
-            <Button type="submit" variant="primary" disabled={sendingMessage || !message.trim()} className="flex-1 py-3.5">
-              {sendingMessage ? 'Отправка...' : 'Отправить'}
-            </Button>
-            <button
-              type="button"
-              onClick={() => setOpenHelp(openHelp === 'send' ? null : 'send')}
-              className="rounded-full w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200 shrink-0"
-              title="Пояснения"
-            >
-              ?
-            </button>
-          </div>
-          {openHelp === 'send' && (
-            <p className="mt-2 p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-600">
-              ИИ извлечёт цели из сообщения и добавит их автоматически. Для пассивного дохода ИИ рассчитает необходимый капитал.
-            </p>
-          )}
-        </form>
+        <div className="mt-4 pt-4 border-t border-slate-200">
+          <h3 className="text-base font-semibold text-slate-900 mb-2">Отправить сообщение</h3>
+          <form onSubmit={handleSendMessage} className="space-y-2">
+            <textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              className="w-full px-3 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400"
+              placeholder="Например: Хочу накопить 500 000 на машину за год или оставьте пустым"
+              rows={3}
+            />
+            <div className="flex items-center gap-2">
+              <Button type="submit" variant="primary" disabled={sendingMessage || !message.trim()} className="flex-1 py-3.5">
+                {sendingMessage ? 'Отправка...' : 'Отправить'}
+              </Button>
+              <button
+                type="button"
+                onClick={() => setOpenHelp(openHelp === 'send' ? null : 'send')}
+                className="rounded-full w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200 shrink-0"
+                title="Пояснения"
+              >
+                ?
+              </button>
+            </div>
+            {openHelp === 'send' && (
+              <p className="mt-2 p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-600">
+                ИИ извлечёт цели из сообщения и добавит их автоматически. Для пассивного дохода ИИ рассчитает необходимый капитал.
+              </p>
+            )}
+          </form>
+        </div>
       </Card>
 
       {/* Блок "Консультация ИИ" */}
@@ -475,11 +534,84 @@ export function ConsultationScreen() {
         )}
 
         {consultation && (
-          <div className="p-4 bg-slate-50 rounded-button text-sm whitespace-pre-wrap">
-            {consultation}
-          </div>
+          <>
+            <div className="p-4 bg-slate-50 rounded-button text-sm whitespace-pre-wrap">
+              {consultation}
+            </div>
+            {/* Уточняющий вопрос — только после получения консультации, в том же блоке */}
+            {canFollowupToday && (
+              <div className="mt-4 pt-4 border-t border-slate-200">
+                <p className="text-sm font-medium text-slate-700 mb-2">Уточняющий вопрос</p>
+                <p className="text-xs text-slate-500 mb-2">Задайте вопрос по консультации в этот же день. Уточнения не тратят лимит сессий.</p>
+                <form onSubmit={handleFollowUp} className="space-y-2">
+                  <textarea
+                    value={followUpMessage}
+                    onChange={(e) => setFollowUpMessage(e.target.value)}
+                    className="w-full px-3 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="Например: Как именно сократить расходы на еду?"
+                    rows={2}
+                  />
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    disabled={loadingFollowUp || !followUpMessage.trim()}
+                    className="w-full py-3.5"
+                  >
+                    {loadingFollowUp ? 'Отправка...' : 'Задать вопрос'}
+                  </Button>
+                </form>
+                {followUpError && (
+                  <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-button text-sm text-red-700">
+                    {followUpError}
+                  </div>
+                )}
+                {followUpReply && (
+                  <div className="mt-3 p-4 bg-slate-50 rounded-button text-sm whitespace-pre-wrap">
+                    {followUpReply}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
         )}
       </Card>
+
+      {/* Чек-лист действий из консультации */}
+      {!actionsLoading && consultationActions && consultationActions.length > 0 && (
+        <Card className="p-4 mb-4">
+          <h2 className="text-lg font-bold text-slate-900 mb-3">Действия из консультации</h2>
+          <p className="text-sm text-slate-600 mb-3">Отметьте выполненное — в следующей консультации ИИ учтёт это.</p>
+          <ul className="space-y-2">
+            {consultationActions.map((action) => (
+              <li key={action.id} className="flex items-start gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await apiRequest(`/api/consultation/actions/${action.id}`, {
+                        method: 'PATCH',
+                        body: JSON.stringify({ done: !action.done }),
+                      });
+                      refetchActions();
+                    } catch (e) {
+                      alert('Ошибка: ' + (e instanceof Error ? e.message : String(e)));
+                    }
+                  }}
+                  className={`shrink-0 mt-0.5 w-5 h-5 rounded border-2 flex items-center justify-center ${
+                    action.done ? 'bg-green-500 border-green-500' : 'border-slate-300'
+                  }`}
+                  aria-label={action.done ? 'Отменить выполнение' : 'Отметить выполненным'}
+                >
+                  {action.done && <span className="text-white text-xs">✓</span>}
+                </button>
+                <span className={`text-sm ${action.done ? 'text-slate-500 line-through' : 'text-slate-700'}`}>
+                  {action.action_text}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       {/* История консультаций: последние первые, по 3 на странице */}
       {history.length > 0 && (
@@ -522,8 +654,19 @@ export function ConsultationScreen() {
                           </svg>
                         </div>
                         {selectedHistoryIndex === index && (
-                          <div className="mt-3 pt-3 border-t border-slate-200 text-sm text-slate-700 whitespace-pre-wrap">
-                            {item.content}
+                          <div className="mt-3 pt-3 border-t border-slate-200 text-sm text-slate-700 space-y-3">
+                            <div className="whitespace-pre-wrap">{item.content}</div>
+                            {item.follow_ups && item.follow_ups.length > 0 && (
+                              <div className="space-y-2 pt-2 border-t border-slate-100">
+                                <span className="text-xs font-medium text-slate-500">Уточнения:</span>
+                                {item.follow_ups.map((fu: { question: string | null; answer: string | null }, fi: number) => (
+                                  <div key={fi} className="pl-2 border-l-2 border-slate-200">
+                                    {fu.question && <p className="text-slate-600 mb-1"><strong>Вопрос:</strong> {fu.question}</p>}
+                                    {fu.answer && <p className="whitespace-pre-wrap">{fu.answer}</p>}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         )}
                       </button>

@@ -43,13 +43,43 @@ def main():
     with open(path, "r", encoding="utf-8") as f:
         sql = f.read()
 
+    def statements_from_sql(content: str):
+        """Разбивает SQL на отдельные команды (по ; в конце строки или ; + пробелы + перевод)."""
+        out = []
+        current = []
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("--"):
+                continue
+            current.append(line)
+            if stripped.endswith(";"):
+                stmt = "\n".join(current).strip()
+                if stmt:
+                    out.append(stmt)
+                current = []
+        if current:
+            stmt = "\n".join(current).strip()
+            if stmt and not stmt.startswith("--"):
+                if not stmt.endswith(";"):
+                    stmt += ";"
+                out.append(stmt)
+        return out
+
     async def run():
         conn = await asyncpg.connect(
             user=DB_USER, password=DB_PASSWORD, database=DB_NAME,
             host=DB_HOST, port=DB_PORT,
         )
         try:
-            await conn.execute(sql)
+            for i, stmt in enumerate(statements_from_sql(sql)):
+                if not stmt.strip():
+                    continue
+                try:
+                    await conn.execute(stmt)
+                    print(f"  OK: команда {i + 1}")
+                except Exception as e:
+                    print(f"  Ошибка в команде {i + 1}: {e}", file=sys.stderr)
+                    raise
         finally:
             await conn.close()
 
