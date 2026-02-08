@@ -49,6 +49,12 @@ if os.path.isdir(_frontend_dist):
             _frontend_ready = True
         except Exception as e:
             logging.warning("Could not mount frontend assets: %s", e)
+    _examples = os.path.join(_frontend_dist, "examples")
+    if os.path.isdir(_examples):
+        try:
+            app.mount("/examples", StaticFiles(directory=_examples), name="examples")
+        except Exception as e:
+            logging.warning("Could not mount frontend examples: %s", e)
 if not _frontend_ready:
     logging.warning(
         "Frontend not found at %s — run: ./scripts/build_frontend.sh",
