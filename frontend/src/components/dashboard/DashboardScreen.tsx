@@ -409,7 +409,6 @@ export function DashboardScreen() {
                 <tbody>
                   {progressVsSelf.categories.map((c) => {
                     const diff = c.now - c.before;
-                    const sign = diff > 0 ? '+' : '';
                     return (
                       <tr key={c.category} className="border-b border-slate-100">
                         <td className="py-2 pr-2">{c.category}</td>
@@ -460,7 +459,10 @@ export function DashboardScreen() {
                   </tr>
                 </thead>
                 <tbody>
-                  {[benchmarks.savings, ...benchmarks.categories].map((row) => {
+                  {[
+                    ...(benchmarks.savings ? [{ name: 'Сбережения' as const, ...benchmarks.savings }] : []),
+                    ...benchmarks.categories,
+                  ].map((row) => {
                     const isSavings = row.name === 'Сбережения';
                     const belowTarget = row.user_pct < row.target_low;
                     const aboveTarget = row.user_pct > row.target_high;
