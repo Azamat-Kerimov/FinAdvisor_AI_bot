@@ -19,13 +19,13 @@ export function AppLayout({ children, activeScreen, onNavigate }: AppLayoutProps
   const isTest = envInfo?.environment === 'test';
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col bg-surface dark:bg-slate-900">
       {isTest && (
         <div className="sticky top-0 z-50 bg-amber-500 text-amber-950 px-3 py-2 text-center text-sm font-medium shadow">
           Тестовая среда | БД: {envInfo?.db_name ?? '—'} @ {envInfo?.db_host ?? '—'}
         </div>
       )}
-      <main className="flex-1 w-full max-w-[480px] mx-auto px-4 sm:px-6 pt-10 pb-24">
+      <main className="flex-1 w-full max-w-[480px] mx-auto px-4 sm:px-6 pt-[max(3.25rem,calc(3.25rem+env(safe-area-inset-top)))] pb-24">
         {children}
       </main>
       <BottomNav active={activeScreen} onNavigate={onNavigate} />

@@ -3,6 +3,8 @@ import { PageHeader } from '@/components/layout/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiRequest } from '@/lib/api';
+import { useModalBack, useSwipeDown } from '@/hooks/useModalBack';
+import { usePullToRefresh } from '@/hooks/usePullToRefresh';
 
 interface Asset {
   asset_id: number;
@@ -264,8 +266,16 @@ export function CapitalScreen() {
     return new Date(updatedAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
   }
 
+  const { handleOverlayClose: closeAddOverlay } = useModalBack(showAddModal, resetForm);
+  const swipeAdd = useSwipeDown(resetForm);
+
+  const { pullProps: pullRefreshProps, pullY, isRefreshing } = usePullToRefresh(loadData);
+
   return (
-    <>
+    <div {...pullRefreshProps}>
+      {(pullY > 0 || isRefreshing) && (
+        <div className="flex justify-center py-2 text-sm text-slate-500">{(isRefreshing ? 'Обновление...' : 'Потяните для обновления')}</div>
+      )}
       <PageHeader title="Капитал" />
 
       {/* Поиск */}
@@ -363,7 +373,11 @@ export function CapitalScreen() {
 
       {/* Модальное окно добавления/редактирования */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => resetForm()}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={closeAddOverlay}
+          {...swipeAdd}
+        >
           <div className="max-w-md w-full" onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}>
             <Card className="p-6">
             <div className="mb-4 flex items-center justify-between">
@@ -372,8 +386,9 @@ export function CapitalScreen() {
               </h2>
               <button
                 type="button"
-                onClick={() => resetForm()}
-                className="text-slate-400 hover:text-slate-600"
+                onClick={resetForm}
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-slate-600 -m-2"
+                aria-label="Закрыть"
               >
                 ✕
               </button>
@@ -585,6 +600,6 @@ export function CapitalScreen() {
           })}
         </div>
       )}
-    </>
+    </div>
   );
 }

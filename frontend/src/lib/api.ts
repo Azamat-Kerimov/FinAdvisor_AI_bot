@@ -85,3 +85,16 @@ export async function apiRequest<T>(endpoint: string, options: RequestInit = {})
     throw e;
   }
 }
+
+/**
+ * Логирование действия пользователя в БД (экран, шаринг и т.д.).
+ * Вызов не блокирует UI; ошибки игнорируются.
+ */
+export function logAction(action: string, details?: Record<string, unknown>): void {
+  apiRequest<{ status: string }>('/api/log-action', {
+    method: 'POST',
+    body: JSON.stringify({ action, details }),
+  }).catch(() => {
+    // fire-and-forget
+  });
+}

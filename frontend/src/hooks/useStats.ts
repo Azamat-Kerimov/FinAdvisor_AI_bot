@@ -31,6 +31,7 @@ export function useStats(month?: number, year?: number) {
   const [data, setData] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [refetchTrigger, setRefetchTrigger] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,9 +56,10 @@ export function useStats(month?: number, year?: number) {
       cancelled = true;
       controller.abort();
     };
-  }, [m, y]);
+  }, [m, y, refetchTrigger]);
 
-  return { data, loading, error };
+  const refetch = () => setRefetchTrigger((t) => t + 1);
+  return { data, loading, error, refetch };
 }
 
 /** Доходы, расходы и разница по месяцам за последние 12 месяцев */

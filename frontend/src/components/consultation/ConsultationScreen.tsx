@@ -4,6 +4,7 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiRequest } from '@/lib/api';
 import { useConsultationActions } from '@/hooks/useStats';
+import { ShareButton } from '@/components/ui/ShareButton';
 
 interface Goal {
   id: number;
@@ -449,10 +450,10 @@ export function ConsultationScreen() {
               <button
                 type="button"
                 onClick={() => setOpenHelp(openHelp === 'addGoal' ? null : 'addGoal')}
-                className="rounded-full w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200 shrink-0"
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center shrink-0 rounded-full"
                 title="Пояснения"
               >
-                ?
+                <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
               </button>
             </div>
             {openHelp === 'addGoal' && (
@@ -480,10 +481,10 @@ export function ConsultationScreen() {
               <button
                 type="button"
                 onClick={() => setOpenHelp(openHelp === 'send' ? null : 'send')}
-                className="rounded-full w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200 shrink-0"
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center shrink-0 rounded-full"
                 title="Пояснения"
               >
-                ?
+                <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
               </button>
             </div>
             {openHelp === 'send' && (
@@ -496,12 +497,20 @@ export function ConsultationScreen() {
       </Card>
 
       {/* Блок "Консультация ИИ" */}
-      <Card className="p-4 mb-4">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-slate-900">Консультация ИИ</h2>
-          {consultationLimit && (
-            <span className="text-xs text-slate-500">{consultationLimit}</span>
-          )}
+      <Card className="p-4 mb-4 relative">
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">Консультация ИИ</h2>
+          <div className="flex items-center gap-2">
+            {consultationLimit && (
+              <span className="text-xs text-slate-500 dark:text-slate-400">{consultationLimit}</span>
+            )}
+            {consultation && (
+              <ShareButton
+                title="Консультация ИИ — FinAdvisor"
+                text={consultation}
+              />
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-2 mb-3">
           <Button
@@ -515,10 +524,10 @@ export function ConsultationScreen() {
           <button
             type="button"
             onClick={() => setOpenHelp(openHelp === 'consultation' ? null : 'consultation')}
-            className="rounded-full w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200 shrink-0"
+            className="min-w-[44px] min-h-[44px] flex items-center justify-center shrink-0 rounded-full"
             title="Пояснения"
           >
-            ?
+            <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
           </button>
         </div>
         {openHelp === 'consultation' && (
@@ -535,7 +544,7 @@ export function ConsultationScreen() {
 
         {consultation && (
           <>
-            <div className="p-4 bg-slate-50 rounded-button text-sm whitespace-pre-wrap">
+            <div className="p-4 bg-slate-50 dark:bg-slate-700/50 rounded-button text-sm whitespace-pre-wrap">
               {consultation}
             </div>
             {/* Уточняющий вопрос — только после получения консультации, в том же блоке */}

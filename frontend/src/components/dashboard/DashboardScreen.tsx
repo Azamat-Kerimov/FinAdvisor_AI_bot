@@ -19,6 +19,9 @@ import {
 } from '@/hooks/useStats';
 import { apiRequest } from '@/lib/api';
 import type { CapitalHistoryItem } from '@/types/api';
+import type { NavScreen } from '@/components/layout/BottomNav';
+import { usePullToRefresh } from '@/hooks/usePullToRefresh';
+import { ShareButton } from '@/components/ui/ShareButton';
 
 const MONTH_NAMES = [
   'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
@@ -74,6 +77,18 @@ function formatShortMoney(value: number): string {
   return `${sign}${Math.round(abs)}`;
 }
 
+/** Значение в тыс. ₽ для таблицы «Прогресс относительно себя»: одна размерность, в шапке указано «тыс. ₽». */
+function formatThousandRub(value: number): string {
+  const v = value / 1_000;
+  const abs = Math.abs(v);
+  const sign = value < 0 ? '−' : '';
+  if (abs >= 100) return `${sign}${Math.round(abs)}`;
+  if (abs >= 10) return `${sign}${abs.toFixed(1)}`;
+  if (abs >= 1) return `${sign}${abs.toFixed(2)}`;
+  if (abs === 0) return '0';
+  return `${sign}${abs.toFixed(2)}`;
+}
+
 /** Только число для подписей на столбцах (размерность по оси): "+410", "-418", "1.2" */
 function formatShortValueOnly(value: number): string {
   const abs = Math.abs(value);
@@ -116,23 +131,35 @@ function getNiceAxisRange(maxAbs: number): { maxTick: number; step: number; tick
   return { maxTick, step: niceStep, ticks };
 }
 
-/** Светлая тема: обёртка страницы Главная */
-const LIGHT_WRAPPER = 'min-h-full bg-slate-50 text-slate-900';
+/** Обёртка страницы Главная (светлая и тёмная тема) */
+const LIGHT_WRAPPER = 'min-h-full bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-200';
 
 const ONBOARDING_STORAGE_KEY = 'finadvisor_onboarding_seen';
+const PROGRESS_CLOSED_KEY = 'finadvisor_progress_closed';
 
-export function DashboardScreen() {
+/** Подсказка к алерту о резервном фонде */
+const RESERVE_ALERT_TOOLTIP =
+  'Резерв считается так: ликвидный капитал (активы: депозиты, счета, наличные и т.д. минус ликвидные долги) делим на средние месячные расходы за последние 3 месяца. Рекомендуется иметь запас на 3–6 месяцев расходов.';
+
+interface DashboardScreenProps {
+  onNavigate?: (screen: NavScreen) => void;
+}
+
+export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
   const prev = getPreviousMonth();
   const [selectedMonth, setSelectedMonth] = useState(prev.month);
   const [selectedYear, setSelectedYear] = useState(prev.year);
   const [onboardingSeen, setOnboardingSeen] = useState(() =>
     typeof localStorage !== 'undefined' && localStorage.getItem(ONBOARDING_STORAGE_KEY) === 'true'
   );
+  const [progressClosed, setProgressClosed] = useState(() =>
+    typeof localStorage !== 'undefined' && localStorage.getItem(PROGRESS_CLOSED_KEY) === 'true'
+  );
   const [benchmarksHelpOpen, setBenchmarksHelpOpen] = useState(false);
   const [progressHelpOpen, setProgressHelpOpen] = useState(false);
   const [capitalHelpOpen, setCapitalHelpOpen] = useState(false);
 
-  const { data: stats, loading: statsLoading, error: statsError } = useStats(selectedMonth, selectedYear);
+  const { data: stats, loading: statsLoading, error: statsError, refetch: refetchStats } = useStats(selectedMonth, selectedYear);
   const { data: monthlyBalance, loading: monthlyLoading } = useMonthlyBalance();
   const { data: capitalSummary, loading: capitalSummaryLoading } = useCapitalSummary();
   const { data: capitalHistory, loading: capitalHistoryLoading } = useCapitalHistory();
@@ -162,8 +189,15 @@ export function DashboardScreen() {
     setOnboardingSeen(true);
   }
 
+  const { pullProps, pullY, isRefreshing } = usePullToRefresh(() => refetchStats());
+
   return (
-    <div className={LIGHT_WRAPPER}>
+    <div className={LIGHT_WRAPPER} {...pullProps}>
+      {(pullY > 0 || isRefreshing) && (
+        <div className="flex justify-center py-2 text-sm text-slate-500 dark:text-slate-400">
+          {isRefreshing ? 'Обновление...' : 'Потяните для обновления'}
+        </div>
+      )}
       <PageHeader title="Главная" />
 
       {/* Онбординг: что это за приложение и как пользоваться */}
@@ -211,41 +245,79 @@ export function DashboardScreen() {
         </Card>
       )}
 
-      {/* Пайплайн онбординга: после «Понятно» */}
-      {onboardingSeen && !onboardingProgressLoading && onboardingProgress && (
-        <Card className="p-4 mb-4 bg-white border border-slate-200 shadow-card">
-          <h2 className="text-base font-semibold text-slate-900 mb-3">Ваш прогресс</h2>
-          <div className="space-y-3">
-            {[
-              { done: onboardingProgress.has_transactions, label: 'Добавьте или загрузите транзакции', sub: 'Транзакции' },
-              { done: onboardingProgress.has_capital, label: 'Добавьте активы и долги', sub: 'Капитал' },
-              { done: onboardingProgress.has_profile, label: 'Заполните профиль', sub: 'Профиль' },
-              { done: onboardingProgress.has_consultation, label: 'Получите консультацию ИИ', sub: 'ИИ' },
-              { done: onboardingProgress.has_transactions && onboardingProgress.has_capital && onboardingProgress.has_profile && onboardingProgress.has_consultation, label: 'Наслаждайтесь', sub: '' },
-            ].map((step, i) => (
-              <div key={i} className="flex items-center gap-3 p-2 rounded-lg border border-slate-100">
-                <div
-                  className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
-                    step.done ? 'bg-green-500 text-white' : 'bg-slate-200 text-slate-500'
-                  }`}
-                >
-                  {step.done ? (
-                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                    </svg>
-                  ) : (
-                    <span className="text-sm font-medium">{i + 1}</span>
-                  )}
-                </div>
-                <div className="min-w-0">
-                  <p className={`text-sm font-medium ${step.done ? 'text-slate-700' : 'text-slate-900'}`}>{step.label}</p>
-                  {step.sub && <p className="text-xs text-slate-500">{step.sub}</p>}
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
+      {/* Пайплайн онбординга: после «Понятно»; скрываем карточку, если всё пройдено и нажали «Закрыть» */}
+      {onboardingSeen && !onboardingProgressLoading && onboardingProgress && (() => {
+        const allDone =
+          onboardingProgress.has_transactions &&
+          onboardingProgress.has_capital &&
+          onboardingProgress.has_profile &&
+          onboardingProgress.has_consultation;
+        if (allDone && progressClosed) return null;
+        return (
+          <Card className="p-4 mb-4 bg-white border border-slate-200 shadow-card">
+            <h2 className="text-base font-semibold text-slate-900 mb-3">Ваш прогресс</h2>
+            <div className="space-y-3">
+              {[
+                { done: onboardingProgress.has_transactions, label: 'Добавьте или загрузите транзакции', sub: 'Транзакции', screen: 'transactions' as NavScreen },
+                { done: onboardingProgress.has_capital, label: 'Добавьте активы и долги', sub: 'Капитал', screen: 'capital' as NavScreen },
+                { done: onboardingProgress.has_profile, label: 'Заполните профиль', sub: 'Профиль', screen: 'profile' as NavScreen },
+                { done: onboardingProgress.has_consultation, label: 'Получите консультацию ИИ', sub: 'ИИ', screen: 'consultation' as NavScreen },
+                { done: allDone, label: 'Наслаждайтесь', sub: '', screen: undefined },
+              ].map((step, i) => {
+                const isClickable = step.screen && onNavigate;
+                const content = (
+                  <>
+                    <div
+                      className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
+                        step.done ? 'bg-green-500 text-white' : 'bg-slate-200 text-slate-500'
+                      }`}
+                    >
+                      {step.done ? (
+                        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                        </svg>
+                      ) : (
+                        <span className="text-sm font-medium">{i + 1}</span>
+                      )}
+                    </div>
+                    <div className="min-w-0 text-left">
+                      <p className={`text-sm font-medium ${step.done ? 'text-slate-700' : 'text-slate-900'}`}>{step.label}</p>
+                      {step.sub && <p className="text-xs text-slate-500">{step.sub}</p>}
+                    </div>
+                  </>
+                );
+                return (
+                  <div key={i} className="flex items-center gap-3 p-2 rounded-lg border border-slate-100">
+                    {isClickable ? (
+                      <button
+                        type="button"
+                        onClick={() => onNavigate(step.screen!)}
+                        className="flex items-center gap-3 w-full text-left rounded-lg -m-2 p-2 hover:bg-slate-50 transition-colors focus:outline-none focus:ring-2 focus:ring-slate-300 focus:ring-inset"
+                      >
+                        {content}
+                      </button>
+                    ) : (
+                      content
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {allDone && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (typeof localStorage !== 'undefined') localStorage.setItem(PROGRESS_CLOSED_KEY, 'true');
+                  setProgressClosed(true);
+                }}
+                className="mt-3 w-full py-2.5 px-4 rounded-button bg-slate-800 text-white font-medium text-sm hover:bg-slate-700 transition-colors"
+              >
+                Закрыть
+              </button>
+            )}
+          </Card>
+        );
+      })()}
 
       {/* Цель месяца (фокус от ИИ) */}
       {!focusGoalLoading && focusGoal && (
@@ -277,7 +349,18 @@ export function DashboardScreen() {
           <h2 className="text-base font-semibold text-amber-900 mb-2">Обратите внимание</h2>
           <ul className="space-y-1 text-sm text-amber-800">
             {alertsData.alerts.map((a, i) => (
-              <li key={i}>{a.text}</li>
+              <li key={i} className="flex items-center gap-2">
+                <span>{a.text}</span>
+                {(a.type === 'reserve_low' || a.type === 'reserve_ok') && (
+                  <span
+                    className="shrink-0 min-w-[44px] min-h-[44px] inline-flex items-center justify-center cursor-help"
+                    title={RESERVE_ALERT_TOOLTIP}
+                    aria-label="Подсказка"
+                  >
+                    <span className="w-6 h-6 rounded-full inline-flex items-center justify-center bg-amber-200/80 text-amber-900 text-xs font-medium">?</span>
+                  </span>
+                )}
+              </li>
             ))}
           </ul>
         </Card>
@@ -298,29 +381,66 @@ export function DashboardScreen() {
       )}
 
       {/* Блок 1: Денежный поток + Прогресс относительно себя + Сравнение с целевыми нормами (визуально один блок) */}
-      <Card className="p-4 mb-4 bg-white border border-slate-200 shadow-card">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-base font-semibold text-slate-900">Денежный поток</h2>
-          <div className="flex items-center h-9 rounded-lg border border-slate-300 bg-white pl-3 pr-8 text-slate-800 bg-no-repeat bg-[length:18px] bg-[right_6px_center]"
-            style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748B'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")` }}
-          >
-            <select
-              className="text-sm w-full min-w-0 h-full bg-transparent border-0 py-0 pl-0 pr-0 appearance-none cursor-pointer focus:outline-none focus:ring-0"
-              value={`${selectedYear}-${selectedMonth}`}
-              onChange={(e) => {
-                const [y, m] = e.target.value.split('-').map(Number);
-                setSelectedYear(y);
-                setSelectedMonth(m);
-              }}
-            >
-              {monthOptions.map((opt) => (
-                <option key={`${opt.year}-${opt.month}`} value={`${opt.year}-${opt.month}`}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
+      <Card className="p-4 mb-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-card">
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Денежный поток</h2>
+          {stats && (
+            <ShareButton
+              title="Денежный поток — FinAdvisor"
+              text={`Денежный поток за ${MONTH_NAMES[selectedMonth - 1]} ${selectedYear}: расходы ${formatMoney(stats.total_expense)} ₽, доходы ${formatMoney(stats.total_income)} ₽, разница ${(stats.total_income - stats.total_expense) >= 0 ? '+' : '−'}${formatMoney(Math.abs(stats.total_income - stats.total_expense))} ₽`}
+            />
+          )}
         </div>
+        {/* Селектор месяца: центрированный месяц и год со стрелками влево/вправо */}
+        {(() => {
+          const currentIndex = monthOptions.findIndex((o) => o.month === selectedMonth && o.year === selectedYear);
+          const idx = currentIndex >= 0 ? currentIndex : 0;
+          const canPrev = idx < monthOptions.length - 1;
+          const canNext = idx > 0;
+          return (
+            <div className="flex items-center justify-center gap-3 py-1.5 px-3 mb-4">
+              <button
+                type="button"
+                onClick={() => {
+                  if (canPrev) {
+                    const o = monthOptions[idx + 1];
+                    setSelectedYear(o.year);
+                    setSelectedMonth(o.month);
+                  }
+                }}
+                disabled={!canPrev}
+                className="flex items-center justify-center min-w-[44px] min-h-[32px] rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+                aria-label="Предыдущий месяц"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+              <div className="text-center min-w-[120px]">
+                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  {MONTH_NAMES[selectedMonth - 1]} {selectedYear}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (canNext) {
+                    const o = monthOptions[idx - 1];
+                    setSelectedYear(o.year);
+                    setSelectedMonth(o.month);
+                  }
+                }}
+                disabled={!canNext}
+                className="flex items-center justify-center min-w-[44px] min-h-[32px] rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+                aria-label="Следующий месяц"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            </div>
+          );
+        })()}
 
         {statsLoading && (
           <div className="flex justify-center py-6">
@@ -328,25 +448,34 @@ export function DashboardScreen() {
           </div>
         )}
         {!statsLoading && statsError && (
-          <p className="text-sm text-expense py-2">Не удалось загрузить данные</p>
+          <div className="py-4 flex flex-col gap-3">
+            <p className="text-sm text-slate-700 dark:text-slate-300">Не удалось загрузить данные. Проверьте интернет и попробуйте снова.</p>
+            <button
+              type="button"
+              onClick={() => refetchStats()}
+              className="self-start px-4 py-2 rounded-button bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 text-sm font-medium hover:bg-slate-700 dark:hover:bg-slate-300"
+            >
+              Повторить
+            </button>
+          </div>
         )}
         {!statsLoading && stats && (
           <>
             <div className="grid grid-cols-3 gap-3 mb-4">
-              <div className="rounded-lg p-3 border border-expense bg-white">
-                <p className="text-xs text-slate-600 mb-0.5">Расходы</p>
-                <p className="text-xs font-semibold text-slate-900 break-all">{formatMoney(stats.total_expense)} ₽</p>
+              <div className="rounded-lg p-3 border border-expense bg-white dark:bg-slate-800/50 dark:border-expense/50">
+                <p className="text-xs text-slate-600 dark:text-slate-400 mb-0.5">Расходы</p>
+                <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 break-all">{formatMoney(stats.total_expense)} ₽</p>
               </div>
-              <div className="rounded-lg p-3 border border-income bg-white">
-                <p className="text-xs text-slate-600 mb-0.5">Доходы</p>
-                <p className="text-xs font-semibold text-slate-900 break-all">{formatMoney(stats.total_income)} ₽</p>
+              <div className="rounded-lg p-3 border border-income bg-white dark:bg-slate-800/50 dark:border-income/50">
+                <p className="text-xs text-slate-600 dark:text-slate-400 mb-0.5">Доходы</p>
+                <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 break-all">{formatMoney(stats.total_income)} ₽</p>
               </div>
               <div
                 className={`rounded-lg p-3 border ${
-                  (stats.total_income - stats.total_expense) >= 0 ? 'bg-income/10 border-income/20' : 'bg-expense/10 border-expense/20'
+                  (stats.total_income - stats.total_expense) >= 0 ? 'bg-income/10 border-income/20 dark:bg-income/20 dark:border-income/50' : 'bg-expense/10 border-expense/20 dark:bg-expense/20 dark:border-expense/50'
                 }`}
               >
-                <p className="text-xs text-slate-600 mb-0.5">Разница</p>
+                <p className="text-xs text-slate-600 dark:text-slate-400 mb-0.5">Разница</p>
                 <p
                   className={`text-xs font-semibold break-all ${
                     (stats.total_income - stats.total_expense) >= 0 ? 'text-income' : 'text-expense'
@@ -364,7 +493,18 @@ export function DashboardScreen() {
             ) : (() => {
               const filtered = monthlyBalance.filter((d) => d.income !== 0 || d.expense !== 0);
               return filtered.length === 0 ? (
-                <p className="text-sm text-slate-500 py-4">Нет данных</p>
+                <div className="py-4">
+                  <p className="text-sm text-slate-500 dark:text-slate-400 mb-2">Нет данных за последний год.</p>
+                  {onNavigate && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('transactions')}
+                      className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                      Добавьте первую транзакцию →
+                    </button>
+                  )}
+                </div>
               ) : (
                 <DifferenceBarChart data={filtered} />
               );
@@ -381,10 +521,10 @@ export function DashboardScreen() {
               <button
                 type="button"
                 onClick={() => setProgressHelpOpen(!progressHelpOpen)}
-                className="rounded-full w-7 h-7 flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200 shrink-0"
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center shrink-0 rounded-full"
                 title="Как читать отчёт"
               >
-                ?
+                <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
               </button>
             </div>
             {progressHelpOpen && (
@@ -393,35 +533,57 @@ export function DashboardScreen() {
                 <p>«В ср. в мес.» — среднее в месяц за последние 12 месяцев по категории расходов (без учёта переводов людям и от людей). «Последний месяц» — сумма за последний календарный месяц. Показаны топ-3 категории с наибольшей разницей: сначала где расходы выросли сильнее всего, затем где снизились.</p>
               </div>
             )}
-            <p className="text-xs text-slate-500 mb-2">
-              {progressVsSelf.period_before} → {progressVsSelf.period_now}
-            </p>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm text-slate-700 border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-200">
-                    <th className="text-left py-2 pr-2 font-medium text-slate-600">Категория</th>
-                    <th className="text-right py-2 px-2 font-medium text-slate-600">В ср. в мес.</th>
-                    <th className="text-right py-2 px-2 font-medium text-slate-600">Последний месяц</th>
-                    <th className="text-right py-2 pl-2 font-medium text-slate-600">Разница</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {progressVsSelf.categories.map((c) => {
-                    const diff = c.now - c.before;
-                    return (
-                      <tr key={c.category} className="border-b border-slate-100">
-                        <td className="py-2 pr-2">{c.category}</td>
-                        <td className="text-right py-2 px-2 whitespace-nowrap">{formatShortMoney(c.before)}</td>
-                        <td className="text-right py-2 px-2 whitespace-nowrap">{formatShortMoney(c.now)}</td>
-                        <td className={`text-right py-2 pl-2 whitespace-nowrap ${diff > 0 ? 'text-expense' : diff < 0 ? 'text-income' : ''}`}>
-                          {diff > 0 ? '+' : diff < 0 ? '−' : ''}{formatShortMoney(Math.abs(diff))}
-                        </td>
+              {(() => {
+                const maxAbs = progressVsSelf.categories.length
+                  ? Math.max(
+                      ...progressVsSelf.categories.flatMap((c) => [
+                        Math.abs(c.before),
+                        Math.abs(c.now),
+                        Math.abs(c.now - c.before),
+                      ])
+                    )
+                  : 0;
+                const useThousands = maxAbs >= 100_000;
+                const unit = useThousands ? 'тыс. ₽' : '₽';
+                const fmt = useThousands ? formatThousandRub : (v: number) => formatMoney(Math.round(v));
+                return (
+                  <table className="w-full text-sm text-slate-700 border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-200 align-bottom">
+                        <th className="text-left py-2 pr-2 font-medium text-slate-600 align-bottom">Категория</th>
+                        <th className="text-right py-2 px-2 font-medium text-slate-600 align-bottom">
+                          <span className="block">В ср. в мес.</span>
+                          <span className="block text-slate-500 font-normal">{unit}</span>
+                        </th>
+                        <th className="text-right py-2 px-2 font-medium text-slate-600 align-bottom">
+                          <span className="block">Последний месяц</span>
+                          <span className="block text-slate-500 font-normal">{unit}</span>
+                        </th>
+                        <th className="text-right py-2 pl-2 font-medium text-slate-600 align-bottom">
+                          <span className="block">Разница</span>
+                          <span className="block text-slate-500 font-normal">{unit}</span>
+                        </th>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                    </thead>
+                    <tbody>
+                      {progressVsSelf.categories.map((c) => {
+                        const diff = c.now - c.before;
+                        return (
+                          <tr key={c.category} className="border-b border-slate-100">
+                            <td className="py-2 pr-2">{c.category}</td>
+                            <td className="text-right py-2 px-2 whitespace-nowrap">{fmt(c.before)}</td>
+                            <td className="text-right py-2 px-2 whitespace-nowrap">{fmt(c.now)}</td>
+                            <td className={`text-right py-2 pl-2 whitespace-nowrap ${diff > 0 ? 'text-expense' : diff < 0 ? 'text-income' : ''}`}>
+                              {diff > 0 ? '+' : ''}{fmt(diff)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                );
+              })()}
             </div>
           </>
         )}
@@ -435,10 +597,10 @@ export function DashboardScreen() {
               <button
                 type="button"
                 onClick={() => setBenchmarksHelpOpen(!benchmarksHelpOpen)}
-                className="rounded-full w-7 h-7 flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200 shrink-0"
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center shrink-0 rounded-full"
                 title="Как читать отчёт"
               >
-                ?
+                <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
               </button>
             </div>
             {benchmarksHelpOpen && (
@@ -486,21 +648,29 @@ export function DashboardScreen() {
         )}
       </Card>
 
-      {/* Блок 2: Чистый капитал, активы/пассивы, гистограмма за 12 месяцев (как на образце) */}
-      <Card className="p-4 mb-4 bg-white border border-slate-200 shadow-card">
-        <div className="flex items-center gap-2 mb-3">
-          <h2 className="text-base font-semibold text-slate-900">Чистый капитал</h2>
-          <button
-            type="button"
-            onClick={() => setCapitalHelpOpen(!capitalHelpOpen)}
-            className="rounded-full w-7 h-7 flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200 shrink-0"
-            title="Пояснения"
-          >
-            ?
-          </button>
+      {/* Блок 2: Чистый капитал */}
+      <Card className="p-4 mb-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-card">
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Чистый капитал</h2>
+            <button
+              type="button"
+              onClick={() => setCapitalHelpOpen(!capitalHelpOpen)}
+              className="min-w-[44px] min-h-[44px] flex items-center justify-center shrink-0 rounded-full"
+              title="Пояснения"
+            >
+              <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
+            </button>
+          </div>
+          {capitalSummary && (
+            <ShareButton
+              title="Чистый капитал — FinAdvisor"
+              text={`Чистый капитал: активы ${formatMoney(capitalSummary.assets)} ₽, пассивы ${formatMoney(capitalSummary.liabilities)} ₽, итого ${formatMoney(capitalSummary.net)} ₽`}
+            />
+          )}
         </div>
         {capitalHelpOpen && (
-          <div className="mb-3 p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-700">
+          <div className="mb-3 p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600 text-xs text-slate-700 dark:text-slate-300">
             <p className="font-medium mb-1">Как читать блок</p>
             <p>Активы — сумма всех активов (счета, вклады, акции, облигации, наличные и т.д.) по последним введённым значениям. Пассивы — сумма долгов (кредиты, займы, рассрочки). Чистый капитал = Активы − Пассивы. График «Финансовый путь» показывает, как активы, пассивы и чистый капитал менялись по месяцам.</p>
           </div>
@@ -544,7 +714,18 @@ export function DashboardScreen() {
             ) : (() => {
               const filtered = capitalHistory.filter((d) => d.assets !== 0 || d.liabilities !== 0);
               return filtered.length === 0 ? (
-                <p className="text-sm text-slate-500 py-4">Нет данных</p>
+                <div className="py-4">
+                  <p className="text-sm text-slate-500 dark:text-slate-400 mb-2">Нет данных по капиталу.</p>
+                  {onNavigate && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('capital')}
+                      className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                      Добавьте активы и долги →
+                    </button>
+                  )}
+                </div>
               ) : (
                 <FinancialPathChart data={filtered} />
               );
@@ -709,7 +890,7 @@ function FinancialPathChart({ data }: { data: CapitalHistoryItem[] }) {
                   return (
                     <>
                       <span
-                        className="absolute left-1/2 text-[8px] font-medium text-blue-600 whitespace-nowrap z-20"
+                        className="absolute left-1/2 text-[9px] font-medium text-blue-600 whitespace-nowrap z-20"
                         style={{ top: `${netY}%`, marginTop: labelOffset, transform: 'translate(-50%, 0)' }}
                       >
                         {formatShortValueOnly(d.net)}

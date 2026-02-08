@@ -16,7 +16,7 @@ export function PageHeader({ title, subtitle, rightAction }: PageHeaderProps) {
           {subtitle && (
             <p className="text-sm text-muted mb-0.5">{subtitle}</p>
           )}
-          <h1 className="text-xl font-bold text-slate-900 tracking-tight truncate">{title}</h1>
+          <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100 tracking-tight truncate">{title}</h1>
         </div>
         <div className="flex justify-end">{rightAction ?? <span />}</div>
       </div>

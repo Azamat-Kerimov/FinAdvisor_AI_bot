@@ -113,6 +113,16 @@ CREATE TABLE IF NOT EXISTS ai_context (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Логирование действий пользователей (экран, шаринг и т.д.)
+CREATE TABLE IF NOT EXISTS user_actions (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,
+    details JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_user_actions_user_created ON user_actions(user_id, created_at);
+
 -- Минимальный и расширенный набор категорий (если таблица пустая или категории отсутствуют)
 INSERT INTO categories (name, type) SELECT 'Прочие расходы', 'Расход' WHERE NOT EXISTS (SELECT 1 FROM categories WHERE name = 'Прочие расходы' AND type = 'Расход');
 INSERT INTO categories (name, type) SELECT 'Прочие доходы', 'Доход' WHERE NOT EXISTS (SELECT 1 FROM categories WHERE name = 'Прочие доходы' AND type = 'Доход');

@@ -365,6 +365,12 @@ class ProfileUpdate(BaseModel):
     city: Optional[str] = None
 
 
+class LogActionRequest(BaseModel):
+    """Тело запроса для логирования действия пользователя."""
+    action: str
+    details: Optional[dict] = None
+
+
 # --- Профиль пользователя ---
 
 @app.get("/api/profile")
@@ -455,7 +461,30 @@ async def delete_all_user_data(user_id: int = Depends(get_user_id)):
             await conn.execute("DELETE FROM user_focus_goal WHERE user_id = $1", user_id)
         except asyncpg.UndefinedTableError:
             pass
+        try:
+            await conn.execute("DELETE FROM user_actions WHERE user_id = $1", user_id)
+        except asyncpg.UndefinedTableError:
+            pass
     return {"status": "ok", "message": "Все данные удалены. Профиль сохранён."}
+
+
+# --- Логирование действий пользователей ---
+
+@app.post("/api/log-action")
+async def log_action(body: LogActionRequest, user_id: int = Depends(get_user_id)):
+    """Записать действие пользователя в БД (экран, шаринг, и т.д.)."""
+    db = await get_db()
+    async with db.acquire() as conn:
+        try:
+            await conn.execute(
+                "INSERT INTO user_actions (user_id, action, details, created_at) VALUES ($1, $2, $3, NOW())",
+                user_id,
+                (body.action or "").strip() or "unknown",
+                body.details,
+            )
+        except asyncpg.UndefinedTableError:
+            logging.warning("user_actions table not found; run migrate_user_actions.sql")
+    return {"status": "ok"}
 
 
 # --- Справочник категорий (БД) ---

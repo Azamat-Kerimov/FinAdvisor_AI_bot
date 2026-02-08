@@ -3,6 +3,7 @@ import { PageHeader } from '@/components/layout/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiRequest } from '@/lib/api';
+import { useTheme, type Theme as ThemeOption } from '@/contexts/ThemeContext';
 
 interface Profile {
   gender: string | null;
@@ -26,7 +27,14 @@ const MARITAL_OPTIONS = [
   { value: 'widowed', label: 'Вдовец / вдова' },
 ];
 
+const THEME_OPTIONS: { value: ThemeOption; label: string }[] = [
+  { value: 'system', label: 'Как в системе' },
+  { value: 'light', label: 'Светлая' },
+  { value: 'dark', label: 'Тёмная' },
+];
+
 export function ProfileScreen() {
+  const { theme, setTheme } = useTheme();
   const [profile, setProfile] = useState<Profile>({
     gender: null,
     birth_date: null,
@@ -110,16 +118,34 @@ export function ProfileScreen() {
     <>
       <PageHeader title="Профиль" />
 
-      <Card className="p-4 mb-4">
+      <Card className="p-4 mb-4 dark:bg-slate-800 dark:border-slate-700">
+        <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100 mb-2">Тема оформления</h2>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {THEME_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setTheme(opt.value)}
+              className={`px-4 py-2 rounded-button text-sm font-medium transition-colors ${
+                theme === opt.value
+                  ? 'bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900'
+                  : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-600'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <hr className="border-slate-200 dark:border-slate-600 mb-4" />
         <div className="flex items-center gap-2 mb-3">
-          <h2 className="text-lg font-bold text-slate-900">Данные профиля</h2>
+          <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">Данные профиля</h2>
           <button
             type="button"
             onClick={() => setOpenHelp(!openHelp)}
-            className="rounded-full w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200 shrink-0"
+            className="min-w-[44px] min-h-[44px] flex items-center justify-center shrink-0 rounded-full"
             title="Пояснения"
           >
-            ?
+            <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
           </button>
         </div>
         {openHelp && (

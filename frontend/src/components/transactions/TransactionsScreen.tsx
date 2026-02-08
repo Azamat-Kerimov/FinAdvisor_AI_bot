@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiRequest, getApiHeaders } from '@/lib/api';
+import { useModalBack, useSwipeDown } from '@/hooks/useModalBack';
+import { usePullToRefresh } from '@/hooks/usePullToRefresh';
 
 interface Transaction {
   id: number;
@@ -325,6 +327,22 @@ export function TransactionsScreen() {
     setImportPreviewPage(1);
   }
 
+  const closeUploadModal = useCallback(() => {
+    setShowUploadModal(false);
+    handleImportCancel();
+  }, []);
+  const { handleOverlayClose: closeUploadOverlay } = useModalBack(showUploadModal, closeUploadModal);
+  const swipeUpload = useSwipeDown(closeUploadModal);
+
+  const { handleOverlayClose: closeAddOverlay } = useModalBack(showAddModal, resetForm);
+  const swipeAdd = useSwipeDown(resetForm);
+
+  const refreshTransactions = useCallback(() => {
+    loadTransactions();
+    loadSummary();
+  }, []);
+  const { pullProps: pullRefreshProps, pullY, isRefreshing } = usePullToRefresh(refreshTransactions);
+
   function formatMoney(value: number): string {
     return new Intl.NumberFormat('ru-RU').format(Math.round(value));
   }
@@ -426,7 +444,10 @@ export function TransactionsScreen() {
   }
 
   return (
-    <>
+    <div {...pullRefreshProps}>
+      {(pullY > 0 || isRefreshing) && (
+        <div className="flex justify-center py-2 text-sm text-slate-500">{(isRefreshing ? 'Обновление...' : 'Потяните для обновления')}</div>
+      )}
       <PageHeader title="Транзакции" />
 
       {/* Поиск */}
@@ -461,7 +482,7 @@ export function TransactionsScreen() {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
           </svg>
           <div>
-            <div className="font-semibold text-[0.7875rem]">Загрузить данные из Банка &gt;</div>
+            <div className="font-semibold text-sm">Загрузить данные из Банка &gt;</div>
             <div className="mt-0.5 text-[0.675rem] opacity-90">
               Импортируйте операции из Excel-файла из приложения СберОнлайн и Т‑Банк
             </div>
@@ -480,7 +501,7 @@ export function TransactionsScreen() {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
           </svg>
           <div>
-            <div className="font-semibold text-[0.7875rem] text-slate-900">Добавить транзакции вручную &gt;</div>
+            <div className="font-semibold text-sm text-slate-900">Добавить транзакции вручную &gt;</div>
             <div className="mt-0.5 text-[0.675rem] text-slate-600">
               Введите данные транзакции вручную
             </div>
@@ -525,7 +546,7 @@ export function TransactionsScreen() {
                 return (
                   <label
                     key={opt.value}
-                    className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer text-xs"
+                    className="flex items-center gap-2 px-3 py-2 min-h-[44px] hover:bg-slate-50 cursor-pointer text-xs"
                   >
                     <input
                       type="checkbox"
@@ -581,7 +602,7 @@ export function TransactionsScreen() {
                   return (
                     <label
                       key={cat.id}
-                      className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer text-xs"
+                      className="flex items-center gap-2 px-3 py-2 min-h-[44px] hover:bg-slate-50 cursor-pointer text-xs"
                     >
                       <input
                         type="checkbox"
@@ -604,18 +625,16 @@ export function TransactionsScreen() {
       </div>
 
       {/* Чекбокс "Исключить переводы" */}
-      <div className="mb-4 flex items-center gap-2">
+      <label className="mb-4 flex items-center gap-2 min-h-[44px] py-2 cursor-pointer">
         <input
           type="checkbox"
           id="exclude-transfers"
           checked={excludeTransfers}
           onChange={(e) => setExcludeTransfers(e.target.checked)}
-          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 shrink-0"
         />
-        <label htmlFor="exclude-transfers" className="text-sm text-slate-700 cursor-pointer">
-          Исключить переводы
-        </label>
-      </div>
+        <span className="text-sm text-slate-700">Исключить переводы</span>
+      </label>
 
       {/* Карточки Расходы/Доходы — подпись сверху, сумма слева, ring при выборе */}
       <div className="mb-4 grid grid-cols-2 gap-3">
@@ -656,7 +675,11 @@ export function TransactionsScreen() {
 
       {/* Модальное окно загрузки */}
       {showUploadModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => { setShowUploadModal(false); handleImportCancel(); }}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={closeUploadOverlay}
+          {...swipeUpload}
+        >
           <div className="max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}>
             <Card className="p-6 overflow-hidden flex flex-col max-h-[90vh]">
               {pendingImportTransactions && pendingImportTransactions.length > 0 ? (
@@ -669,7 +692,7 @@ export function TransactionsScreen() {
                   )}
                   <div className="flex items-center justify-between mb-3 flex-shrink-0">
                     <h2 className="text-lg font-bold text-slate-900">Подтверждение импорта</h2>
-                    <button type="button" onClick={() => { setShowUploadModal(false); handleImportCancel(); }} className="text-slate-400 hover:text-slate-600" disabled={uploading}>✕</button>
+                    <button type="button" onClick={closeUploadModal} className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-slate-600 -m-2" disabled={uploading} aria-label="Закрыть">✕</button>
                   </div>
                   <p className="text-sm text-slate-600 mb-3">
                     <strong>Добавить</strong> — добавить транзакции из файла к уже имеющимся.
@@ -738,7 +761,7 @@ export function TransactionsScreen() {
                 <>
                   <div className="mb-4 flex items-center justify-between">
                     <h2 className="text-lg font-bold text-slate-900">Загрузить данные из Банка</h2>
-                    <button type="button" onClick={() => setShowUploadModal(false)} className="text-slate-400 hover:text-slate-600">✕</button>
+                    <button type="button" onClick={closeUploadModal} className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-slate-600 -m-2" aria-label="Закрыть">✕</button>
                   </div>
                   <label className="block">
                     <input type="file" accept=".xlsx,.xls" onChange={handleFileUpload} disabled={uploading} className="hidden" />
@@ -768,7 +791,11 @@ export function TransactionsScreen() {
 
       {/* Модальное окно добавления */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => resetForm()}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={closeAddOverlay}
+          {...swipeAdd}
+        >
           <div className="max-w-md w-full" onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}>
             <Card className="p-6">
             <div className="mb-4 flex items-center justify-between">
@@ -777,8 +804,9 @@ export function TransactionsScreen() {
               </h2>
               <button
                 type="button"
-                onClick={() => resetForm()}
-                className="text-slate-400 hover:text-slate-600"
+                onClick={resetForm}
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-slate-600 -m-2"
+                aria-label="Закрыть"
               >
                 ✕
               </button>
@@ -1024,6 +1052,6 @@ export function TransactionsScreen() {
           })}
         </div>
       )}
-    </>
+    </div>
   );
 }

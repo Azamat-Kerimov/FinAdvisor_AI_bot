@@ -5,8 +5,9 @@
 @layer base {
   html {
     @apply antialiased;
+    font-size: 16px; /* мобильная читаемость, без автозума при фокусе в input */
   }
   body {
-    @apply bg-surface text-slate-800 min-h-screen;
+    @apply bg-surface dark:bg-slate-900 text-slate-800 dark:text-slate-200 min-h-screen text-base leading-snug;
   }
 }
