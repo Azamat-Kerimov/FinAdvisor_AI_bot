@@ -1,6 +1,7 @@
 # Упрощенный Telegram Bot - только подписка и запуск Mini App
 # v_01.28.26 - Рефакторинг: бот только для подписки и WebApp
 
+import logging
 import os
 import sys
 import asyncio
@@ -53,6 +54,12 @@ def _check_env():
 
 
 _check_env()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stderr,
+)
 
 # При старте всегда выводим, к какой БД подключаемся (чтобы не перепутать тест и прод)
 print(f"БД: {DB_NAME} @ {DB_HOST}:{DB_PORT}", flush=True)
@@ -156,62 +163,57 @@ def get_main_keyboard(has_premium: bool = False) -> InlineKeyboardMarkup:
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message):
     """Команда /start - создает пользователя и показывает статус"""
-    user_id, is_new_user = await get_or_create_user(
-        m.from_user.id, m.from_user.username, _display_name(m.from_user)
-    )
-    
-    # Получаем статус пакета VIP
-    async with db.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT premium_until FROM users WHERE id=$1", user_id
+    try:
+        user_id, is_new_user = await get_or_create_user(
+            m.from_user.id, m.from_user.username, _display_name(m.from_user)
         )
-        premium_until = row['premium_until'] if row else None
-    
-    status_text = format_premium_status(premium_until)
-    has_premium = premium_until and premium_until > datetime.now()
-    
-    message_text = (
-        f"Привет, {m.from_user.first_name or 'пользователь'}! 👋\n\n"
-        f"Я FinAdvisor — твой персональный финансовый помощник.\n\n"
-    )
-    
-    # Если новый пользователь, показываем подарок
-    if is_new_user and premium_until:
-        message_text += (
-            f"🎁 **Подарок для новых пользователей!**\n"
-            f"Вы получили 2 бесплатных месяца пакета VIP!\n\n"
+        async with db.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT premium_until FROM users WHERE id=$1", user_id
+            )
+            premium_until = row["premium_until"] if row else None
+        status_text = format_premium_status(premium_until)
+        has_premium = premium_until and premium_until > datetime.now()
+        message_text = (
+            f"Привет, {m.from_user.first_name or 'пользователь'}! 👋\n\n"
+            f"Я FinAdvisor — твой персональный финансовый помощник.\n\n"
         )
-    
-    message_text += f"📊 Статус: {status_text}\n\n"
-    
-    if premium_until and premium_until > datetime.now():
-        days_left = (premium_until - datetime.now()).days
-        message_text += f"⏰ Пакет VIP истекает через {days_left} дн.\n\n"
-    
-    if not has_premium and PAYMENT_PROVIDER_TOKEN:
-        message_text += "💳 Оформите пакет VIP для расширенных возможностей. Приложение бесплатно: 1 консультация ИИ в месяц.\n\n"
-    
-    message_text += "Нажми кнопку ниже, чтобы открыть приложение:"
-    
-    await m.answer(
-        message_text,
-        reply_markup=get_main_keyboard(has_premium=has_premium),
-        parse_mode="Markdown"
-    )
+        if is_new_user and premium_until:
+            message_text += (
+                "🎁 **Подарок для новых пользователей!**\n"
+                "Вы получили 2 бесплатных месяца пакета VIP!\n\n"
+            )
+        message_text += f"📊 Статус: {status_text}\n\n"
+        if premium_until and premium_until > datetime.now():
+            days_left = (premium_until - datetime.now()).days
+            message_text += f"⏰ Пакет VIP истекает через {days_left} дн.\n\n"
+        if not has_premium and PAYMENT_PROVIDER_TOKEN:
+            message_text += "💳 Оформите пакет VIP для расширенных возможностей. Приложение бесплатно: 1 консультация ИИ в месяц.\n\n"
+        message_text += "Нажми кнопку ниже, чтобы открыть приложение:"
+        await m.answer(
+            message_text,
+            reply_markup=get_main_keyboard(has_premium=has_premium),
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logging.exception("cmd_start failed for tg_id=%s: %s", m.from_user.id, e)
+        await m.answer(
+            "Привет! 👋 Что-то пошло не так на сервере. Попробуйте написать /start через минуту или откройте приложение по кнопке ниже.",
+            reply_markup=get_main_keyboard(has_premium=False),
+        )
 
 
 @dp.message(Command("subscribe"))
 async def cmd_subscribe(m: types.Message):
     """Команда /subscribe - выбор тарифа и оплата"""
     if not PAYMENT_PROVIDER_TOKEN:
-    await m.answer(
-        "💳 Оплата пакета VIP\n\n"
-        "⚠️ Платежи временно недоступны.\n"
-        "Обратитесь к администратору для активации.",
-        reply_markup=get_main_keyboard()
-    )
+        await m.answer(
+            "💳 Оплата пакета VIP\n\n"
+            "⚠️ Платежи временно недоступны.\n"
+            "Обратитесь к администратору для активации.",
+            reply_markup=get_main_keyboard(),
+        )
         return
-    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📅 Месяц — 299 ₽", callback_data="pay_month"),
