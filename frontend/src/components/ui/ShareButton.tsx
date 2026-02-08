@@ -42,7 +42,7 @@ const SHARE_BOT_LINK = 'https://t.me/FinAdvisor_bot';
  * Кнопка «Поделиться» — делится отчётом целиком. В текст добавляется ссылка на бота.
  * Web Share API или fallback (копирование в буфер).
  */
-export function ShareButton({ title, text, className = '', iconOnly = true }: ShareButtonProps) {
+export function ShareButton({ title, text, className = '' }: ShareButtonProps) {
   const [copied, setCopied] = useState(false);
 
   async function handleShare() {

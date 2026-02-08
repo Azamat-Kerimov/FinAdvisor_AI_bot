@@ -32,7 +32,6 @@ function loanBalance(pv: number, annualRatePct: number, years: number, monthsPai
   if (monthsPaid >= years * 12) return 0;
   const pmt = annuityPayment(pv, annualRatePct, years);
   const r = annualRatePct / 100 / 12;
-  const n = years * 12;
   return pv * Math.pow(1 + r, monthsPaid) - pmt * ((Math.pow(1 + r, monthsPaid) - 1) / r);
 }
 
