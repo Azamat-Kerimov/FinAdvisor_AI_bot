@@ -44,7 +44,12 @@ const LIABILITY_TYPES = [
   'Прочее',
 ];
 
-export function CapitalScreen() {
+interface CapitalScreenProps {
+  /** Встроенный режим: без своего PageHeader (при объединении с Транзакциями во вкладке «Финансы») */
+  embedded?: boolean;
+}
+
+export function CapitalScreen({ embedded }: CapitalScreenProps) {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [liabilities, setLiabilities] = useState<Liability[]>([]);
   const [loading, setLoading] = useState(true);
@@ -276,7 +281,7 @@ export function CapitalScreen() {
       {(pullY > 0 || isRefreshing) && (
         <div className="flex justify-center py-2 text-sm text-slate-500">{(isRefreshing ? 'Обновление...' : 'Потяните для обновления')}</div>
       )}
-      <PageHeader title="Капитал" />
+      {!embedded && <PageHeader title="Капитал" />}
 
       {/* Поиск */}
       <div className="mb-4">
@@ -381,7 +386,7 @@ export function CapitalScreen() {
           <div className="max-w-md w-full" onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}>
             <Card className="p-6">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-slate-900">
+              <h2 className="text-sm font-bold text-slate-900">
                 {editingId ? 'Редактировать' : editingIsAsset ? 'Добавить актив' : 'Добавить пассив'}
               </h2>
               <button

@@ -23,7 +23,12 @@ interface Category {
 /** Ссылка на видеоинструкцию по загрузке Excel (Сбер/Т‑Банк). Замените на свой URL. */
 const VIDEO_INSTRUCTION_URL = 'https://vk.com/video_ext.php?oid=-221650337&id=456239017&hd=2';
 
-export function TransactionsScreen() {
+interface TransactionsScreenProps {
+  /** Встроенный режим: без своего PageHeader (при объединении с Капиталом во вкладке «Финансы») */
+  embedded?: boolean;
+}
+
+export function TransactionsScreen({ embedded }: TransactionsScreenProps) {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(true);
@@ -448,7 +453,7 @@ export function TransactionsScreen() {
       {(pullY > 0 || isRefreshing) && (
         <div className="flex justify-center py-2 text-sm text-slate-500">{(isRefreshing ? 'Обновление...' : 'Потяните для обновления')}</div>
       )}
-      <PageHeader title="Транзакции" />
+      {!embedded && <PageHeader title="Транзакции" />}
 
       {/* Поиск */}
       <div className="mb-4">
@@ -691,7 +696,7 @@ export function TransactionsScreen() {
                     </div>
                   )}
                   <div className="flex items-center justify-between mb-3 flex-shrink-0">
-                    <h2 className="text-lg font-bold text-slate-900">Подтверждение импорта</h2>
+                    <h2 className="text-sm font-bold text-slate-900">Подтверждение импорта</h2>
                     <button type="button" onClick={closeUploadModal} className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-slate-600 -m-2" disabled={uploading} aria-label="Закрыть">✕</button>
                   </div>
                   <p className="text-sm text-slate-600 mb-3">
@@ -760,7 +765,7 @@ export function TransactionsScreen() {
               ) : (
                 <>
                   <div className="mb-4 flex items-center justify-between">
-                    <h2 className="text-lg font-bold text-slate-900">Загрузить данные из Банка</h2>
+                    <h2 className="text-sm font-bold text-slate-900">Загрузить данные из Банка</h2>
                     <button type="button" onClick={closeUploadModal} className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-slate-600 -m-2" aria-label="Закрыть">✕</button>
                   </div>
                   <label className="block">
@@ -799,7 +804,7 @@ export function TransactionsScreen() {
           <div className="max-w-md w-full" onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}>
             <Card className="p-6">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-slate-900">
+              <h2 className="text-sm font-bold text-slate-900">
                 {editingId ? 'Редактировать транзакцию' : 'Добавить транзакцию'}
               </h2>
               <button

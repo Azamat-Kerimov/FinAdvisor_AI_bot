@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, type RefObject } from 'react';
+import html2canvas from 'html2canvas';
 import { logAction } from '@/lib/api';
 
 interface ShareButtonProps {
@@ -7,6 +8,8 @@ interface ShareButtonProps {
   className?: string;
   /** Только иконка (серый цвет), без текста */
   iconOnly?: boolean;
+  /** Элемент для захвата в картинку; при наличии шарится изображение блока вместо текста */
+  captureRef?: RefObject<HTMLElement | null>;
 }
 
 /** Иконка «Поделиться»: три точки и линии, повёрнута на 90° против часовой стрелки, серый. */
@@ -36,28 +39,61 @@ function ShareIcon({ className = '' }: { className?: string }) {
 }
 
 /** Ссылка на бота для вставки в отчёт при пересылке */
-const SHARE_BOT_LINK = 'https://t.me/FinAdvisor_bot';
+const SHARE_BOT_LINK = 'https://t.me/FinAdvisor_AI_bot';
+
+function shareTextOnly(title: string, text: string, setCopied: (v: boolean) => void) {
+  const reportText = `${text}\n\nFinAdvisor: ${SHARE_BOT_LINK}`;
+  const sharePayload = { title, text: reportText };
+  if (typeof navigator !== 'undefined' && navigator.share) {
+    return navigator.share(sharePayload);
+  }
+  return navigator.clipboard?.writeText(`${title}\n\n${reportText}`).then(() => {
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  });
+}
 
 /**
- * Кнопка «Поделиться» — делится отчётом целиком. В текст добавляется ссылка на бота.
- * Web Share API или fallback (копирование в буфер).
+ * Кнопка «Поделиться». Если передан captureRef — захватывает блок в картинку и шарит изображение (и подпись со ссылкой на бота).
+ * Иначе шарит только текст с ссылкой. Web Share API или fallback (копирование в буфер).
  */
-export function ShareButton({ title, text, className = '' }: ShareButtonProps) {
+export function ShareButton({ title, text, className = '', captureRef }: ShareButtonProps) {
   const [copied, setCopied] = useState(false);
 
   async function handleShare() {
     const reportText = `${text}\n\nFinAdvisor: ${SHARE_BOT_LINK}`;
-    const sharePayload = { title, text: reportText };
-    try {
-      if (typeof navigator !== 'undefined' && navigator.share) {
-        await navigator.share(sharePayload);
-        logAction('share', { block: title.slice(0, 200) });
-        return;
+
+    if (captureRef?.current && typeof navigator !== 'undefined' && navigator.share) {
+      try {
+        const canvas = await html2canvas(captureRef.current, {
+          scale: 2,
+          useCORS: true,
+          logging: false,
+          backgroundColor: undefined,
+        });
+        const blob = await new Promise<Blob | null>((resolve) => {
+          canvas.toBlob(resolve, 'image/png', 0.95);
+        });
+        if (blob) {
+          const file = new File([blob], 'denezhnyj-potok.png', { type: 'image/png' });
+          if (navigator.canShare?.({ files: [file] })) {
+            await navigator.share({
+              title,
+              text: `FinAdvisor: ${SHARE_BOT_LINK}`,
+              files: [file],
+            });
+            logAction('share', { block: title.slice(0, 200), asImage: true });
+            return;
+          }
+        }
+      } catch (e) {
+        if ((e as Error)?.name === 'AbortError') return;
       }
-      await navigator.clipboard?.writeText(`${title}\n\n${reportText}`);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-      logAction('share', { block: title.slice(0, 200), method: 'clipboard' });
+    }
+
+    try {
+      await shareTextOnly(title, text, setCopied);
+      logAction('share', { block: title.slice(0, 200) });
     } catch (e) {
       if ((e as Error)?.name === 'AbortError') return;
       try {

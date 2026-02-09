@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { ExampleReportImage } from '@/components/ui/ExampleReportImage';
+import { Button } from '@/components/ui/Button';
+import { resetOnboarding } from '@/lib/onboarding';
 
 type HelpItemId = string;
 
@@ -81,15 +83,6 @@ export function HelpScreen() {
       ),
     },
     {
-      id: 'progress-block',
-      title: 'Главная: блок «Ваш прогресс»',
-      children: (
-        <p className="text-sm text-slate-800 leading-relaxed">
-          «В ср. в мес.» — среднее в месяц за последние 12 месяцев по категории расходов (без учёта переводов людям и от людей). «Последний месяц» — сумма за последний календарный месяц. Показаны топ-3 категории с наибольшей разницей: сначала где расходы выросли сильнее всего, затем где снизились.
-        </p>
-      ),
-    },
-    {
       id: 'benchmarks',
       title: 'Главная: сравнение с целевыми нормами',
       children: (
@@ -126,7 +119,7 @@ export function HelpScreen() {
     },
     {
       id: 'send-message',
-      title: 'Отправить сообщение (ИИ)',
+      title: 'Сформулировать цель (ИИ)',
       children: (
         <p className="text-sm text-slate-800 leading-relaxed">
           ИИ извлечёт цели из сообщения и добавит их автоматически. Для пассивного дохода ИИ рассчитает необходимый капитал.
@@ -207,7 +200,7 @@ export function HelpScreen() {
                   className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-slate-50 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-slate-300"
                   aria-expanded={isOpen}
                 >
-                  <span className="text-sm font-medium text-slate-900">{item.title}</span>
+                  <span className="text-sm font-bold text-slate-900 dark:text-slate-100">{item.title}</span>
                   <span
                     className={`shrink-0 text-slate-500 text-xs transition-transform ${isOpen ? 'rotate-0' : '-rotate-90'}`}
                     aria-hidden
@@ -225,6 +218,17 @@ export function HelpScreen() {
           })}
         </ul>
       </Card>
+
+      <div className="px-4">
+        <Button
+          type="button"
+          variant="primary"
+          onClick={resetOnboarding}
+          className="w-full py-3.5"
+        >
+          Пройти обучение снова
+        </Button>
+      </div>
     </div>
   );
 }

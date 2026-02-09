@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { setTelegramHeaderForTheme } from '@/lib/telegramTheme';
 
 const STORAGE_KEY = 'finadvisor_theme';
 
@@ -51,10 +52,18 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (theme !== 'system') return;
     const m = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = () => setResolved(getResolved('system'));
+    const handler = () => {
+      const next = getResolved('system');
+      setResolved(next);
+      setTelegramHeaderForTheme(next);
+    };
     m.addEventListener('change', handler);
     return () => m.removeEventListener('change', handler);
   }, [theme]);
+
+  useEffect(() => {
+    setTelegramHeaderForTheme(resolved);
+  }, [resolved]);
 
   const setTheme = (value: Theme) => {
     setThemeState(value);

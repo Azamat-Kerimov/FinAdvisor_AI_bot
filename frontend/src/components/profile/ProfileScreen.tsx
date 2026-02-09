@@ -33,6 +33,39 @@ const THEME_OPTIONS: { value: ThemeOption; label: string }[] = [
   { value: 'dark', label: 'Тёмная' },
 ];
 
+const MONTH_NAMES = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+
+function daysInMonth(month: number, year: number): number {
+  return new Date(year, month, 0).getDate();
+}
+
+function formatBirthDateDisplay(value: string | null): string {
+  if (!value) return '';
+  const [y, m, d] = value.split('-').map(Number);
+  if (!m || m < 1 || m > 12) return value;
+  const monthName = MONTH_NAMES[m - 1];
+  return `${d ?? ''} ${monthName} ${y ?? ''}`.trim();
+}
+
+function parseBirthDate(value: string | null): { day: number; month: number; year: number } {
+  const now = new Date();
+  if (!value) {
+    return { day: 1, month: now.getMonth() + 1, year: now.getFullYear() - 25 };
+  }
+  const [y, m, d] = value.split('-').map(Number);
+  const month = m && m >= 1 && m <= 12 ? m : 1;
+  const year = y && y > 1900 && y <= now.getFullYear() ? y : now.getFullYear() - 25;
+  const maxDay = daysInMonth(month, year);
+  const day = Math.min(maxDay, Math.max(1, d || 1));
+  return { day, month, year };
+}
+
+function buildBirthDate(day: number, month: number, year: number): string {
+  const d = String(day).padStart(2, '0');
+  const m = String(month).padStart(2, '0');
+  return `${year}-${m}-${d}`;
+}
+
 export function ProfileScreen() {
   const { theme, setTheme } = useTheme();
   const [profile, setProfile] = useState<Profile>({
@@ -46,6 +79,8 @@ export function ProfileScreen() {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [openHelp, setOpenHelp] = useState(false);
+  const [birthDateModalOpen, setBirthDateModalOpen] = useState(false);
+  const [birthDateDraft, setBirthDateDraft] = useState(parseBirthDate(profile.birth_date));
 
   useEffect(() => {
     loadProfile();
@@ -119,7 +154,7 @@ export function ProfileScreen() {
       <PageHeader title="Профиль" />
 
       <Card className="p-4 mb-4 dark:bg-slate-800 dark:border-slate-700">
-        <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100 mb-2">Тема оформления</h2>
+        <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-2">Тема оформления</h2>
         <div className="flex flex-wrap gap-2 mb-4">
           {THEME_OPTIONS.map((opt) => (
             <button
@@ -138,7 +173,7 @@ export function ProfileScreen() {
         </div>
         <hr className="border-slate-200 dark:border-slate-600 mb-4" />
         <div className="flex items-center gap-2 mb-3">
-          <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">Данные профиля</h2>
+          <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">Данные профиля</h2>
           <button
             type="button"
             onClick={() => setOpenHelp(!openHelp)}
@@ -169,13 +204,106 @@ export function ProfileScreen() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Дата рождения</label>
-            <input
-              type="date"
-              value={profile.birth_date ?? ''}
-              onChange={(e) => setProfile((p) => ({ ...p, birth_date: e.target.value || null }))}
-              className="w-full px-3 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400"
-            />
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Дата рождения</label>
+            <button
+              type="button"
+              onClick={() => {
+                setBirthDateDraft(parseBirthDate(profile.birth_date));
+                setBirthDateModalOpen(true);
+              }}
+              className="w-full px-3 py-2 border border-border dark:border-slate-600 rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400 text-left bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+            >
+              {formatBirthDateDisplay(profile.birth_date) || 'Выберите дату'}
+            </button>
+            {birthDateModalOpen && (
+              <div
+                className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-0 sm:p-4"
+                onClick={() => setBirthDateModalOpen(false)}
+              >
+                <div
+                  className="w-full max-h-[85vh] overflow-auto rounded-t-xl sm:rounded-xl bg-white dark:bg-slate-800 shadow-xl p-4 border-t border-slate-200 dark:border-slate-700"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <p className="text-sm font-medium text-slate-900 dark:text-slate-100 mb-3">Дата рождения</p>
+                  <div className="grid grid-cols-3 gap-2 mb-4">
+                    <div>
+                      <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">День</label>
+                      <select
+                        value={birthDateDraft.day}
+                        onChange={(e) => setBirthDateDraft((d) => ({ ...d, day: Number(e.target.value) }))}
+                        className="w-full px-2 py-2 border border-slate-300 dark:border-slate-600 rounded-button bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm"
+                      >
+                        {Array.from({ length: daysInMonth(birthDateDraft.month, birthDateDraft.year) }, (_, i) => i + 1).map((n) => (
+                          <option key={n} value={n}>{n}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Месяц</label>
+                      <select
+                        value={birthDateDraft.month}
+                        onChange={(e) => {
+                          const month = Number(e.target.value);
+                          setBirthDateDraft((d) => ({
+                            ...d,
+                            month,
+                            day: Math.min(d.day, daysInMonth(month, d.year)),
+                          }));
+                        }}
+                        className="w-full px-2 py-2 border border-slate-300 dark:border-slate-600 rounded-button bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm"
+                      >
+                        {MONTH_NAMES.map((name, i) => (
+                          <option key={i} value={i + 1}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Год</label>
+                      <select
+                        value={birthDateDraft.year}
+                        onChange={(e) => {
+                          const year = Number(e.target.value);
+                          setBirthDateDraft((d) => ({
+                            ...d,
+                            year,
+                            day: Math.min(d.day, daysInMonth(d.month, year)),
+                          }));
+                        }}
+                        className="w-full px-2 py-2 border border-slate-300 dark:border-slate-600 rounded-button bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm"
+                      >
+                        {Array.from({ length: 101 }, (_, i) => new Date().getFullYear() - 100 + i).reverse().map((y) => (
+                          <option key={y} value={y}>{y}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="flex-1"
+                      onClick={() => setBirthDateModalOpen(false)}
+                    >
+                      Отмена
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="primary"
+                      className="flex-1"
+                      onClick={() => {
+                        setProfile((p) => ({
+                          ...p,
+                          birth_date: buildBirthDate(birthDateDraft.day, birthDateDraft.month, birthDateDraft.year),
+                        }));
+                        setBirthDateModalOpen(false);
+                      }}
+                    >
+                      Готово
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Семейное положение</label>
@@ -223,7 +351,7 @@ export function ProfileScreen() {
       </Card>
 
       <Card className="p-4 mb-4">
-        <h2 className="text-lg font-bold text-slate-900 mb-2">Удаление данных</h2>
+        <h2 className="text-sm font-bold text-slate-900 mb-2">Удаление данных</h2>
         <p className="text-sm text-slate-600 mb-3">
           Удаляются все транзакции, цели, активы, долги и история консультаций. Профиль и аккаунт (подписка) сохраняются.
         </p>

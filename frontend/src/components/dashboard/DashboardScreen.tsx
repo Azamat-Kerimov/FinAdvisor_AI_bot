@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { ExampleReportImage } from '@/components/ui/ExampleReportImage';
@@ -11,7 +11,6 @@ import {
   useCapitalHistory,
   useConsultationHistory,
   useBenchmarks,
-  useProgressVsSelf,
   useOnboardingProgress,
   useAlerts,
   useFocusGoal,
@@ -22,6 +21,7 @@ import type { CapitalHistoryItem } from '@/types/api';
 import type { NavScreen } from '@/components/layout/BottomNav';
 import { usePullToRefresh } from '@/hooks/usePullToRefresh';
 import { ShareButton } from '@/components/ui/ShareButton';
+import { ONBOARDING_STORAGE_KEY, PROGRESS_CLOSED_KEY, isOnboardingSeen, isProgressClosed, markOnboardingSeen } from '@/lib/onboarding';
 
 const MONTH_NAMES = [
   'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
@@ -77,18 +77,6 @@ function formatShortMoney(value: number): string {
   return `${sign}${Math.round(abs)}`;
 }
 
-/** Значение в тыс. ₽ для таблицы «Прогресс относительно себя»: одна размерность, в шапке указано «тыс. ₽». */
-function formatThousandRub(value: number): string {
-  const v = value / 1_000;
-  const abs = Math.abs(v);
-  const sign = value < 0 ? '−' : '';
-  if (abs >= 100) return `${sign}${Math.round(abs)}`;
-  if (abs >= 10) return `${sign}${abs.toFixed(1)}`;
-  if (abs >= 1) return `${sign}${abs.toFixed(2)}`;
-  if (abs === 0) return '0';
-  return `${sign}${abs.toFixed(2)}`;
-}
-
 /** Только число для подписей на столбцах (размерность по оси): "+410", "-418", "1.2" */
 function formatShortValueOnly(value: number): string {
   const abs = Math.abs(value);
@@ -134,9 +122,6 @@ function getNiceAxisRange(maxAbs: number): { maxTick: number; step: number; tick
 /** Обёртка страницы Главная (светлая и тёмная тема) */
 const LIGHT_WRAPPER = 'min-h-full bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-200';
 
-const ONBOARDING_STORAGE_KEY = 'finadvisor_onboarding_seen';
-const PROGRESS_CLOSED_KEY = 'finadvisor_progress_closed';
-
 /** Подсказка к алерту о резервном фонде */
 const RESERVE_ALERT_TOOLTIP =
   'Резерв считается так: ликвидный капитал (активы: депозиты, счета, наличные и т.д. минус ликвидные долги) делим на средние месячные расходы за последние 3 месяца. Рекомендуется иметь запас на 3–6 месяцев расходов.';
@@ -149,14 +134,9 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
   const prev = getPreviousMonth();
   const [selectedMonth, setSelectedMonth] = useState(prev.month);
   const [selectedYear, setSelectedYear] = useState(prev.year);
-  const [onboardingSeen, setOnboardingSeen] = useState(() =>
-    typeof localStorage !== 'undefined' && localStorage.getItem(ONBOARDING_STORAGE_KEY) === 'true'
-  );
-  const [progressClosed, setProgressClosed] = useState(() =>
-    typeof localStorage !== 'undefined' && localStorage.getItem(PROGRESS_CLOSED_KEY) === 'true'
-  );
+  const [onboardingSeen, setOnboardingSeen] = useState(isOnboardingSeen);
+  const [progressClosed, setProgressClosed] = useState(isProgressClosed);
   const [benchmarksHelpOpen, setBenchmarksHelpOpen] = useState(false);
-  const [progressHelpOpen, setProgressHelpOpen] = useState(false);
   const [capitalHelpOpen, setCapitalHelpOpen] = useState(false);
 
   const { data: stats, loading: statsLoading, error: statsError, refetch: refetchStats } = useStats(selectedMonth, selectedYear);
@@ -165,7 +145,6 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
   const { data: capitalHistory, loading: capitalHistoryLoading } = useCapitalHistory();
   const { data: consultationHistory, loading: consultationLoading } = useConsultationHistory();
   const { data: benchmarks, loading: benchmarksLoading } = useBenchmarks();
-  const { data: progressVsSelf, loading: progressVsSelfLoading } = useProgressVsSelf();
   const { data: alertsData, loading: alertsLoading } = useAlerts();
   const { data: focusGoal, loading: focusGoalLoading, refetch: refetchFocusGoal } = useFocusGoal();
   const { data: badgesData, loading: badgesLoading } = useBadges();
@@ -183,13 +162,12 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
   }
 
   function dismissOnboarding() {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(ONBOARDING_STORAGE_KEY, 'true');
-    }
+    markOnboardingSeen();
     setOnboardingSeen(true);
   }
 
   const { pullProps, pullY, isRefreshing } = usePullToRefresh(() => refetchStats());
+  const cashFlowCardRef = useRef<HTMLDivElement>(null);
 
   return (
     <div className={LIGHT_WRAPPER} {...pullProps}>
@@ -203,7 +181,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
       {/* Онбординг: что это за приложение и как пользоваться */}
       {!onboardingSeen && (
         <Card className="p-4 mb-4 bg-white border-2 border-slate-200 shadow-card">
-          <h2 className="text-lg font-bold text-slate-900 mb-3">Добро пожаловать!</h2>
+          <h2 className="text-sm font-bold text-slate-900 mb-3">Добро пожаловать!</h2>
           <p className="text-sm text-slate-800 mb-3 leading-relaxed">
             FinAdvisor — ваш персональный финансовый помощник. Здесь вы ведёте учёт денег, ставите цели и получаете консультации ИИ на основе ваших реальных данных (транзакции, активы, долги).
           </p>
@@ -255,11 +233,11 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
         if (allDone && progressClosed) return null;
         return (
           <Card className="p-4 mb-4 bg-white border border-slate-200 shadow-card">
-            <h2 className="text-base font-semibold text-slate-900 mb-3">Ваш прогресс</h2>
+            <h2 className="text-sm font-bold text-slate-900 mb-3">Ваш прогресс</h2>
             <div className="space-y-3">
               {[
-                { done: onboardingProgress.has_transactions, label: 'Добавьте или загрузите транзакции', sub: 'Транзакции', screen: 'transactions' as NavScreen },
-                { done: onboardingProgress.has_capital, label: 'Добавьте активы и долги', sub: 'Капитал', screen: 'capital' as NavScreen },
+                { done: onboardingProgress.has_transactions, label: 'Добавьте или загрузите транзакции', sub: 'Транзакции', screen: 'finance' as NavScreen },
+                { done: onboardingProgress.has_capital, label: 'Добавьте активы и долги', sub: 'Капитал', screen: 'finance' as NavScreen },
                 { done: onboardingProgress.has_profile, label: 'Заполните профиль', sub: 'Профиль', screen: 'profile' as NavScreen },
                 { done: onboardingProgress.has_consultation, label: 'Получите консультацию ИИ', sub: 'ИИ', screen: 'consultation' as NavScreen },
                 { done: allDone, label: 'Наслаждайтесь', sub: '', screen: undefined },
@@ -322,7 +300,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
       {/* Цель месяца (фокус от ИИ) */}
       {!focusGoalLoading && focusGoal && (
         <Card className="p-4 mb-4 bg-white border border-slate-200 shadow-card">
-          <h2 className="text-base font-semibold text-slate-900 mb-2">Цель этого месяца</h2>
+          <h2 className="text-sm font-bold text-slate-900 mb-2">Цель этого месяца</h2>
           {focusGoal.achieved_at ? (
             <div className="p-3 bg-green-50 border border-green-200 rounded-button">
               <p className="text-sm font-medium text-green-800">🎉 Цель достигнута!</p>
@@ -346,7 +324,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
       {/* Мягкие алерты */}
       {!alertsLoading && alertsData && alertsData.alerts.length > 0 && (
         <Card className="p-4 mb-4 bg-amber-50 border border-amber-200 shadow-card">
-          <h2 className="text-base font-semibold text-amber-900 mb-2">Обратите внимание</h2>
+          <h2 className="text-sm font-bold text-amber-900 mb-2">Обратите внимание</h2>
           <ul className="space-y-1 text-sm text-amber-800">
             {alertsData.alerts.map((a, i) => (
               <li key={i} className="flex items-center gap-2">
@@ -380,16 +358,18 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
         </div>
       )}
 
-      {/* Блок 1: Денежный поток + Прогресс относительно себя + Сравнение с целевыми нормами (визуально один блок) */}
-      <Card className="p-4 mb-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-card">
-        <div className="flex items-center justify-between gap-2 mb-3">
-          <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Денежный поток</h2>
-          {stats && (
-            <ShareButton
-              title="Денежный поток — FinAdvisor"
-              text={`Денежный поток за ${MONTH_NAMES[selectedMonth - 1]} ${selectedYear}: расходы ${formatMoney(stats.total_expense)} ₽, доходы ${formatMoney(stats.total_income)} ₽, разница ${(stats.total_income - stats.total_expense) >= 0 ? '+' : '−'}${formatMoney(Math.abs(stats.total_income - stats.total_expense))} ₽`}
-            />
-          )}
+      {/* Блок 1: Денежный поток + Сравнение с целевыми нормами (визуально один блок) */}
+      <div ref={cashFlowCardRef}>
+        <Card className="p-4 mb-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-card">
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">Денежный поток</h2>
+            {stats && (
+              <ShareButton
+                captureRef={cashFlowCardRef}
+                title="Денежный поток — FinAdvisor"
+                text={`Денежный поток за ${MONTH_NAMES[selectedMonth - 1]} ${selectedYear}: расходы ${formatMoney(stats.total_expense)} ₽, доходы ${formatMoney(stats.total_income)} ₽, разница ${(stats.total_income - stats.total_expense) >= 0 ? '+' : '−'}${formatMoney(Math.abs(stats.total_income - stats.total_expense))} ₽`}
+              />
+            )}
         </div>
         {/* Селектор месяца: центрированный месяц и год со стрелками влево/вправо */}
         {(() => {
@@ -398,7 +378,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
           const canPrev = idx < monthOptions.length - 1;
           const canNext = idx > 0;
           return (
-            <div className="flex items-center justify-center gap-3 py-1.5 px-3 mb-4">
+            <div className="flex items-center justify-center gap-3 py-1.5 px-3 mb-4 bg-slate-100 dark:bg-slate-700/60 rounded-lg">
               <button
                 type="button"
                 onClick={() => {
@@ -462,16 +442,16 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
         {!statsLoading && stats && (
           <>
             <div className="grid grid-cols-3 gap-3 mb-4">
-              <div className="rounded-lg p-3 border border-expense bg-white dark:bg-slate-800/50 dark:border-expense/50">
-                <p className="text-xs text-slate-600 dark:text-slate-400 mb-0.5">Расходы</p>
-                <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 break-all">{formatMoney(stats.total_expense)} ₽</p>
-              </div>
-              <div className="rounded-lg p-3 border border-income bg-white dark:bg-slate-800/50 dark:border-income/50">
+              <div className="rounded-lg px-3 py-2 border border-income bg-white dark:bg-slate-800/50 dark:border-income/50">
                 <p className="text-xs text-slate-600 dark:text-slate-400 mb-0.5">Доходы</p>
                 <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 break-all">{formatMoney(stats.total_income)} ₽</p>
               </div>
+              <div className="rounded-lg px-3 py-2 border border-expense bg-white dark:bg-slate-800/50 dark:border-expense/50">
+                <p className="text-xs text-slate-600 dark:text-slate-400 mb-0.5">Расходы</p>
+                <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 break-all">{formatMoney(stats.total_expense)} ₽</p>
+              </div>
               <div
-                className={`rounded-lg p-3 border ${
+                className={`rounded-lg px-3 py-2 border ${
                   (stats.total_income - stats.total_expense) >= 0 ? 'bg-income/10 border-income/20 dark:bg-income/20 dark:border-income/50' : 'bg-expense/10 border-expense/20 dark:bg-expense/20 dark:border-expense/50'
                 }`}
               >
@@ -487,7 +467,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
               </div>
             </div>
 
-            <h3 className="text-sm font-medium text-slate-700 mb-2">Разница по месяцам (последний год)</h3>
+            <h3 className="text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">Разница по месяцам (последний год)</h3>
             {monthlyLoading ? (
               <div className="h-32 flex items-center justify-center text-slate-400 text-sm">Загрузка...</div>
             ) : (() => {
@@ -498,7 +478,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
                   {onNavigate && (
                     <button
                       type="button"
-                      onClick={() => onNavigate('transactions')}
+                      onClick={() => onNavigate('finance')}
                       className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
                     >
                       Добавьте первую транзакцию →
@@ -512,88 +492,12 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
           </>
         )}
 
-        {/* Прогресс относительно себя: топ-3, в том же блоке */}
-        {!progressVsSelfLoading && progressVsSelf && progressVsSelf.categories.length > 0 && (
-          <>
-            <hr className="my-4 border-slate-200" />
-            <div className="flex items-center gap-2 mb-3">
-              <h3 className="text-base font-semibold text-slate-900">Прогресс относительно себя</h3>
-              <button
-                type="button"
-                onClick={() => setProgressHelpOpen(!progressHelpOpen)}
-                className="min-w-[44px] min-h-[44px] flex items-center justify-center shrink-0 rounded-full"
-                title="Как читать отчёт"
-              >
-                <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
-              </button>
-            </div>
-            {progressHelpOpen && (
-              <div className="mb-3 p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-700">
-                <p className="font-medium mb-1">Как читать отчёт</p>
-                <p>«В ср. в мес.» — среднее в месяц за последние 12 месяцев по категории расходов (без учёта переводов людям и от людей). «Последний месяц» — сумма за последний календарный месяц. Показаны топ-3 категории с наибольшей разницей: сначала где расходы выросли сильнее всего, затем где снизились.</p>
-              </div>
-            )}
-            <div className="overflow-x-auto">
-              {(() => {
-                const maxAbs = progressVsSelf.categories.length
-                  ? Math.max(
-                      ...progressVsSelf.categories.flatMap((c) => [
-                        Math.abs(c.before),
-                        Math.abs(c.now),
-                        Math.abs(c.now - c.before),
-                      ])
-                    )
-                  : 0;
-                const useThousands = maxAbs >= 100_000;
-                const unit = useThousands ? 'тыс. ₽' : '₽';
-                const fmt = useThousands ? formatThousandRub : (v: number) => formatMoney(Math.round(v));
-                return (
-                  <table className="w-full text-sm text-slate-700 border-collapse">
-                    <thead>
-                      <tr className="border-b border-slate-200 align-bottom">
-                        <th className="text-left py-2 pr-2 font-medium text-slate-600 align-bottom">Категория</th>
-                        <th className="text-right py-2 px-2 font-medium text-slate-600 align-bottom">
-                          <span className="block">В ср. в мес.</span>
-                          <span className="block text-slate-500 font-normal">{unit}</span>
-                        </th>
-                        <th className="text-right py-2 px-2 font-medium text-slate-600 align-bottom">
-                          <span className="block">Последний месяц</span>
-                          <span className="block text-slate-500 font-normal">{unit}</span>
-                        </th>
-                        <th className="text-right py-2 pl-2 font-medium text-slate-600 align-bottom">
-                          <span className="block">Разница</span>
-                          <span className="block text-slate-500 font-normal">{unit}</span>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {progressVsSelf.categories.map((c) => {
-                        const diff = c.now - c.before;
-                        return (
-                          <tr key={c.category} className="border-b border-slate-100">
-                            <td className="py-2 pr-2">{c.category}</td>
-                            <td className="text-right py-2 px-2 whitespace-nowrap">{fmt(c.before)}</td>
-                            <td className="text-right py-2 px-2 whitespace-nowrap">{fmt(c.now)}</td>
-                            <td className={`text-right py-2 pl-2 whitespace-nowrap ${diff > 0 ? 'text-expense' : diff < 0 ? 'text-income' : ''}`}>
-                              {diff > 0 ? '+' : ''}{fmt(diff)}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                );
-              })()}
-            </div>
-          </>
-        )}
-
         {/* Сравнение с целевыми нормами: в том же блоке, таблица У вас / Цель */}
         {!benchmarksLoading && benchmarks && benchmarks.total_income > 0 && benchmarks.savings != null && (
           <>
             <hr className="my-4 border-slate-200" />
             <div className="flex items-center gap-2 mb-3">
-              <h3 className="text-base font-semibold text-slate-900">Сравнение с целевыми нормами</h3>
+              <h3 className="text-xs font-bold text-slate-700 dark:text-slate-300">Сравнение с целевыми нормами</h3>
               <button
                 type="button"
                 onClick={() => setBenchmarksHelpOpen(!benchmarksHelpOpen)}
@@ -612,12 +516,12 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
               </div>
             )}
             <div className="overflow-x-auto">
-              <table className="w-full text-sm text-slate-700 border-collapse">
+              <table className="w-full text-[10px] text-slate-500 dark:text-slate-400 border-collapse">
                 <thead>
                   <tr className="border-b border-slate-200">
-                    <th className="text-left py-2 pr-2 font-medium text-slate-600">Категория</th>
-                    <th className="text-right py-2 px-2 font-medium text-slate-600">У вас</th>
-                    <th className="text-right py-2 pl-2 font-medium text-slate-600">Цель</th>
+                    <th className="text-left py-2 pr-2 font-medium">Категория</th>
+                    <th className="text-right py-2 px-2 font-medium">У вас</th>
+                    <th className="text-right py-2 pl-2 font-medium">Цель</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -635,7 +539,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
                         <td className={`text-right py-2 px-2 ${isBad ? 'text-expense font-medium' : ''}`}>
                           {row.user_pct}%
                         </td>
-                        <td className="text-right py-2 pl-2 text-slate-600">
+                        <td className="text-right py-2 pl-2">
                           {row.target_low}–{row.target_high}%
                         </td>
                       </tr>
@@ -646,13 +550,14 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
             </div>
           </>
         )}
-      </Card>
+        </Card>
+      </div>
 
       {/* Блок 2: Чистый капитал */}
       <Card className="p-4 mb-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-card">
         <div className="flex items-center justify-between gap-2 mb-3">
           <div className="flex items-center gap-2">
-            <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Чистый капитал</h2>
+            <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">Чистый капитал</h2>
             <button
               type="button"
               onClick={() => setCapitalHelpOpen(!capitalHelpOpen)}
@@ -683,16 +588,16 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
         {!capitalSummaryLoading && capitalSummary && (
           <>
             <div className="grid grid-cols-3 gap-3 mb-4">
-              <div className="rounded-lg p-3 border border-income bg-white">
+              <div className="rounded-lg px-3 py-2 border border-income bg-white">
                 <p className="text-xs text-slate-600 mb-0.5">Активы</p>
                 <p className="text-xs font-semibold text-slate-900 break-all">{formatMoney(capitalSummary.assets)} ₽</p>
               </div>
-              <div className="rounded-lg p-3 border border-expense bg-white">
+              <div className="rounded-lg px-3 py-2 border border-expense bg-white">
                 <p className="text-xs text-slate-600 mb-0.5">Пассивы</p>
                 <p className="text-xs font-semibold text-slate-900 break-all">{formatMoney(capitalSummary.liabilities)} ₽</p>
               </div>
               <div
-                className={`rounded-lg p-3 border ${
+                className={`rounded-lg px-3 py-2 border ${
                   capitalSummary.net >= 0 ? 'bg-income/10 border-income/20' : 'bg-expense/10 border-expense/20'
                 }`}
               >
@@ -708,7 +613,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
               </div>
             </div>
 
-            <h3 className="text-sm font-medium text-slate-700 mb-2">Финансовый путь</h3>
+            <h3 className="text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">Финансовый путь</h3>
             {capitalHistoryLoading ? (
               <div className="h-48 flex items-center justify-center text-slate-400 text-sm">Загрузка...</div>
             ) : (() => {
@@ -719,7 +624,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
                   {onNavigate && (
                     <button
                       type="button"
-                      onClick={() => onNavigate('capital')}
+                      onClick={() => onNavigate('finance')}
                       className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
                     >
                       Добавьте активы и долги →
@@ -741,7 +646,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
 
       {/* Блок 4: Одна короткая версия последней консультации */}
       <Card className="p-4 bg-white border border-slate-200 shadow-card">
-        <h2 className="text-base font-semibold text-slate-900 mb-3">Последние рекомендации</h2>
+        <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-3">Последние рекомендации</h2>
         {consultationLoading && (
           <div className="flex justify-center py-4">
             <div className="w-6 h-6 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
@@ -886,7 +791,8 @@ function FinancialPathChart({ data }: { data: CapitalHistoryItem[] }) {
                   const assetTopPct = 50 - assetRatio(d.assets) * 50;
                   const noDebt = d.liabilities <= 0;
                   const nvOverlapsAssets = noDebt && netY > 10 && netY < assetTopPct + 14;
-                  const labelOffset = nvOverlapsAssets ? -22 : -18;
+                  const isPositive = d.net >= 0;
+                  const labelOffset = isPositive ? 10 : (nvOverlapsAssets ? -22 : -18);
                   return (
                     <>
                       <span

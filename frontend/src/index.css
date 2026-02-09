@@ -2,12 +2,19 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Telegram Mini App: при наличии themeParams можно задать --tg-* из Telegram.WebApp.themeParams */
 @layer base {
   html {
     @apply antialiased;
-    font-size: 16px; /* мобильная читаемость, без автозума при фокусе в input */
+    font-size: 16px;
   }
   body {
-    @apply bg-surface dark:bg-slate-900 text-slate-800 dark:text-slate-200 min-h-screen text-base leading-snug;
+    background-color: var(--tg-bg, #f4f4f5);
+    color: var(--tg-text, #000000);
+    @apply min-h-screen text-base leading-snug;
+  }
+  .dark body {
+    background-color: var(--tg-bg, #18233d);
+    color: var(--tg-text, #e4e4e5);
   }
 }

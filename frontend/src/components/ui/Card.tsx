@@ -6,12 +6,12 @@ export interface CardProps {
   onClick?: MouseEventHandler<HTMLDivElement>;
 }
 
-/** Базовая карточка: фон, скругление, тень. Масштабирование: добавлять варианты (variant) при появлении новых типов блоков. */
+/** Карточка в стиле Telegram: лёгкое скругление, мягкая тень, светлый фон. */
 export function Card({ children, className = '', onClick }: CardProps) {
   return (
     <div
       role={onClick ? 'button' : undefined}
-      className={`rounded-card bg-white shadow-card border border-border/80 transition-shadow hover:shadow-card-hover ${className}`}
+      className={`rounded-card bg-white dark:bg-slate-800 shadow-card border border-slate-200/80 dark:border-slate-600/80 transition-shadow hover:shadow-card-hover ${className}`}
       onClick={onClick}
     >
       {children}

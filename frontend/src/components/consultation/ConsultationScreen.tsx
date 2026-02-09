@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button';
 import { apiRequest } from '@/lib/api';
 import { useConsultationActions } from '@/hooks/useStats';
 import { ShareButton } from '@/components/ui/ShareButton';
+import { renderConsultationText } from '@/lib/formatConsultation';
 
 interface Goal {
   id: number;
@@ -55,6 +56,7 @@ export function ConsultationScreen() {
   const [history, setHistory] = useState<ConsultationHistoryItem[]>([]);
   const [selectedHistoryIndex, setSelectedHistoryIndex] = useState<number | null>(null);
   const [openHelp, setOpenHelp] = useState<'addGoal' | 'send' | 'consultation' | null>(null);
+  const [sendMessageOpen, setSendMessageOpen] = useState(false);
   const HISTORY_PAGE_SIZE = 3;
   const [historyPage, setHistoryPage] = useState(1);
   
@@ -318,7 +320,7 @@ export function ConsultationScreen() {
       <PageHeader title="Консультация ИИ" />
 
       <Card className="p-4 mb-4">
-        <h2 className="text-lg font-bold text-slate-900 mb-3">Цели</h2>
+        <h2 className="text-sm font-bold text-slate-900 mb-3">Цели</h2>
       {showGoalForm && (
         <div className="pt-3 border-t border-slate-200">
           <form onSubmit={handleGoalSubmit} className="space-y-3">
@@ -465,54 +467,65 @@ export function ConsultationScreen() {
         )}
 
         <div className="mt-4 pt-4 border-t border-slate-200">
-          <h3 className="text-base font-semibold text-slate-900 mb-2">Отправить сообщение</h3>
-          <form onSubmit={handleSendMessage} className="space-y-2">
-            <textarea
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              className="w-full px-3 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400"
-              placeholder="Например: Хочу накопить 500 000 на машину за год или оставьте пустым"
-              rows={3}
-            />
-            <div className="flex items-center gap-2">
-              <Button type="submit" variant="primary" disabled={sendingMessage || !message.trim()} className="flex-1 py-3.5">
-                {sendingMessage ? 'Отправка...' : 'Отправить'}
-              </Button>
-              <button
-                type="button"
-                onClick={() => setOpenHelp(openHelp === 'send' ? null : 'send')}
-                className="min-w-[44px] min-h-[44px] flex items-center justify-center shrink-0 rounded-full"
-                title="Пояснения"
-              >
-                <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
-              </button>
-            </div>
-            {openHelp === 'send' && (
-              <p className="mt-2 p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-600">
-                ИИ извлечёт цели из сообщения и добавит их автоматически. Для пассивного дохода ИИ рассчитает необходимый капитал.
-              </p>
-            )}
-          </form>
+          <button
+            type="button"
+            onClick={() => setSendMessageOpen((v) => !v)}
+            className="flex items-center gap-2 w-full text-left mb-2"
+          >
+            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">Сформулировать цель</h3>
+            <svg
+              className={`w-4 h-4 text-slate-500 transition-transform shrink-0 ${sendMessageOpen ? 'rotate-180' : ''}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {sendMessageOpen && (
+            <form onSubmit={handleSendMessage} className="space-y-2">
+              <textarea
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                className="w-full px-3 py-2 border border-border dark:border-slate-600 rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+                placeholder="Например: Хочу накопить 500 000 на машину за год или оставьте пустым"
+                rows={3}
+              />
+              <div className="flex items-center gap-2">
+                <Button type="submit" variant="primary" disabled={sendingMessage || !message.trim()} className="flex-1 py-3.5">
+                  {sendingMessage ? 'Отправка...' : 'Отправить'}
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => setOpenHelp(openHelp === 'send' ? null : 'send')}
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center shrink-0 rounded-full"
+                  title="Пояснения"
+                >
+                  <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
+                </button>
+              </div>
+              {openHelp === 'send' && (
+                <p className="mt-2 p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600 text-xs text-slate-600 dark:text-slate-300">
+                  ИИ извлечёт цели из сообщения и добавит их автоматически. Для пассивного дохода ИИ рассчитает необходимый капитал.
+                </p>
+              )}
+            </form>
+          )}
         </div>
       </Card>
 
       {/* Блок "Консультация ИИ" */}
       <Card className="p-4 mb-4 relative">
         <div className="mb-3 flex items-center justify-between gap-2">
-          <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">Консультация ИИ</h2>
-          <div className="flex items-center gap-2">
-            {consultationLimit && (
-              <span className="text-xs text-slate-500 dark:text-slate-400">{consultationLimit}</span>
-            )}
-            {consultation && (
-              <ShareButton
-                title="Консультация ИИ — FinAdvisor"
-                text={consultation}
-              />
-            )}
-          </div>
+          <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">Консультация ИИ</h2>
+          {consultation && (
+            <ShareButton
+              title="Консультация ИИ — FinAdvisor"
+              text={consultation}
+            />
+          )}
         </div>
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex items-center gap-2 mb-2">
           <Button
             variant="primary"
             onClick={handleGetConsultation}
@@ -530,6 +543,9 @@ export function ConsultationScreen() {
             <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
           </button>
         </div>
+        {consultationLimit && (
+          <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">{consultationLimit}</p>
+        )}
         {openHelp === 'consultation' && (
           <p className="mb-3 p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-600">
             Для генерации ответа используются вся информация о транзакциях, капитале и ваши цели, а также история ваших запросов. Заполните остальные вкладки для более качественного ответа.
@@ -545,7 +561,7 @@ export function ConsultationScreen() {
         {consultation && (
           <>
             <div className="p-4 bg-slate-50 dark:bg-slate-700/50 rounded-button text-sm whitespace-pre-wrap">
-              {consultation}
+              {renderConsultationText(consultation)}
             </div>
             {/* Уточняющий вопрос — только после получения консультации, в том же блоке */}
             {canFollowupToday && (
@@ -576,11 +592,104 @@ export function ConsultationScreen() {
                 )}
                 {followUpReply && (
                   <div className="mt-3 p-4 bg-slate-50 rounded-button text-sm whitespace-pre-wrap">
-                    {followUpReply}
+                    {renderConsultationText(followUpReply)}
                   </div>
                 )}
               </div>
             )}
+          </>
+        )}
+        
+        {/* История консультаций: последние первые, по 3 на странице */}
+        {history.length > 0 && (
+          <>
+            <div className="mt-6 pt-6 border-t border-slate-200">
+              <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-3">История консультаций</h2>
+              {(() => {
+                const totalPages = Math.ceil(history.length / HISTORY_PAGE_SIZE);
+                const start = (historyPage - 1) * HISTORY_PAGE_SIZE;
+                const pageItems = history.slice(start, start + HISTORY_PAGE_SIZE);
+                const globalIndex = (i: number) => start + i;
+                return (
+                  <>
+                    <div className="space-y-2">
+                      {pageItems.map((item, i) => {
+                        const index = globalIndex(i);
+                        return (
+                          <button
+                            key={index}
+                            type="button"
+                            onClick={() => setSelectedHistoryIndex(selectedHistoryIndex === index ? null : index)}
+                            className={`w-full rounded-lg border-2 p-3 text-left transition-colors ${
+                              selectedHistoryIndex === index
+                                ? 'border-blue-500 bg-blue-50'
+                                : 'border-slate-200 bg-white hover:border-slate-300'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-medium text-slate-900">
+                                Консультация от {formatDate(item.date)}
+                              </span>
+                              <svg
+                                className={`h-4 w-4 text-slate-400 transition-transform ${
+                                  selectedHistoryIndex === index ? 'rotate-180' : ''
+                                }`}
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                              </svg>
+                            </div>
+                            {selectedHistoryIndex === index && (
+                          <div className="mt-3 pt-3 border-t border-slate-200 text-sm text-slate-700 space-y-3">
+                            <div className="whitespace-pre-wrap">{renderConsultationText(item.content)}</div>
+                                {item.follow_ups && item.follow_ups.length > 0 && (
+                                  <div className="space-y-2 pt-2 border-t border-slate-100">
+                                    <span className="text-xs font-medium text-slate-500">Уточнения:</span>
+                                    {item.follow_ups.map((fu: { question: string | null; answer: string | null }, fi: number) => (
+                                      <div key={fi} className="pl-2 border-l-2 border-slate-200">
+                                        {fu.question && <p className="text-slate-600 mb-1"><strong>Вопрос:</strong> {fu.question}</p>}
+                                        {fu.answer && <p className="whitespace-pre-wrap">{fu.answer}</p>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {totalPages > 1 && (
+                      <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-200">
+                        <span className="text-sm text-slate-500">
+                          {start + 1}–{Math.min(start + HISTORY_PAGE_SIZE, history.length)} из {history.length}
+                        </span>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            disabled={historyPage <= 1}
+                            onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
+                            className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm disabled:opacity-50"
+                          >
+                            Назад
+                          </button>
+                          <button
+                            type="button"
+                            disabled={historyPage >= totalPages}
+                            onClick={() => setHistoryPage((p) => p + 1)}
+                            className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm disabled:opacity-50"
+                          >
+                            Вперёд
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
           </>
         )}
       </Card>
@@ -588,7 +697,7 @@ export function ConsultationScreen() {
       {/* Чек-лист действий из консультации */}
       {!actionsLoading && consultationActions && consultationActions.length > 0 && (
         <Card className="p-4 mb-4">
-          <h2 className="text-lg font-bold text-slate-900 mb-3">Действия из консультации</h2>
+          <h2 className="text-sm font-bold text-slate-900 mb-3">Действия из консультации</h2>
           <p className="text-sm text-slate-600 mb-3">Отметьте выполненное — в следующей консультации ИИ учтёт это.</p>
           <ul className="space-y-2">
             {consultationActions.map((action) => (
@@ -622,96 +731,6 @@ export function ConsultationScreen() {
         </Card>
       )}
 
-      {/* История консультаций: последние первые, по 3 на странице */}
-      {history.length > 0 && (
-        <Card className="p-4">
-          <h2 className="text-lg font-bold text-slate-900 mb-3">История консультаций</h2>
-          {(() => {
-            const totalPages = Math.ceil(history.length / HISTORY_PAGE_SIZE);
-            const start = (historyPage - 1) * HISTORY_PAGE_SIZE;
-            const pageItems = history.slice(start, start + HISTORY_PAGE_SIZE);
-            const globalIndex = (i: number) => start + i;
-            return (
-              <>
-                <div className="space-y-2">
-                  {pageItems.map((item, i) => {
-                    const index = globalIndex(i);
-                    return (
-                      <button
-                        key={index}
-                        type="button"
-                        onClick={() => setSelectedHistoryIndex(selectedHistoryIndex === index ? null : index)}
-                        className={`w-full rounded-lg border-2 p-3 text-left transition-colors ${
-                          selectedHistoryIndex === index
-                            ? 'border-blue-500 bg-blue-50'
-                            : 'border-slate-200 bg-white hover:border-slate-300'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm font-medium text-slate-900">
-                            Консультация от {formatDate(item.date)}
-                          </span>
-                          <svg
-                            className={`h-4 w-4 text-slate-400 transition-transform ${
-                              selectedHistoryIndex === index ? 'rotate-180' : ''
-                            }`}
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                          </svg>
-                        </div>
-                        {selectedHistoryIndex === index && (
-                          <div className="mt-3 pt-3 border-t border-slate-200 text-sm text-slate-700 space-y-3">
-                            <div className="whitespace-pre-wrap">{item.content}</div>
-                            {item.follow_ups && item.follow_ups.length > 0 && (
-                              <div className="space-y-2 pt-2 border-t border-slate-100">
-                                <span className="text-xs font-medium text-slate-500">Уточнения:</span>
-                                {item.follow_ups.map((fu: { question: string | null; answer: string | null }, fi: number) => (
-                                  <div key={fi} className="pl-2 border-l-2 border-slate-200">
-                                    {fu.question && <p className="text-slate-600 mb-1"><strong>Вопрос:</strong> {fu.question}</p>}
-                                    {fu.answer && <p className="whitespace-pre-wrap">{fu.answer}</p>}
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-                {totalPages > 1 && (
-                  <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-200">
-                    <span className="text-sm text-slate-500">
-                      {start + 1}–{Math.min(start + HISTORY_PAGE_SIZE, history.length)} из {history.length}
-                    </span>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        disabled={historyPage <= 1}
-                        onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
-                        className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm disabled:opacity-50"
-                      >
-                        Назад
-                      </button>
-                      <button
-                        type="button"
-                        disabled={historyPage >= totalPages}
-                        onClick={() => setHistoryPage((p) => p + 1)}
-                        className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm disabled:opacity-50"
-                      >
-                        Вперёд
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </>
-            );
-          })()}
-        </Card>
-      )}
     </>
   );
 }

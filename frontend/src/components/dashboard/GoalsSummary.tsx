@@ -44,11 +44,7 @@ export function GoalsSummary({ variant = 'light' }: GoalsSummaryProps) {
           : 'rounded-card bg-white p-4 shadow-card border border-border/80'
       }
     >
-      <h3
-        className={
-          isDark ? 'text-sm font-semibold text-slate-300 mb-3' : 'text-sm font-semibold text-slate-900 mb-3'
-        }
-      >
+      <h3 className={`text-sm font-bold mb-3 ${isDark ? 'text-slate-100' : 'text-slate-900 dark:text-slate-100'}`}>
         Прогресс по целям
       </h3>
       <div className="space-y-3">
@@ -56,14 +52,14 @@ export function GoalsSummary({ variant = 'light' }: GoalsSummaryProps) {
           const progress = goal.target <= 0 ? 100 : Math.max(0, Math.min(100, (Math.max(0, goal.current) / goal.target) * 100));
           return (
             <div key={goal.id} className="space-y-2">
-              <p className={isDark ? 'font-medium text-white' : 'font-medium text-slate-900'}>
+              <p className={isDark ? 'text-xs font-bold text-slate-300' : 'text-xs font-bold text-slate-700'}>
                 {goal.title}
               </p>
-              <div className="flex justify-between text-sm">
-                <span className={isDark ? 'text-slate-400' : 'text-slate-600'}>
+              <div className="flex justify-between text-[10px] text-slate-500">
+                <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>
                   {formatMoney(goal.current)} ₽ / {formatMoney(goal.target)} ₽
                 </span>
-                <span className={isDark ? 'font-medium text-slate-300' : 'font-medium text-slate-700'}>
+                <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>
                   {Math.round(progress)}%
                 </span>
               </div>
@@ -74,7 +70,7 @@ export function GoalsSummary({ variant = 'light' }: GoalsSummaryProps) {
                 />
               </div>
               {goal.months_to_goal !== null && goal.months_to_goal > 0 && (
-                <p className={isDark ? 'text-xs text-slate-400' : 'text-xs text-muted'}>
+                <p className={isDark ? 'text-[10px] text-slate-400' : 'text-[10px] text-slate-500'}>
                   Осталось: {formatMoney(goal.remaining)} ₽
                 </p>
               )}

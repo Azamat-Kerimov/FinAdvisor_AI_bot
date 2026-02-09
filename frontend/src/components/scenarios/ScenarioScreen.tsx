@@ -137,7 +137,7 @@ function RentVsBuyBlock() {
     <Card className="p-4 mb-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-card">
       <div className="flex items-center justify-between gap-2 mb-3">
         <div className="flex items-center gap-2">
-          <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Аренда или покупка</h2>
+          <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">Аренда или покупка</h2>
           <button
             type="button"
             onClick={() => setBlockHelpOpen((v) => !v)}
@@ -443,7 +443,7 @@ function ScenarioAnalysisBlock() {
   if (loading) {
     return (
       <Card className="p-4 mb-4 bg-white border border-slate-200 shadow-card">
-        <h2 className="text-base font-semibold text-slate-900 mb-3">Сценарный анализ</h2>
+        <h2 className="text-sm font-bold text-slate-900 mb-3">Сценарный анализ</h2>
         <p className="text-sm text-slate-500">Загрузка данных...</p>
       </Card>
     );
@@ -452,7 +452,7 @@ function ScenarioAnalysisBlock() {
   if (!summary) {
     return (
       <Card className="p-4 mb-4 bg-white border border-slate-200 shadow-card">
-        <h2 className="text-base font-semibold text-slate-900 mb-3">Сценарный анализ</h2>
+        <h2 className="text-sm font-bold text-slate-900 mb-3">Сценарный анализ</h2>
         <p className="text-sm text-slate-500">Не удалось загрузить капитал. Заполните раздел «Капитал».</p>
       </Card>
     );
@@ -462,7 +462,7 @@ function ScenarioAnalysisBlock() {
     <Card className="p-4 mb-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-card">
       <div className="flex items-center justify-between gap-2 mb-3">
         <div className="flex items-center gap-2">
-          <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Сценарный анализ</h2>
+          <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">Сценарный анализ</h2>
           <button
             type="button"
             onClick={() => setFactorTableOpen((v) => !v)}
