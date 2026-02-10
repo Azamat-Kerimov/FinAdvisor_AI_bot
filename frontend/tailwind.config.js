@@ -27,8 +27,11 @@ export default {
         border: 'var(--tg-border, #e5e5e5)',
       },
       borderRadius: {
-        card: '8px',
-        button: '6px',
+        // Более округлые элементы в духе таббара
+        card: '16px',
+        button: '999px',
+        // Для полей ввода оставляем мягкое скругление
+        input: '8px',
       },
       boxShadow: {
         card: '0 1px 1px rgba(0,0,0,0.03)',

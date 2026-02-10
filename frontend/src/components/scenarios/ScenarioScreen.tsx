@@ -544,7 +544,7 @@ function ScenarioAnalysisBlock() {
 
 export function ScenarioScreen() {
   return (
-    <div className="min-h-full bg-slate-50 text-slate-900">
+    <div className="min-h-full text-slate-900">
       <PageHeader title="Сценарный анализ" />
       <RentVsBuyBlock />
       <ScenarioAnalysisBlock />

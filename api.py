@@ -300,12 +300,17 @@ class TransactionCreate(BaseModel):
     category_id: Optional[int] = None  # предпочтительно
     category: Optional[str] = None     # имя категории (если category_id не передан)
     description: Optional[str] = None
+    # Необязательная дата операции в формате YYYY-MM-DD.
+    # Если не передана — используется текущая дата/время.
+    date: Optional[str] = None
 
 class TransactionUpdate(BaseModel):
     amount: Optional[float] = None
     category_id: Optional[int] = None
     category: Optional[str] = None
     description: Optional[str] = None
+    # При наличии — обновляет дату операции (created_at).
+    date: Optional[str] = None
 
 class GoalCreate(BaseModel):
     title: str
@@ -473,18 +478,108 @@ async def delete_all_user_data(user_id: int = Depends(get_user_id)):
 @app.post("/api/log-action")
 async def log_action(body: LogActionRequest, user_id: int = Depends(get_user_id)):
     """Записать действие пользователя в БД (экран, шаринг, и т.д.)."""
+    import json
     db = await get_db()
     async with db.acquire() as conn:
         try:
+            # details может быть как строкой, так и словарём/объектом – сохраняем как JSON-строку
+            details_value = body.details
+            if details_value is not None:
+                if isinstance(details_value, str):
+                    # Если уже строка — сохраняем как есть
+                    pass
+                else:
+                    # Если словарь/объект — сериализуем в JSON-строку
+                    try:
+                        details_value = json.dumps(details_value, ensure_ascii=False)
+                    except (TypeError, ValueError) as e:
+                        # В тестовой среде логируем для отладки
+                        if APP_ENV == "test":
+                            logging.debug(f"Failed to serialize details: {details_value}, error: {e}")
+                        details_value = str(details_value)
+            # Если details_value всё ещё None — передаём None в БД
+
+            action_text = (body.action or "").strip() or "unknown"
             await conn.execute(
                 "INSERT INTO user_actions (user_id, action, details, created_at) VALUES ($1, $2, $3, NOW())",
                 user_id,
-                (body.action or "").strip() or "unknown",
-                body.details,
+                action_text,
+                details_value,
             )
+            # В тестовой среде логируем для отладки
+            if APP_ENV == "test":
+                logging.debug(f"log_action saved: user_id={user_id}, action={action_text}, details_type={type(details_value).__name__}")
         except asyncpg.UndefinedTableError:
             logging.warning("user_actions table not found; run migrate_user_actions.sql")
+        except Exception as e:
+            # В тестовой среде логируем все ошибки
+            if APP_ENV == "test":
+                logging.error(f"log_action error: {e}", exc_info=True)
+            raise
     return {"status": "ok"}
+
+
+@app.get("/api/debug/user-actions")
+async def debug_user_actions(user_id: int = Depends(get_user_id), limit: int = 20):
+    """
+    В тестовой среде возвращает последние действия пользователя из user_actions.
+    Нужен для автотестов, чтобы убедиться, что логирование реально пишет в БД.
+    На проде недоступен (404).
+    """
+    if APP_ENV != "test":
+        raise HTTPException(status_code=404, detail="Not available")
+    import json
+    db = await get_db()
+    async with db.acquire() as conn:
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT action, details, created_at
+                FROM user_actions
+                WHERE user_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2
+                """,
+                user_id,
+                max(1, min(limit, 100)),
+            )
+        except asyncpg.UndefinedTableError:
+            # В тестовой среде отсутствие таблицы должно считаться ошибкой конфигурации
+            raise HTTPException(status_code=500, detail="user_actions table not found; run migrate_user_actions.sql")
+    
+    items = []
+    for r in rows:
+        item = _row_to_dict(r)
+        # Если details — строка, пытаемся распарсить её как JSON (для совместимости с тестами)
+        details_value = item.get("details")
+        if details_value is not None:
+            if isinstance(details_value, str):
+                # Если строка — пытаемся распарсить как JSON
+                details_str = details_value.strip()
+                if details_str:
+                    try:
+                        parsed = json.loads(details_str)
+                        # Заменяем строку на распарсенное значение (может быть dict, list, str, int, bool и т.д.)
+                        item["details"] = parsed
+                    except (json.JSONDecodeError, ValueError, TypeError) as e:
+                        # Если не JSON — оставляем строкой
+                        # В тестовой среде логируем для отладки
+                        if APP_ENV == "test":
+                            logging.debug(f"Failed to parse details as JSON: {details_str[:100]}, error: {e}")
+                        pass
+                else:
+                    # Пустая строка — делаем None для консистентности
+                    item["details"] = None
+            # Если уже словарь/список (например, из JSONB колонки) — оставляем как есть
+            # Для других типов (int, bool и т.д.) тоже оставляем как есть
+        # Если None — оставляем None
+        items.append(item)
+    
+    # В тестовой среде логируем для отладки
+    if APP_ENV == "test" and items:
+        logging.debug(f"debug_user_actions returned {len(items)} items, sample: {items[0] if items else None}")
+    
+    return {"items": items}
 
 
 # --- Справочник категорий (БД) ---
@@ -896,7 +991,7 @@ async def get_transactions_summary(
 
 @app.post("/api/transactions")
 async def create_transaction(transaction: TransactionCreate, user_id: int = Depends(get_user_id)):
-    """Создать транзакцию (category_id или category по имени)"""
+    """Создать транзакцию (category_id или category по имени). Опционально можно передать дату операции."""
     db = await get_db()
     async with db.acquire() as conn:
         cid = transaction.category_id
@@ -904,12 +999,24 @@ async def create_transaction(transaction: TransactionCreate, user_id: int = Depe
             cid = await _get_category_id_by_name(conn, transaction.category)
         if cid is None:
             raise HTTPException(status_code=400, detail="Укажите category_id или category")
+
+        # Опциональная дата операции: если передана, используем её как created_at (без времени),
+        # иначе текущие дата/время.
+        created_at = datetime.now()
+        if transaction.date is not None:
+            date_str = transaction.date.strip()[:10]
+            if date_str:
+                try:
+                    created_at = datetime.strptime(date_str, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid date format (use YYYY-MM-DD)")
+
         await conn.execute(
             """
             INSERT INTO transactions (user_id, amount, category_id, description, created_at)
-            VALUES ($1, $2, $3, $4, NOW())
+            VALUES ($1, $2, $3, $4, $5)
             """,
-            user_id, transaction.amount, cid, transaction.description
+            user_id, transaction.amount, cid, transaction.description, created_at
         )
         return {"status": "ok"}
 
@@ -944,6 +1051,18 @@ async def update_transaction(
                 "UPDATE transactions SET description=$1 WHERE id=$2 AND user_id=$3",
                 body.description, tx_id, user_id
             )
+        if body.date is not None:
+            # Обновление даты операции (created_at) при редактировании.
+            date_str = body.date.strip()[:10]
+            if date_str:
+                try:
+                    new_created_at = datetime.strptime(date_str, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid date format (use YYYY-MM-DD)")
+                await conn.execute(
+                    "UPDATE transactions SET created_at=$1 WHERE id=$2 AND user_id=$3",
+                    new_created_at, tx_id, user_id
+                )
         return {"status": "ok"}
 
 @app.delete("/api/transactions/{tx_id}")
@@ -1458,13 +1577,13 @@ async def import_transactions_apply(
             )
     return {"status": "ok", "applied": len(body.transactions)}
 
-# Ликвидные типы для расчёта current целей: активы и пассивы
+# Ликвидные типы для расчёта current целей: активы и долги
 _LIQUID_ASSET_TYPES = ("Депозит", "Акции", "Облигации", "Наличные", "Банковский счёт", "Криптовалюта")
 _LIQUID_LIABILITY_TYPES = ("Кредит", "Займ", "Кредитная карта", "Рассрочка")
 
 
 async def _get_liquid_net(conn, user_id: int) -> float:
-    """Текущий ликвидный капитал: сумма ликвидных активов минус сумма ликвидных пассивов. Один и тот же для всех целей."""
+    """Текущий ликвидный капитал: сумма ликвидных активов минус сумма ликвидных долгов. Один и тот же для всех целей."""
     liquid_assets = await conn.fetchval(
         """
         SELECT COALESCE(SUM(v.amount), 0)
@@ -1493,15 +1612,58 @@ async def _get_liquid_net(conn, user_id: int) -> float:
 # Цели
 @app.get("/api/goals")
 async def get_goals(user_id: int = Depends(get_user_id)):
-    """Получить список целей. current для каждой цели = ликвидный капитал (ликвидные активы − ликвидные пассивы)."""
+    """Получить список целей. current для каждой цели = ликвидный капитал (ликвидные активы − ликвидные долги)."""
     db = await get_db()
     async with db.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, title, target, description FROM goals WHERE user_id=$1 ORDER BY id",
-            user_id
+            user_id,
         )
-        current = await _get_liquid_net(conn, user_id)
-        return [{"id": r["id"], "title": r["title"], "target": float(r["target"]), "current": current, "description": r["description"]} for r in rows]
+        # Базовый текущий показатель — ликвидный капитал (для обычных целей)
+        liquid_net = await _get_liquid_net(conn, user_id)
+
+        # Текущая сумма долгов — для корректного отображения целей по погашению кредитов/долгов
+        liabs_rows = await conn.fetch(
+            """
+            SELECT l.id, COALESCE(
+                (SELECT amount FROM liability_values WHERE liability_id = l.id ORDER BY created_at DESC LIMIT 1), 0
+            ) as amount
+            FROM liabilities l WHERE l.user_id = $1
+            """,
+            user_id,
+        )
+        total_liabilities = sum(float(r["amount"]) for r in liabs_rows)
+
+        result: list[dict] = []
+        for r in rows:
+            title = r["title"] or ""
+            title_lower = title.lower()
+            # Эвристика: цель считается «долговой», если в названии есть слова про кредиты/долги
+            is_debt_goal = ("кредит" in title_lower) or ("долг" in title_lower)
+
+            target = float(r["target"])
+            if is_debt_goal:
+                # Для целей «погасить кредиты/долги»:
+                # - считаем, что target = изначальная сумма долга,
+                # - current = сколько уже погашено относительно этой суммы,
+                # - фактически оставшийся долг равен текущим долгам пользователя.
+                paid = max(0.0, target - total_liabilities)
+                current_for_goal = paid
+            else:
+                # Для остальных целей продолжаем использовать ликвидный капитал
+                current_for_goal = liquid_net
+
+            result.append(
+                {
+                    "id": r["id"],
+                    "title": title,
+                    "target": target,
+                    "current": current_for_goal,
+                    "description": r["description"],
+                }
+            )
+
+        return result
 
 @app.post("/api/goals")
 async def create_goal(goal: GoalCreate, user_id: int = Depends(get_user_id)):
@@ -1531,34 +1693,64 @@ async def delete_goal(goal_id: int, user_id: int = Depends(get_user_id)):
 
 @app.get("/api/goals/insight")
 async def get_goals_insight(user_id: int = Depends(get_user_id)):
-    """Ценность 3: прогресс по целям + «через N месяцев». current = ликвидный капитал (активы − пассивы)."""
+    """Ценность 3: прогресс по целям + «через N месяцев». current = ликвидный капитал (активы − долги)."""
     db = await get_db()
     now = datetime.now()
     since_3m = (now.replace(day=1) - timedelta(days=90)).replace(day=1)
     async with db.acquire() as conn:
         goals_rows = await conn.fetch(
-            "SELECT id, title, target FROM goals WHERE user_id=$1 ORDER BY id", user_id
+            "SELECT id, title, target FROM goals WHERE user_id=$1 ORDER BY id",
+            user_id,
         )
-        current = await _get_liquid_net(conn, user_id)
+        # Базовый текущий показатель — ликвидный капитал (для обычных целей)
+        liquid_net = await _get_liquid_net(conn, user_id)
+
+        # Текущая сумма долгов — для корректного отображения целей по погашению кредитов/долгов
+        liabs_rows = await conn.fetch(
+            """
+            SELECT l.id, COALESCE(
+                (SELECT amount FROM liability_values WHERE liability_id = l.id ORDER BY created_at DESC LIMIT 1), 0
+            ) as amount
+            FROM liabilities l WHERE l.user_id = $1
+            """,
+            user_id,
+        )
         tx_rows = await conn.fetch(
             "SELECT amount FROM transactions WHERE user_id=$1 AND created_at >= $2",
-            user_id, since_3m
+            user_id,
+            since_3m,
         )
     monthly_savings = 0.0
     if tx_rows:
         total_inc = sum(float(r["amount"]) for r in tx_rows if float(r["amount"]) > 0)
         total_exp = sum(-float(r["amount"]) for r in tx_rows if float(r["amount"]) < 0)
         monthly_savings = max(0, (total_inc - total_exp) / 3) if len(tx_rows) else 0
+
+    total_liabilities = sum(float(r["amount"]) for r in liabs_rows)
+
     result = []
     for g in goals_rows:
         target = float(g["target"])
-        remaining = max(0, target - current)
+        title = g["title"] or ""
+        title_lower = title.lower()
+        is_debt_goal = ("кредит" in title_lower) or ("долг" in title_lower)
+
+        if is_debt_goal:
+            # Для целей по погашению кредитов/долгов:
+            # - remaining = текущие долги,
+            # - current = сколько уже погашено относительно изначальной цели (target).
+            remaining = max(0.0, total_liabilities)
+            current_for_goal = max(0.0, target - total_liabilities)
+        else:
+            remaining = max(0.0, target - liquid_net)
+            current_for_goal = liquid_net
+
         months_to_goal = int(remaining / monthly_savings) if monthly_savings > 0 else None
         result.append({
             "id": g["id"],
-            "title": g["title"],
+            "title": title,
             "target": target,
-            "current": current,
+            "current": current_for_goal,
             "remaining": remaining,
             "months_to_goal": months_to_goal,
         })
@@ -1842,7 +2034,7 @@ async def delete_liability(liability_id: int, user_id: int = Depends(get_user_id
 
 @app.get("/api/capital/summary")
 async def get_capital_summary(user_id: int = Depends(get_user_id)):
-    """Текущие суммы активов, пассивов и чистый капитал (на сейчас)."""
+    """Текущие суммы активов, долгов и чистый капитал (на сейчас)."""
     db = await get_db()
     async with db.acquire() as conn:
         assets_rows = await conn.fetch(
@@ -1874,7 +2066,7 @@ async def get_capital_summary(user_id: int = Depends(get_user_id)):
 
 @app.get("/api/capital/history")
 async def get_capital_history(user_id: int = Depends(get_user_id)):
-    """Активы и пассивы на последнее число каждого из последних 12 месяцев."""
+    """Активы и долги на последнее число каждого из последних 12 месяцев."""
     from datetime import date
     now = datetime.now()
     month_names_ru = (
@@ -2256,7 +2448,7 @@ async def get_simulator(
                 if remaining > 0:
                     months = max(1, int(remaining / monthly_savings))
                     result["goal_months"] = months
-        # Долг: сумма пассивов; при monthly_payment — сколько месяцев до нуля
+        # Долг: сумма долгов; при monthly_payment — сколько месяцев до нуля
         if monthly_payment is not None and monthly_payment > 0:
             total_debt = await conn.fetchval(
                 """
@@ -2308,41 +2500,58 @@ async def get_badges(user_id: int = Depends(get_user_id)):
 
 async def get_gigachat_token():
     """Получить токен доступа GigaChat"""
-    auth_str = f"{G_CLIENT_ID}:{G_CLIENT_SECRET}"
-    b64 = base64.b64encode(auth_str.encode()).decode()
-    headers = {
-        "Authorization": f"Basic {b64}",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json",
-        "RqUID": str(uuid.uuid4())
-    }
-    data = {"scope": G_SCOPE}
-    async with httpx.AsyncClient(verify=False, timeout=20.0) as client:
-        r = await client.post(G_AUTH_URL, headers=headers, data=data)
-        r.raise_for_status()
-        return r.json().get("access_token")
+    try:
+        auth_str = f"{G_CLIENT_ID}:{G_CLIENT_SECRET}"
+        b64 = base64.b64encode(auth_str.encode()).decode()
+        headers = {
+            "Authorization": f"Basic {b64}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "RqUID": str(uuid.uuid4())
+        }
+        data = {"scope": G_SCOPE}
+        async with httpx.AsyncClient(verify=False, timeout=20.0) as client:
+            r = await client.post(G_AUTH_URL, headers=headers, data=data)
+            r.raise_for_status()
+            return r.json().get("access_token")
+    except Exception as e:
+        logging.error(f"get_gigachat_token failed: {e}")
+        raise
 
 
 async def gigachat_request(messages):
     """Запрос к GigaChat API"""
-    token = await get_gigachat_token()
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": GIGACHAT_MODEL,
-        "messages": messages,
-        "temperature": 0.3
-    }
-    async with httpx.AsyncClient(verify=False, timeout=40.0) as client:
-        r = await client.post(G_API_URL, headers=headers, json=payload)
-        r.raise_for_status()
-        j = r.json()
-        if "choices" in j and j["choices"]:
-            return j["choices"][0]["message"]["content"]
-        return json.dumps(j, ensure_ascii=False)
+    try:
+        token = await get_gigachat_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": GIGACHAT_MODEL,
+            "messages": messages,
+            "temperature": 0.3
+        }
+        async with httpx.AsyncClient(verify=False, timeout=40.0) as client:
+            r = await client.post(G_API_URL, headers=headers, json=payload)
+            r.raise_for_status()
+            j = r.json()
+            if "choices" in j and j["choices"]:
+                return j["choices"][0]["message"]["content"]
+            return json.dumps(j, ensure_ascii=False)
+    except httpx.TimeoutException:
+        logging.error("gigachat_request timeout (40s)")
+        raise
+    except httpx.HTTPStatusError as e:
+        logging.error(f"gigachat_request HTTP error {e.response.status_code}: {e.response.text[:200]}")
+        raise
+    except httpx.RequestError as e:
+        logging.error(f"gigachat_request network error: {e}")
+        raise
+    except Exception as e:
+        logging.error(f"gigachat_request unexpected error: {e}")
+        raise
 
 
 # AI Cache helpers
@@ -2366,23 +2575,29 @@ async def get_cached_ai_reply(user_id: int, user_message: str, finance_snapshot:
 
 async def save_ai_cache(user_id: int, user_message: str, finance_snapshot: str, ai_answer: str):
     """Сохранить ответ в кэш"""
-    h = _hash_input(user_message, finance_snapshot)
-    db = await get_db()
-    async with db.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO ai_cache (user_id, input_hash, answer, created_at) VALUES ($1,$2,$3,NOW())",
-            user_id, h, ai_answer
-        )
+    try:
+        h = _hash_input(user_message, finance_snapshot)
+        db = await get_db()
+        async with db.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO ai_cache (user_id, input_hash, answer, created_at) VALUES ($1,$2,$3,NOW())",
+                user_id, h, ai_answer
+            )
+    except Exception as e:
+        logging.warning(f"Failed to save AI cache: {e}")
 
 
 async def save_message(user_id: int, role: str, content: str):
     """Сохранить сообщение в контекст"""
-    db = await get_db()
-    async with db.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO ai_context (user_id, role, content, created_at) VALUES ($1,$2,$3,NOW())",
-            user_id, role, content
-        )
+    try:
+        db = await get_db()
+        async with db.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO ai_context (user_id, role, content, created_at) VALUES ($1,$2,$3,NOW())",
+                user_id, role, content
+            )
+    except Exception as e:
+        logging.warning(f"Failed to save message: {e}")
 
 
 async def analyze_user_finances_text(user_id: int) -> str:
@@ -2501,14 +2716,20 @@ async def analyze_user_finances_text(user_id: int) -> str:
 
 
 def _stub_consultation_text(finance_snapshot: str) -> str:
-    """Заглушка консультации для тестовой среды без GigaChat."""
+    """
+    Заглушка консультации, когда GigaChat недоступен.
+    Делает видимое для пользователя поведение максимально похожим на прод: без упоминания тестового режима.
+    """
     return (
-        "📊 *Ваша финансовая консультация (тестовый режим)*\n\n"
+        "📊 *Ваша финансовая консультация*\n\n"
+        "На основе ваших текущих данных пока выводится укороченная версия консультации.\n\n"
         "Данные для анализа:\n"
         f"{finance_snapshot[:800]}{'…' if len(finance_snapshot) > 800 else ''}\n\n"
-        "💰 *Рекомендации*\n"
-        "• В продакшене здесь будет персональный отчёт от ИИ.\n"
-        "• Настройте GIGACHAT_* в .env для полной генерации."
+        "💰 *Что можно сделать уже сейчас*\n"
+        "1. Продолжайте регулярно вести учёт доходов и расходов.\n"
+        "2. Поддерживайте актуальный список активов и долгов.\n"
+        "3. Обновляйте финансовые цели по мере изменения ситуации.\n\n"
+        "Как только полноценный ИИ-консультант будет доступен, вы получите более детальный отчёт по этим же данным."
     )
 
 
@@ -2517,8 +2738,9 @@ async def generate_consultation(user_id: int) -> str:
     try:
         finance_snapshot = await analyze_user_finances_text(user_id)
 
-        # Тестовая среда без GigaChat: возвращаем заглушку, чтобы генерация «работала»
-        if APP_ENV == "test" and not (G_CLIENT_ID and G_API_URL):
+        # Если GigaChat не настроен (нет кредов) — всегда возвращаем понятную заглушку,
+        # чтобы пользователь получал осмысленную консультацию, а не техническую ошибку.
+        if not (G_CLIENT_ID and G_API_URL):
             stub = _stub_consultation_text(finance_snapshot or "Нет данных.")
             await save_message(user_id, "assistant", f"CONSULTATION: {stub}")
             return stub
@@ -2602,32 +2824,61 @@ async def generate_consultation(user_id: int) -> str:
             "точки как разделители (12.000.000), дробная часть для рублей. Округляй до целых.\n\n"
             "Отвечай на русском.\n\n"
             "В конце ответа добавь блок (если ещё не включил в план):\n"
-            "CHECK: [действие 1 с суммой]\n"
-            "CHECK: [действие 2]\n"
-            "CHECK: [действие 3]\n"
-            "FOCUS_MONTH: [одна цель на этот месяц, например: Отложить 5 000 ₽]\n"
-            "(CHECK — 2–3 конкретных действия с галочкой для пользователя; FOCUS_MONTH — одна фокус-цель на текущий месяц.)"
+            "📋 Задача: [действие 1 с суммой]\n"
+            "📋 Задача: [действие 2]\n"
+            "📋 Задача: [действие 3]\n"
+            "🎯 Фокус месяца: [одна цель на этот месяц, например: Отложить 5 000 ₽]\n"
+            "(📋 Задача — 2–3 конкретных действия с галочкой для пользователя; 🎯 Фокус месяца — одна фокус-цель на текущий месяц.)"
         )
         messages = [
             {"role":"system","content":system_prompt},
             {"role":"user","content":finance_snapshot}
         ]
         
-        answer = await gigachat_request(messages)
+        try:
+            answer = await gigachat_request(messages)
+        except Exception as e:
+            logging.error(f"gigachat_request failed: {e}")
+            # В случае ошибки Гигачата возвращаем человеческую заглушку вместо технического сообщения
+            stub = _stub_consultation_text(finance_snapshot or "Нет данных.")
+            await save_message(user_id, "assistant", f"CONSULTATION: {stub}")
+            return stub
         
         if not answer or len(answer.strip()) == 0:
-            return "Извините, не удалось сгенерировать консультацию. Попробуйте позже."
+            stub = _stub_consultation_text(finance_snapshot or "Нет данных.")
+            await save_message(user_id, "assistant", f"CONSULTATION: {stub}")
+            return stub
         
         await save_message(user_id, "assistant", f"CONSULTATION: {answer}")
         await save_ai_cache(user_id, "CONSULT_REQUEST", finance_snapshot, answer)
 
-        # Парсим CHECK: и FOCUS_MONTH из ответа, сохраняем в БД
+        # Перед сохранением новых задач очищаем старые задачи пользователя,
+        # чтобы список всегда соответствовал последней консультации
+        try:
+            db = await get_db()
+            async with db.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM user_consultation_actions WHERE user_id=$1",
+                    user_id,
+                )
+        except asyncpg.UndefinedTableError:
+            # Если таблицы ещё нет — просто ничего не делаем
+            pass
+
+        # Парсим 📋 Задача: и 🎯 Фокус месяца: из ответа, сохраняем в БД
+        # Также поддерживаем старый формат CHECK: и FOCUS_MONTH: для обратной совместимости
         import re
         now = datetime.now()
         for line in answer.split("\n"):
             line = line.strip()
-            if line.upper().startswith("CHECK:"):
-                action_text = line[6:].strip()
+            # Проверяем новый формат "📋 Задача:" и старый "CHECK:"
+            if line.startswith("📋 Задача:") or line.upper().startswith("CHECK:"):
+                if line.startswith("📋 Задача:"):
+                    # Находим двоеточие и берем текст после него
+                    colon_idx = line.find(":")
+                    action_text = line[colon_idx + 1:].strip() if colon_idx >= 0 else line[len("📋 Задача:"):].strip()
+                else:
+                    action_text = line[6:].strip()  # Убираем "CHECK:"
                 if action_text:
                     try:
                         db = await get_db()
@@ -2638,16 +2889,27 @@ async def generate_consultation(user_id: int) -> str:
                             )
                     except asyncpg.UndefinedTableError:
                         pass
-            if line.upper().startswith("FOCUS_MONTH:"):
-                focus_text = line[11:].strip()
+            # Проверяем новый формат "🎯 Фокус месяца:" и старый "FOCUS_MONTH:"
+            if line.startswith("🎯 Фокус месяца:") or line.upper().startswith("FOCUS_MONTH:"):
+                if line.startswith("🎯 Фокус месяца:"):
+                    # Находим двоеточие и берем текст после него
+                    colon_idx = line.find(":")
+                    focus_text = line[colon_idx + 1:].strip() if colon_idx >= 0 else line[len("🎯 Фокус месяца:"):].strip()
+                else:
+                    focus_text = line[11:].strip()  # Убираем "FOCUS_MONTH:"
                 if focus_text:
                     # Пытаемся извлечь сумму из текста (числа с пробелами или без)
                     nums = re.findall(r"[\d\s]+", focus_text)
                     target_amount = 0
                     for n in nums:
-                        clean = int("".join(n.split()))
-                        if clean > target_amount:
-                            target_amount = clean
+                        cleaned = "".join(n.split())
+                        if cleaned:  # Проверяем, что строка не пустая
+                            try:
+                                clean = int(cleaned)
+                                if clean > target_amount:
+                                    target_amount = clean
+                            except ValueError:
+                                pass  # Пропускаем, если не число
                     if target_amount == 0:
                         target_amount = 1
                     try:
@@ -2961,6 +3223,39 @@ async def get_consultation(user_id: int = Depends(get_user_id)):
             "limit": limit,
             "limit_reached": False,
         }
+    except httpx.TimeoutException as e:
+        logging.error(f"HTTP timeout in consultation: {e}")
+        return {
+            "consultation": (
+                "⏱️ Генерация консультации заняла слишком много времени.\n\n"
+                "Попробуйте позже."
+            ),
+            "sessions_used": sessions_used,
+            "limit": limit,
+            "limit_reached": False,
+        }
+    except httpx.RequestError as e:
+        logging.error(f"HTTP request error in consultation: {e}")
+        return {
+            "consultation": (
+                "❌ Произошла ошибка при подключении к сервису консультаций.\n\n"
+                "Попробуйте позже."
+            ),
+            "sessions_used": sessions_used,
+            "limit": limit,
+            "limit_reached": False,
+        }
+    except httpx.HTTPStatusError as e:
+        logging.error(f"HTTP status error in consultation: {e.response.status_code} - {e.response.text[:200]}")
+        return {
+            "consultation": (
+                "❌ Произошла ошибка при генерации консультации.\n\n"
+                "Попробуйте позже."
+            ),
+            "sessions_used": sessions_used,
+            "limit": limit,
+            "limit_reached": False,
+        }
     except Exception as e:
         logging.error(f"Error in consultation endpoint: {e}")
         import traceback
@@ -2968,8 +3263,7 @@ async def get_consultation(user_id: int = Depends(get_user_id)):
         return {
             "consultation": (
                 "❌ Произошла ошибка при генерации консультации.\n\n"
-                "Попробуйте позже.\n\n"
-                f"Ошибка: {str(e)[:100]}"
+                "Попробуйте позже."
             ),
             "sessions_used": sessions_used,
             "limit": limit,
@@ -2977,26 +3271,64 @@ async def get_consultation(user_id: int = Depends(get_user_id)):
         }
 
 
-# Консультация — ввод целей через сообщение (AI извлекает цели и сохраняет в goals)
-async def _extract_goals_from_message(user_message: str) -> list[dict]:
-    """Вызвать GigaChat для извлечения финансовых целей из текста. Возвращает список { title, target, description }."""
+# Консультация — ввод целей через сообщение (AI извлекает цели и сохраняет в goals).
+async def _extract_goals_from_message(user_message: str, user_id: int | None = None) -> list[dict]:
+    """
+    Вызвать GigaChat для извлечения финансовых целей из текста.
+    ЛОГИКА ПОЛНОСТЬЮ В ПРОМПТЕ — БЕЗ ХАРДКОДА В КОДЕ.
+
+    GigaChat должен:
+    - Находить цели с суммой и/или сроком.
+    - Для пассивного дохода САМОСТОЯТЕЛЬНО считать капитал по правилу 4% (описано в промпте).
+    - Возвращать только JSON-массив объектов {title, target, description}.
+    """
     prompt = (
-        "Пользователь написал сообщение о своих финансовых целях. Извлеки из текста цели.\n\n"
-        "Цель — это намерение с суммой и/или сроком, например: накопить 1 000 000 за 2 года, "
-        "пассивный доход 50 000 в месяц, погасить долг 200 000.\n\n"
-        "ВАЖНО: Если пользователь упоминает ПАССИВНЫЙ ДОХОД (например, 'хочу получать 30 000 в месяц', "
-        "'пассивный доход 50 тыс.', 'в 40 лет получать 100 000'), рассчитай необходимый капитал:\n"
-        "- Для пассивного дохода используй правило 4% годовых: капитал = месячный_доход * 12 / 0.04\n"
-        "- Например: пассивный доход 30 000 ₽/мес = капитал 9 000 000 ₽ (30 000 * 12 / 0.04)\n"
-        "- В title укажи цель с упоминанием пассивного дохода, в target — рассчитанный капитал\n\n"
-        "Ответь ТОЛЬКО валидным JSON-массивом объектов без комментариев:\n"
+        "Пользователь написал сообщение о своих финансовых целях. Твоя задача — извлечь из текста ЦЕЛИ, "
+        "используя как это сообщение, так и данные о финансах пользователя, которые будут переданы ниже.\n\n"
+        "Цель — это намерение с суммой и/или сроком, например:\n"
+        "- 'накопить 1 000 000 за 2 года'\n"
+        "- 'пассивный доход 50 000 в месяц'\n"
+        "- 'погасить долг 200 000'\n\n"
+        "ОСОБЫЙ СЛУЧАЙ: ПАССИВНЫЙ ДОХОД.\n"
+        "1) Если пользователь хочет пассивный доход X в МЕСЯЦ (в тексте есть 'в месяц', '/мес', 'в мес', "
+        "'каждый месяц' или это явно контекст про месячный доход):\n"
+        "   - Считай, что X — месячный пассивный доход.\n"
+        "   - Расчитай необходимый капитал по правилу 4% годовых: капитал = X * 12 / 0.04 (то есть X * 300).\n"
+        "   - В поле title опиши цель про пассивный доход, в поле target запиши рассчитанный капитал.\n"
+        "   - Пример: 'Хочу пассивный доход 100 000 в месяц' → target = 30 000 000.\n\n"
+        "2) Если пользователь хочет пассивный доход Y в ГОД (в тексте есть 'в год', 'в годовом выражении' и т.п.):\n"
+        "   - Считай, что Y — годовой пассивный доход.\n"
+        "   - Расчитай капитал: капитал = Y / 0.04 (то есть Y * 25).\n"
+        "   - Пример: 'пассивный доход 1 200 000 в год' → target = 30 000 000.\n\n"
+        "3) Если про пассивный доход сказано, но НЕ указано явно 'в месяц' или 'в год', "
+        "   и при этом написано просто число, по умолчанию считай, что это сумма В МЕСЯЦ.\n\n"
+        "СТРОГО ЗАПРЕЩЕНО придумывать свои формулы или коэффициенты: всегда используй только описанные выше правила 4%.\n\n"
+        "ВАЖНО:\n"
+        "- Всегда возвращай ЧИСЛО в поле target — сумму капитала в рублях.\n"
+        "- Если цель не про пассивный доход, просто используй указанную сумму как target (например, 'накопить 500 000').\n\n"
+        "ФОРМАТ ОТВЕТА:\n"
+        "Ответь ТОЛЬКО валидным JSON-массивом объектов БЕЗ комментариев и лишнего текста:\n"
         '[{"title":"краткое название цели","target":число_в_рублях,"description":"описание или срок"}]'
-        "\nЕсли целей нет — верни []. target — целевая сумма в рублях (число)."
     )
     try:
+        finance_snapshot = None
+        if user_id is not None:
+            try:
+                finance_snapshot = await analyze_user_finances_text(user_id)
+            except Exception:
+                finance_snapshot = None
+
+        user_parts = [prompt]
+        if finance_snapshot:
+            user_parts.append("Данные пользователя (транзакции, активы, долги, профиль, выполненные действия):\n" + finance_snapshot)
+        else:
+            user_parts.append("Данные пользователя: нет данных или они недоступны.")
+        user_parts.append("Сообщение пользователя о целях:\n" + (user_message or "")[:2000])
+        user_content = "\n\n".join(user_parts)
+
         messages = [
             {"role": "system", "content": "Ты извлекаешь финансовые цели из текста. Отвечай только JSON-массивом."},
-            {"role": "user", "content": prompt + "\n\nСообщение пользователя:\n" + (user_message or "")[:2000]}
+            {"role": "user", "content": user_content}
         ]
         answer = await gigachat_request(messages)
         answer = (answer or "").strip()
@@ -3035,9 +3367,10 @@ async def consultation_message(
     await save_message(user_id, "user", message)
     goals_added = []
     try:
-        extracted = await _extract_goals_from_message(message)
+        extracted = await _extract_goals_from_message(message, user_id)
         db = await get_db()
         async with db.acquire() as conn:
+            # Обычный путь: LLM вернул цели с числами
             for g in extracted:
                 await conn.execute(
                     "INSERT INTO goals (user_id, target, current, title, description, created_at) VALUES ($1, $2, 0, $3, $4, NOW())",
@@ -3092,17 +3425,24 @@ async def consultation_follow_up(
     )
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Последняя консультация:\n\n{last_consultation}\n\nВопрос пользователя: {message}"}
+        {"role": "user", "content": f"Последняя консультация:\n\n{last_consultation}\n\nВопрос пользователя: {message}"},
     ]
     try:
-        answer = await asyncio.wait_for(gigachat_request(messages), timeout=40.0)
-        if not answer or not answer.strip():
+        raw = await asyncio.wait_for(gigachat_request(messages), timeout=40.0)
+        answer = (raw or "").strip()
+        if not answer:
             answer = "Не удалось сформировать ответ. Попробуйте переформулировать вопрос."
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Превышено время ожидания ответа.")
-    except Exception as e:
+        answer = (
+            "⏱️ Генерация уточняющего ответа заняла слишком много времени.\n\n"
+            "Попробуйте задать вопрос ещё раз чуть позже или переформулировать его покороче."
+        )
+    except Exception:
         logging.exception("consultation_follow_up")
-        raise HTTPException(status_code=500, detail="Ошибка при генерации ответа.")
+        answer = (
+            "❌ Произошла ошибка при генерации уточняющего ответа.\n\n"
+            "Попробуйте переформулировать вопрос и отправить его ещё раз чуть позже."
+        )
 
     await save_message(user_id, "user", f"FOLLOW_UP: {message}")
     await save_message(user_id, "assistant", f"CONSULTATION: {answer}")

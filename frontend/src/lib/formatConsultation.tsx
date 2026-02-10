@@ -3,6 +3,23 @@ import React, { Fragment } from 'react';
 /** Форматирование текста консультации: убираем звездочки и заменяем на жирный текст, удаляем ненужные секции */
 
 /**
+ * Получает чистый текст консультации для копирования/шаринга (удаляет markdown, ненужные секции)
+ */
+export function getCleanConsultationText(text: string): string {
+  if (!text) return text;
+  
+  let formatted = removeUnwantedSections(text);
+  
+  // Удаляем markdown звездочки, заменяя на обычный текст
+  // Двойные звездочки **текст** -> текст (жирный остается как обычный)
+  formatted = formatted.replace(/\*\*([^*]+?)\*\*/g, '$1');
+  // Одинарные звездочки *текст* -> текст
+  formatted = formatted.replace(/\*([^*\n]+?)\*/g, '$1');
+  
+  return formatted.trim();
+}
+
+/**
  * Удаляет ненужные секции из текста консультации
  */
 function removeUnwantedSections(text: string): string {
@@ -27,6 +44,19 @@ function removeUnwantedSections(text: string): string {
   ];
 
   sectionPatterns.forEach((pattern) => {
+    formatted = formatted.replace(pattern, '');
+  });
+
+  // Удаляем блоки "📋 Задача:" и "🎯 Фокус месяца:" (а также старые форматы CHECK: и FOCUS_MONTH:)
+  // Эти блоки парсятся на бэкенде и не должны показываться пользователю
+  const taskPatterns = [
+    /^📋\s*Задача:\s*.*$/gim,
+    /^CHECK:\s*.*$/gim,
+    /^🎯\s*Фокус месяца:\s*.*$/gim,
+    /^FOCUS_MONTH:\s*.*$/gim,
+  ];
+  
+  taskPatterns.forEach((pattern) => {
     formatted = formatted.replace(pattern, '');
   });
 

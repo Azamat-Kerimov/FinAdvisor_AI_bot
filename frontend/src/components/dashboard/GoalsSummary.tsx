@@ -49,29 +49,38 @@ export function GoalsSummary({ variant = 'light' }: GoalsSummaryProps) {
       </h3>
       <div className="space-y-3">
         {data.goals.slice(0, 3).map((goal) => {
-          const progress = goal.target <= 0 ? 100 : Math.max(0, Math.min(100, (Math.max(0, goal.current) / goal.target) * 100));
+          const hasTarget = goal.target > 0;
+          const progress = hasTarget ? Math.max(0, Math.min(100, (Math.max(0, goal.current) / goal.target) * 100)) : 0;
           return (
             <div key={goal.id} className="space-y-2">
               <p className={isDark ? 'text-xs font-bold text-slate-300' : 'text-xs font-bold text-slate-700'}>
                 {goal.title}
               </p>
-              <div className="flex justify-between text-[10px] text-slate-500">
-                <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>
-                  {formatMoney(goal.current)} ₽ / {formatMoney(goal.target)} ₽
-                </span>
-                <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>
-                  {Math.round(progress)}%
-                </span>
-              </div>
-              <div className={`w-full rounded-full h-2 ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`}>
-                <div
-                  className={`rounded-full h-2 transition-all ${isDark ? 'bg-blue-500' : 'bg-slate-800'}`}
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
-              {goal.months_to_goal !== null && goal.months_to_goal > 0 && (
+              {hasTarget ? (
+                <>
+                  <div className="flex justify-between text-[10px] text-slate-500">
+                    <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>
+                      {formatMoney(goal.current)} ₽ / {formatMoney(goal.target)} ₽
+                    </span>
+                    <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>
+                      {Math.round(progress)}%
+                    </span>
+                  </div>
+                  <div className={`w-full rounded-full h-2 ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`}>
+                    <div
+                      className={`rounded-full h-2 transition-all ${isDark ? 'bg-blue-500' : 'bg-slate-800'}`}
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                  {goal.months_to_goal !== null && goal.months_to_goal > 0 && (
+                    <p className={isDark ? 'text-[10px] text-slate-400' : 'text-[10px] text-slate-500'}>
+                      Осталось: {formatMoney(goal.remaining)} ₽
+                    </p>
+                  )}
+                </>
+              ) : (
                 <p className={isDark ? 'text-[10px] text-slate-400' : 'text-[10px] text-slate-500'}>
-                  Осталось: {formatMoney(goal.remaining)} ₽
+                  Сумма для этой цели пока не указана. Можно добавить её при редактировании.
                 </p>
               )}
             </div>

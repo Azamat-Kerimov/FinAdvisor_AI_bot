@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS asset_values (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Пассивы (долги)
+-- Долги
 CREATE TABLE IF NOT EXISTS liabilities (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS liabilities (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- История значений пассивов
+-- История значений долгов
 CREATE TABLE IF NOT EXISTS liability_values (
     id SERIAL PRIMARY KEY,
     liability_id INTEGER NOT NULL REFERENCES liabilities(id) ON DELETE CASCADE,

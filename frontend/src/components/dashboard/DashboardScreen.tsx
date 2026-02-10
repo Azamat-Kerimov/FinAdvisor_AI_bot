@@ -3,6 +3,7 @@ import { PageHeader } from '@/components/layout/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { ExampleReportImage } from '@/components/ui/ExampleReportImage';
 import { GoalsSummary } from './GoalsSummary';
+import { formatDateDDMMYY } from '@/lib/date';
 import {
   useStats,
   getPreviousMonth,
@@ -21,7 +22,15 @@ import type { CapitalHistoryItem } from '@/types/api';
 import type { NavScreen } from '@/components/layout/BottomNav';
 import { usePullToRefresh } from '@/hooks/usePullToRefresh';
 import { ShareButton } from '@/components/ui/ShareButton';
-import { ONBOARDING_STORAGE_KEY, PROGRESS_CLOSED_KEY, isOnboardingSeen, isProgressClosed, markOnboardingSeen } from '@/lib/onboarding';
+import {
+  PROGRESS_CLOSED_KEY,
+  isOnboardingSeen,
+  isProgressClosed,
+  markOnboardingSeen,
+  isFocusGoalAchievedClosed,
+  markFocusGoalAchievedClosed,
+} from '@/lib/onboarding';
+import { renderConsultationText, getCleanConsultationText } from '@/lib/formatConsultation';
 
 const MONTH_NAMES = [
   'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
@@ -119,8 +128,8 @@ function getNiceAxisRange(maxAbs: number): { maxTick: number; step: number; tick
   return { maxTick, step: niceStep, ticks };
 }
 
-/** Обёртка страницы Главная (светлая и тёмная тема) */
-const LIGHT_WRAPPER = 'min-h-full bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-200';
+/** Обёртка страницы Главная: фон берём из body (Telegram), без собственного bg */
+const LIGHT_WRAPPER = 'min-h-full text-slate-900 dark:text-slate-200';
 
 /** Подсказка к алерту о резервном фонде */
 const RESERVE_ALERT_TOOLTIP =
@@ -138,6 +147,8 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
   const [progressClosed, setProgressClosed] = useState(isProgressClosed);
   const [benchmarksHelpOpen, setBenchmarksHelpOpen] = useState(false);
   const [capitalHelpOpen, setCapitalHelpOpen] = useState(false);
+  const [copiedConsultation, setCopiedConsultation] = useState(false);
+  const [focusGoalAchievedClosed, setFocusGoalAchievedClosed] = useState(isFocusGoalAchievedClosed());
 
   const { data: stats, loading: statsLoading, error: statsError, refetch: refetchStats } = useStats(selectedMonth, selectedYear);
   const { data: monthlyBalance, loading: monthlyLoading } = useMonthlyBalance();
@@ -208,7 +219,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
               <p className="text-xs font-medium text-slate-700 p-2">Чистый капитал и финансовый путь</p>
               <ExampleReportImage
                 src="/examples/capital.png"
-                alt="Пример: чистый капитал — активы, пассивы, график динамики"
+                alt="Пример: чистый капитал — активы, долги, график динамики"
                 className="w-full h-auto object-contain max-h-48"
               />
             </div>
@@ -236,8 +247,8 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
             <h2 className="text-sm font-bold text-slate-900 mb-3">Ваш прогресс</h2>
             <div className="space-y-3">
               {[
-                { done: onboardingProgress.has_transactions, label: 'Добавьте или загрузите транзакции', sub: 'Транзакции', screen: 'finance' as NavScreen },
-                { done: onboardingProgress.has_capital, label: 'Добавьте активы и долги', sub: 'Капитал', screen: 'finance' as NavScreen },
+                { done: onboardingProgress.has_transactions, label: 'Добавьте или загрузите транзакции', sub: 'Транзакции', screen: 'finance' as NavScreen, financeTab: 'transactions' as const },
+                { done: onboardingProgress.has_capital, label: 'Добавьте активы и долги', sub: 'Капитал', screen: 'finance' as NavScreen, financeTab: 'capital' as const },
                 { done: onboardingProgress.has_profile, label: 'Заполните профиль', sub: 'Профиль', screen: 'profile' as NavScreen },
                 { done: onboardingProgress.has_consultation, label: 'Получите консультацию ИИ', sub: 'ИИ', screen: 'consultation' as NavScreen },
                 { done: allDone, label: 'Наслаждайтесь', sub: '', screen: undefined },
@@ -269,7 +280,12 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
                     {isClickable ? (
                       <button
                         type="button"
-                        onClick={() => onNavigate(step.screen!)}
+                        onClick={() => {
+                          if (step.screen === 'finance' && 'financeTab' in step && typeof window !== 'undefined') {
+                            localStorage.setItem('finadvisor_active_finance_tab', step.financeTab === 'capital' ? 'capital' : 'transactions');
+                          }
+                          onNavigate(step.screen!);
+                        }}
                         className="flex items-center gap-3 w-full text-left rounded-lg -m-2 p-2 hover:bg-slate-50 transition-colors focus:outline-none focus:ring-2 focus:ring-slate-300 focus:ring-inset"
                       >
                         {content}
@@ -298,11 +314,23 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
       })()}
 
       {/* Цель месяца (фокус от ИИ) */}
-      {!focusGoalLoading && focusGoal && (
+      {!focusGoalLoading && focusGoal && !focusGoalAchievedClosed && (
         <Card className="p-4 mb-4 bg-white border border-slate-200 shadow-card">
-          <h2 className="text-sm font-bold text-slate-900 mb-2">Цель этого месяца</h2>
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h2 className="text-sm font-bold text-slate-900">Цель этого месяца</h2>
+            <button
+              type="button"
+              onClick={() => {
+                markFocusGoalAchievedClosed();
+                setFocusGoalAchievedClosed(true);
+              }}
+              className="shrink-0 py-1.5 px-3 rounded-button bg-slate-100 text-slate-700 text-xs font-medium hover:bg-slate-200 transition-colors"
+            >
+              Закрыть
+            </button>
+          </div>
           {focusGoal.achieved_at ? (
-            <div className="p-3 bg-green-50 border border-green-200 rounded-button">
+            <div className="p-3 bg-green-50 border border-green-200 rounded-card">
               <p className="text-sm font-medium text-green-800">🎉 Цель достигнута!</p>
               <p className="text-sm text-green-700 mt-1">{focusGoal.title}</p>
             </div>
@@ -378,7 +406,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
           const canPrev = idx < monthOptions.length - 1;
           const canNext = idx > 0;
           return (
-            <div className="flex items-center justify-center gap-3 py-1.5 px-3 mb-4 bg-slate-100 dark:bg-slate-700/60 rounded-lg">
+            <div className="flex items-center justify-center gap-10 py-1.5 px-3 mb-4 bg-slate-100 dark:bg-slate-700/60 rounded-lg">
               <button
                 type="button"
                 onClick={() => {
@@ -396,7 +424,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                 </svg>
               </button>
-              <div className="text-center min-w-[120px]">
+              <div className="text-center min-w-[180px]">
                 <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                   {MONTH_NAMES[selectedMonth - 1]} {selectedYear}
                 </p>
@@ -474,16 +502,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
               const filtered = monthlyBalance.filter((d) => d.income !== 0 || d.expense !== 0);
               return filtered.length === 0 ? (
                 <div className="py-4">
-                  <p className="text-sm text-slate-500 dark:text-slate-400 mb-2">Нет данных за последний год.</p>
-                  {onNavigate && (
-                    <button
-                      type="button"
-                      onClick={() => onNavigate('finance')}
-                      className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
-                    >
-                      Добавьте первую транзакцию →
-                    </button>
-                  )}
+                  <p className="text-sm text-slate-500 dark:text-slate-400">Нет данных за предыдущие месяцы.</p>
                 </div>
               ) : (
                 <DifferenceBarChart data={filtered} />
@@ -570,14 +589,14 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
           {capitalSummary && (
             <ShareButton
               title="Чистый капитал — FinAdvisor"
-              text={`Чистый капитал: активы ${formatMoney(capitalSummary.assets)} ₽, пассивы ${formatMoney(capitalSummary.liabilities)} ₽, итого ${formatMoney(capitalSummary.net)} ₽`}
+              text={`Чистый капитал: активы ${formatMoney(capitalSummary.assets)} ₽, долги ${formatMoney(capitalSummary.liabilities)} ₽, итого ${formatMoney(capitalSummary.net)} ₽`}
             />
           )}
         </div>
         {capitalHelpOpen && (
           <div className="mb-3 p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600 text-xs text-slate-700 dark:text-slate-300">
             <p className="font-medium mb-1">Как читать блок</p>
-            <p>Активы — сумма всех активов (счета, вклады, акции, облигации, наличные и т.д.) по последним введённым значениям. Пассивы — сумма долгов (кредиты, займы, рассрочки). Чистый капитал = Активы − Пассивы. График «Финансовый путь» показывает, как активы, пассивы и чистый капитал менялись по месяцам.</p>
+            <p>Активы — сумма всех активов (счета, вклады, акции, облигации, наличные и т.д.) по последним введённым значениям. Долги — сумма долгов (кредиты, займы, рассрочки). Чистый капитал = Активы − Долги. График «Финансовый путь» показывает, как активы, долги и чистый капитал менялись по месяцам.</p>
           </div>
         )}
         {capitalSummaryLoading && (
@@ -593,7 +612,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
                 <p className="text-xs font-semibold text-slate-900 break-all">{formatMoney(capitalSummary.assets)} ₽</p>
               </div>
               <div className="rounded-lg px-3 py-2 border border-expense bg-white">
-                <p className="text-xs text-slate-600 mb-0.5">Пассивы</p>
+                <p className="text-xs text-slate-600 mb-0.5">Долги</p>
                 <p className="text-xs font-semibold text-slate-900 break-all">{formatMoney(capitalSummary.liabilities)} ₽</p>
               </div>
               <div
@@ -620,16 +639,7 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
               const filtered = capitalHistory.filter((d) => d.assets !== 0 || d.liabilities !== 0);
               return filtered.length === 0 ? (
                 <div className="py-4">
-                  <p className="text-sm text-slate-500 dark:text-slate-400 mb-2">Нет данных по капиталу.</p>
-                  {onNavigate && (
-                    <button
-                      type="button"
-                      onClick={() => onNavigate('finance')}
-                      className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
-                    >
-                      Добавьте активы и долги →
-                    </button>
-                  )}
+                  <p className="text-sm text-slate-500 dark:text-slate-400">Нет данных за предыдущие месяцы.</p>
                 </div>
               ) : (
                 <FinancialPathChart data={filtered} />
@@ -646,7 +656,47 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
 
       {/* Блок 4: Одна короткая версия последней консультации */}
       <Card className="p-4 bg-white border border-slate-200 shadow-card">
-        <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-3">Последние рекомендации</h2>
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">Последние рекомендации</h2>
+          {!consultationLoading && consultationHistory && consultationHistory.length > 0 && (() => {
+            const latest = consultationHistory[0];
+            return (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const cleanText = getCleanConsultationText(latest.content);
+                    try {
+                      await navigator.clipboard.writeText(cleanText);
+                      setCopiedConsultation(true);
+                      setTimeout(() => setCopiedConsultation(false), 2000);
+                    } catch (e) {
+                      console.error('Failed to copy:', e);
+                    }
+                  }}
+                  className="inline-flex items-center justify-center rounded-button min-w-[36px] min-h-[36px] text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                  title={copiedConsultation ? 'Скопировано' : 'Копировать'}
+                  aria-label="Копировать"
+                >
+                  {copiedConsultation ? (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  )}
+                </button>
+                <ShareButton
+                  title={`Последние рекомендации — FinAdvisor`}
+                  text={getCleanConsultationText(latest.content)}
+                  className="min-w-[36px] min-h-[36px]"
+                />
+              </div>
+            );
+          })()}
+        </div>
         {consultationLoading && (
           <div className="flex justify-center py-4">
             <div className="w-6 h-6 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
@@ -660,13 +710,9 @@ export function DashboardScreen({ onNavigate }: DashboardScreenProps) {
           return (
             <div>
               <p className="text-xs text-slate-500 mb-1">
-                {new Date(latest.date).toLocaleDateString('ru-RU', {
-                  day: 'numeric',
-                  month: 'short',
-                  year: 'numeric',
-                })}
+                {formatDateDDMMYY(latest.date)}
               </p>
-              <p className="text-sm text-slate-700 whitespace-pre-wrap">{latest.content}</p>
+              <div className="text-sm text-slate-700 whitespace-pre-wrap">{renderConsultationText(latest.content)}</div>
             </div>
           );
         })()}
@@ -837,7 +883,7 @@ function FinancialPathChart({ data }: { data: CapitalHistoryItem[] }) {
         </div>
         <div className="flex justify-center gap-4 mt-2 text-[10px] text-slate-500">
           <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded bg-income" /> Активы</span>
-          <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded bg-expense" /> Пассивы</span>
+          <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded bg-expense" /> Долги</span>
           <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full border-2 border-blue-600 bg-white" /> NV</span>
         </div>
       </div>

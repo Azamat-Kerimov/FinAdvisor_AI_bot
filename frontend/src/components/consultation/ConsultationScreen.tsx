@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/Button';
 import { apiRequest } from '@/lib/api';
 import { useConsultationActions } from '@/hooks/useStats';
 import { ShareButton } from '@/components/ui/ShareButton';
-import { renderConsultationText } from '@/lib/formatConsultation';
+import { renderConsultationText, getCleanConsultationText } from '@/lib/formatConsultation';
+import { formatDateDDMMYY } from '@/lib/date';
 
 interface Goal {
   id: number;
@@ -70,8 +71,17 @@ export function ConsultationScreen() {
   const [followUpReply, setFollowUpReply] = useState<string | null>(null);
   const [loadingFollowUp, setLoadingFollowUp] = useState(false);
   const [followUpError, setFollowUpError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [copiedHistoryIndex, setCopiedHistoryIndex] = useState<number | null>(null);
+  const [sessionFinished, setSessionFinished] = useState(false);
 
   const { data: consultationActions, loading: actionsLoading, refetch: refetchActions } = useConsultationActions();
+
+  // Для чек-листа: если появились новые действия, показываем только их.
+  // Если новых нет (все выполнены) — показываем выполненные, как раньше.
+  const activeActions = consultationActions?.filter((a) => !a.done) ?? [];
+  const completedActions = consultationActions?.filter((a) => a.done) ?? [];
+  const visibleActions = activeActions.length > 0 ? activeActions : completedActions;
 
   useEffect(() => {
     loadGoals();
@@ -200,13 +210,11 @@ export function ConsultationScreen() {
       const data = await apiRequest<ConsultationResponse>('/api/consultation');
       const used = (data as { sessions_used?: number }).sessions_used ?? 0;
       const limit = (data as { limit?: number }).limit ?? 5;
-      setSessionsLimit(limit);
-      setCanFollowupToday(true);
 
-      if (data.limit_reached) {
+      // Случай: лимит уже исчерпан до вызова (сервер вернул только ошибку, без консультации)
+      if (data.limit_reached && !data.consultation) {
         setConsultationError(data.error || `Лимит сессий исчерпан (${used}/${limit})`);
         setConsultation(null);
-        setConsultationLimit(`Сессий в этом месяце: ${used}/${limit}`);
       } else if (data.consultation) {
         // Проверяем, не является ли это сообщением об ошибке
         const consultationText = data.consultation;
@@ -219,24 +227,26 @@ export function ConsultationScreen() {
           loadHistory();
           refetchActions();
         }
-        const su = (data as { sessions_used?: number }).sessions_used ?? 0;
-        const lim = (data as { limit?: number }).limit ?? 5;
-        setConsultationLimit(`Сессий в этом месяце: ${su}/${lim}`);
       } else if (data.error) {
         setConsultationError(data.error);
         setConsultation(null);
-        const su = (data as { sessions_used?: number }).sessions_used ?? 0;
-        const lim = (data as { limit?: number }).limit ?? 5;
-        setConsultationLimit(`Сессий в этом месяце: ${su}/${lim}`);
       } else {
         setConsultationError('Не удалось получить консультацию');
         setConsultation(null);
       }
+      // После любого вызова синхронизируем счётчик с реальным состоянием на бэкенде
+      await loadConsultationLimit();
+      setSessionFinished(false);
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e);
-      setConsultationError(errorMsg.includes('timeout') || errorMsg.includes('Timeout')
-        ? '⏱️ Генерация консультации заняла слишком много времени. Попробуйте позже.'
-        : `Ошибка: ${errorMsg}`);
+      // Обработка различных типов ошибок
+      if (errorMsg.includes('timeout') || errorMsg.includes('Timeout') || errorMsg.includes('прерван по таймауту')) {
+        setConsultationError('⏱️ Генерация консультации заняла слишком много времени. Попробуйте позже.');
+      } else if (errorMsg.includes('AbortError') || errorMsg.includes('aborted')) {
+        setConsultationError('⏱️ Запрос был прерван. Попробуйте ещё раз.');
+      } else {
+        setConsultationError(`Ошибка: ${errorMsg}`);
+      }
       setConsultation(null);
     } finally {
       setLoadingConsultation(false);
@@ -305,14 +315,7 @@ export function ConsultationScreen() {
   }
 
   function formatDate(dateStr: string): string {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('ru-RU', {
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    return formatDateDDMMYY(dateStr);
   }
 
   return (
@@ -320,7 +323,17 @@ export function ConsultationScreen() {
       <PageHeader title="Консультация ИИ" />
 
       <Card className="p-4 mb-4">
-        <h2 className="text-sm font-bold text-slate-900 mb-3">Цели</h2>
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <h2 className="text-sm font-bold text-slate-900">Цели</h2>
+          <button
+            type="button"
+            onClick={() => setOpenHelp(openHelp === 'addGoal' ? null : 'addGoal')}
+            className="min-w-[32px] min-h-[32px] flex items-center justify-center shrink-0 rounded-full"
+            title="Пояснения"
+          >
+            <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
+          </button>
+        </div>
       {showGoalForm && (
         <div className="pt-3 border-t border-slate-200">
           <form onSubmit={handleGoalSubmit} className="space-y-3">
@@ -332,7 +345,7 @@ export function ConsultationScreen() {
                 type="text"
                 value={goalTitle}
                 onChange={(e) => setGoalTitle(e.target.value)}
-                className="w-full px-3 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400"
+                className="w-full px-3 py-2 border border-border rounded-input focus:outline-none focus:ring-2 focus:ring-slate-400"
                 placeholder="Например: Накопить на отпуск"
                 required
               />
@@ -346,7 +359,7 @@ export function ConsultationScreen() {
                 step="0.01"
                 value={goalTarget}
                 onChange={(e) => setGoalTarget(e.target.value)}
-                className="w-full px-3 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400"
+                className="w-full px-3 py-2 border border-border rounded-input focus:outline-none focus:ring-2 focus:ring-slate-400"
                 placeholder="0.00"
                 required
               />
@@ -358,7 +371,7 @@ export function ConsultationScreen() {
               <textarea
                 value={goalDescription}
                 onChange={(e) => setGoalDescription(e.target.value)}
-                className="w-full px-3 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400"
+                className="w-full px-3 py-2 border border-border rounded-input focus:outline-none focus:ring-2 focus:ring-slate-400"
                 placeholder="Необязательно"
                 rows={2}
               />
@@ -385,14 +398,44 @@ export function ConsultationScreen() {
             ) : (
               <div className="space-y-3">
                 {goals.map((goal) => {
-                  const progress = goal.target <= 0 ? 100 : Math.max(0, Math.min(100, (Math.max(0, goal.current) / goal.target) * 100));
+                  const hasTarget = goal.target > 0;
+                  const progress = hasTarget
+                    ? Math.max(0, Math.min(100, (Math.max(0, goal.current) / goal.target) * 100))
+                    : 0;
+                  const progressRounded = hasTarget ? Math.round(progress) : 0;
+                  const remaining = hasTarget ? Math.max(0, goal.target - goal.current) : 0;
                   return (
                     <div key={goal.id} className="space-y-2">
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex-1 min-w-0">
-                          <p className="font-medium text-slate-900">{goal.title}</p>
+                          <p className="text-xs font-bold text-slate-700">{goal.title}</p>
+                          {hasTarget ? (
+                            <>
+                              <div className="mt-1 flex justify-between text-[10px] text-slate-500">
+                                <span>
+                                  {formatMoney(goal.current)} ₽ / {formatMoney(goal.target)} ₽
+                                </span>
+                                <span>{progressRounded}%</span>
+                              </div>
+                              <div className="mt-1 w-full rounded-full h-2 bg-slate-200">
+                                <div
+                                  className="rounded-full h-2 bg-slate-800 transition-all"
+                                  style={{ width: `${progress}%` }}
+                                />
+                              </div>
+                              {remaining > 0 && (
+                                <p className="mt-1 text-[10px] text-slate-500">
+                                  Осталось: {formatMoney(remaining)} ₽
+                                </p>
+                              )}
+                            </>
+                          ) : (
+                            <p className="mt-1 text-[10px] text-slate-500">
+                              Сумма для этой цели пока не указана. Нажмите редактировать, чтобы добавить сумму.
+                            </p>
+                          )}
                           {goal.description && (
-                            <p className="text-sm text-slate-600">{goal.description}</p>
+                            <p className="mt-1 text-xs text-slate-600">{goal.description}</p>
                           )}
                         </div>
                         <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -418,20 +461,6 @@ export function ConsultationScreen() {
                           </button>
                         </div>
                       </div>
-                      <div className="space-y-1">
-                        <div className="flex justify-between text-sm">
-                          <span className="text-slate-600">
-                            {formatMoney(goal.current)} ₽ / {formatMoney(goal.target)} ₽
-                          </span>
-                          <span className="font-medium">{Math.round(progress)}%</span>
-                        </div>
-                        <div className="w-full bg-slate-200 rounded-full h-2">
-                          <div
-                            className="bg-slate-800 h-2 rounded-full transition-all"
-                            style={{ width: `${progress}%` }}
-                          />
-                        </div>
-                      </div>
                     </div>
                   );
                 })}
@@ -440,30 +469,22 @@ export function ConsultationScreen() {
           </>
         )}
         {!showGoalForm && (
-          <div className="mt-3 pt-3 border-t border-slate-200">
-            <div className="flex items-center gap-2">
-              <Button
-                variant="primary"
-                onClick={() => setShowGoalForm(true)}
-                className="flex-1 py-3.5"
-              >
-                🎯 Добавить цель
-              </Button>
-              <button
-                type="button"
-                onClick={() => setOpenHelp(openHelp === 'addGoal' ? null : 'addGoal')}
-                className="min-w-[44px] min-h-[44px] flex items-center justify-center shrink-0 rounded-full"
-                title="Пояснения"
-              >
-                <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
-              </button>
-            </div>
+          <>
             {openHelp === 'addGoal' && (
-              <p className="mt-2 p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-600">
+              <p className="mb-3 p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-600">
                 Прогресс цели = Ликвидный капитал / Целевая сумма. Ликвидный капитал = сумма ликвидных активов (депозит, акции, облигации, наличные, банковский счёт, криптовалюта) − обязательства, уменьшающие ликвидный капитал (кредит, займ, кредитная карта, рассрочка).
               </p>
             )}
-          </div>
+            <div className="mt-3">
+              <Button
+                variant="primary"
+                onClick={() => setShowGoalForm(true)}
+                className="w-full py-3.5"
+              >
+                🎯 Добавить цель
+              </Button>
+            </div>
+          </>
         )}
 
         <div className="mt-4 pt-4 border-t border-slate-200">
@@ -487,7 +508,7 @@ export function ConsultationScreen() {
               <textarea
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
-                className="w-full px-3 py-2 border border-border dark:border-slate-600 rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+                className="w-full px-3 py-2 border border-border dark:border-slate-600 rounded-input focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
                 placeholder="Например: Хочу накопить 500 000 на машину за год или оставьте пустым"
                 rows={3}
               />
@@ -517,32 +538,62 @@ export function ConsultationScreen() {
       {/* Блок "Консультация ИИ" */}
       <Card className="p-4 mb-4 relative">
         <div className="mb-3 flex items-center justify-between gap-2">
-          <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">Консультация ИИ</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">Консультация ИИ</h2>
+            <button
+              type="button"
+              onClick={() => setOpenHelp(openHelp === 'consultation' ? null : 'consultation')}
+              className="min-w-[32px] min-h-[32px] flex items-center justify-center shrink-0 rounded-full"
+              title="Пояснения"
+            >
+              <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
+            </button>
+          </div>
           {consultation && (
-            <ShareButton
-              title="Консультация ИИ — FinAdvisor"
-              text={consultation}
-            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  const cleanText = getCleanConsultationText(consultation);
+                  try {
+                    await navigator.clipboard.writeText(cleanText);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  } catch (e) {
+                    console.error('Failed to copy:', e);
+                  }
+                }}
+                className="inline-flex items-center justify-center rounded-button min-w-[44px] min-h-[44px] text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                title={copied ? 'Скопировано' : 'Копировать'}
+                aria-label="Копировать"
+              >
+                {copied ? (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                )}
+              </button>
+              <ShareButton
+                title="Консультация ИИ — FinAdvisor"
+                text={getCleanConsultationText(consultation)}
+              />
+            </div>
           )}
         </div>
-        <div className="flex items-center gap-2 mb-2">
+        {!canFollowupToday && (
           <Button
             variant="primary"
             onClick={handleGetConsultation}
             disabled={loadingConsultation}
-            className="flex-1 py-3.5"
+            className="w-full mb-2 py-3.5"
           >
             {loadingConsultation ? 'Генерация...' : 'Получить консультацию'}
           </Button>
-          <button
-            type="button"
-            onClick={() => setOpenHelp(openHelp === 'consultation' ? null : 'consultation')}
-            className="min-w-[44px] min-h-[44px] flex items-center justify-center shrink-0 rounded-full"
-            title="Пояснения"
-          >
-            <span className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-100 text-slate-600 hover:bg-slate-200">?</span>
-          </button>
-        </div>
+        )}
         {consultationLimit && (
           <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">{consultationLimit}</p>
         )}
@@ -564,7 +615,7 @@ export function ConsultationScreen() {
               {renderConsultationText(consultation)}
             </div>
             {/* Уточняющий вопрос — только после получения консультации, в том же блоке */}
-            {canFollowupToday && (
+            {canFollowupToday && !sessionFinished && (
               <div className="mt-4 pt-4 border-t border-slate-200">
                 <p className="text-sm font-medium text-slate-700 mb-2">Уточняющий вопрос</p>
                 <p className="text-xs text-slate-500 mb-2">Задайте вопрос по консультации в этот же день. Уточнения не тратят лимит сессий.</p>
@@ -572,7 +623,7 @@ export function ConsultationScreen() {
                   <textarea
                     value={followUpMessage}
                     onChange={(e) => setFollowUpMessage(e.target.value)}
-                    className="w-full px-3 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    className="w-full px-3 py-2 border border-border rounded-input focus:outline-none focus:ring-2 focus:ring-slate-400"
                     placeholder="Например: Как именно сократить расходы на еду?"
                     rows={2}
                   />
@@ -595,6 +646,20 @@ export function ConsultationScreen() {
                     {renderConsultationText(followUpReply)}
                   </div>
                 )}
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="w-full mt-4 py-3.5"
+                  onClick={() => setSessionFinished(true)}
+                >
+                  Завершить консультацию
+                </Button>
+              </div>
+            )}
+            {canFollowupToday && sessionFinished && (
+              <div className="mt-4 pt-4 border-t border-slate-200 text-xs text-slate-500">
+                <p className="mb-1 font-medium text-slate-700">Сессия завершена</p>
+                <p>Новую консультацию можно получить в следующий день, когда лимит позволит.</p>
               </div>
             )}
           </>
@@ -643,6 +708,40 @@ export function ConsultationScreen() {
                             </div>
                             {selectedHistoryIndex === index && (
                           <div className="mt-3 pt-3 border-t border-slate-200 text-sm text-slate-700 space-y-3">
+                            <div className="flex items-center justify-end gap-2 mb-2">
+                              <button
+                                type="button"
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  const cleanText = getCleanConsultationText(item.content);
+                                  try {
+                                    await navigator.clipboard.writeText(cleanText);
+                                    setCopiedHistoryIndex(index);
+                                    setTimeout(() => setCopiedHistoryIndex(null), 2000);
+                                  } catch (err) {
+                                    console.error('Failed to copy:', err);
+                                  }
+                                }}
+                                className="inline-flex items-center justify-center rounded-button min-w-[36px] min-h-[36px] text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                                title={copiedHistoryIndex === index ? 'Скопировано' : 'Копировать'}
+                                aria-label="Копировать"
+                              >
+                                {copiedHistoryIndex === index ? (
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                  </svg>
+                                ) : (
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                  </svg>
+                                )}
+                              </button>
+                              <ShareButton
+                                title={`Консультация от ${formatDate(item.date)} — FinAdvisor`}
+                                text={getCleanConsultationText(item.content)}
+                                className="min-w-[36px] min-h-[36px]"
+                              />
+                            </div>
                             <div className="whitespace-pre-wrap">{renderConsultationText(item.content)}</div>
                                 {item.follow_ups && item.follow_ups.length > 0 && (
                                   <div className="space-y-2 pt-2 border-t border-slate-100">
@@ -695,12 +794,12 @@ export function ConsultationScreen() {
       </Card>
 
       {/* Чек-лист действий из консультации */}
-      {!actionsLoading && consultationActions && consultationActions.length > 0 && (
+      {!actionsLoading && visibleActions.length > 0 && (
         <Card className="p-4 mb-4">
           <h2 className="text-sm font-bold text-slate-900 mb-3">Действия из консультации</h2>
           <p className="text-sm text-slate-600 mb-3">Отметьте выполненное — в следующей консультации ИИ учтёт это.</p>
           <ul className="space-y-2">
-            {consultationActions.map((action) => (
+            {visibleActions.map((action) => (
               <li key={action.id} className="flex items-start gap-2">
                 <button
                   type="button"

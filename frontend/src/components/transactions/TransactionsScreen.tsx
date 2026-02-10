@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button';
 import { apiRequest, getApiHeaders } from '@/lib/api';
 import { useModalBack, useSwipeDown } from '@/hooks/useModalBack';
 import { usePullToRefresh } from '@/hooks/usePullToRefresh';
+import { formatDateDDMMYY } from '@/lib/date';
 
 interface Transaction {
   id: number;
@@ -77,6 +78,15 @@ export function TransactionsScreen({ embedded }: TransactionsScreenProps) {
   const [formCategoryId, setFormCategoryId] = useState<number | null>(null);
   const [formType, setFormType] = useState<'income' | 'expense'>('expense');
   const [formDescription, setFormDescription] = useState('');
+  // Дата операции: храним ISO (YYYY-MM-DD) и строку ввода в формате ДД.MM.ГГ
+  const [formDate, setFormDate] = useState(() => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  });
+  const [formDateInput, setFormDateInput] = useState(() => formatDateDDMMYY(new Date()));
 
   const [summary, setSummary] = useState<{
     total_expense: number;
@@ -204,23 +214,22 @@ export function TransactionsScreen({ embedded }: TransactionsScreenProps) {
 
       const finalAmount = formType === 'expense' ? -Math.abs(amount) : Math.abs(amount);
 
+      const payloadBase = {
+        amount: finalAmount,
+        category_id: formCategoryId,
+        description: formDescription || null,
+        date: formDate,
+      };
+
       if (editingId) {
         await apiRequest(`/api/transactions/${editingId}`, {
           method: 'PUT',
-          body: JSON.stringify({
-            amount: finalAmount,
-            category_id: formCategoryId,
-            description: formDescription || null,
-          }),
+          body: JSON.stringify(payloadBase),
         });
       } else {
         await apiRequest('/api/transactions', {
           method: 'POST',
-          body: JSON.stringify({
-            amount: finalAmount,
-            category_id: formCategoryId,
-            description: formDescription || null,
-          }),
+          body: JSON.stringify(payloadBase),
         });
       }
       
@@ -248,6 +257,12 @@ export function TransactionsScreen({ embedded }: TransactionsScreenProps) {
     const cat = categories.find(c => c.name === tx.category);
     setFormCategoryId(cat?.id || null);
     setFormDescription(tx.description || '');
+    // При редактировании подставляем дату операции из существующей транзакции
+    if (tx.created_at) {
+      const iso = tx.created_at.slice(0, 10);
+      setFormDate(iso);
+      setFormDateInput(formatDateDDMMYY(iso));
+    }
     setShowAddModal(true);
   }
 
@@ -259,6 +274,14 @@ export function TransactionsScreen({ embedded }: TransactionsScreenProps) {
     setFormCategoryId(null);
     setFormDescription('');
     setFormType('expense');
+    // Сбрасываем дату обратно на сегодня
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const iso = `${year}-${month}-${day}`;
+    setFormDate(iso);
+    setFormDateInput(formatDateDDMMYY(iso));
   }
 
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -732,7 +755,9 @@ export function TransactionsScreen({ embedded }: TransactionsScreenProps) {
                               <td className="p-2">{tx.category ?? '—'}</td>
                               <td className={`p-2 text-right ${tx.amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>{tx.amount >= 0 ? '+' : ''}{formatMoney(tx.amount)} ₽</td>
                               <td className="p-2 max-w-[120px] truncate" title={tx.description ?? ''}>{tx.description || '—'}</td>
-                              <td className="p-2 whitespace-nowrap">{tx.date?.slice(0, 10) ?? '—'}</td>
+                              <td className="p-2 whitespace-nowrap">
+                                {tx.date ? formatDateDDMMYY(tx.date) : '—'}
+                              </td>
                             </tr>
                           ))}
                       </tbody>
@@ -893,6 +918,69 @@ export function TransactionsScreen({ embedded }: TransactionsScreenProps) {
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Дата операции *
+                </label>
+                <div className="relative">
+                  {/* Отображаемое поле с форматом ДД.ММ.ГГ */}
+                  <input
+                    type="text"
+                    readOnly
+                    placeholder="ДД.ММ.ГГ"
+                    value={formDateInput}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm pr-9 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 placeholder:text-slate-400 cursor-pointer"
+                    onClick={() => {
+                      const el = document.getElementById('tx-date-native-input') as HTMLInputElement | null;
+                      if (el && (el as any).showPicker) {
+                        (el as any).showPicker();
+                      } else if (el) {
+                        el.focus();
+                      }
+                    }}
+                    required
+                  />
+                  {/* Иконка календаря */}
+                  <button
+                    type="button"
+                    className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-600"
+                    onClick={() => {
+                      const el = document.getElementById('tx-date-native-input') as HTMLInputElement | null;
+                      if (el && (el as any).showPicker) {
+                        (el as any).showPicker();
+                      } else if (el) {
+                        el.focus();
+                      }
+                    }}
+                    aria-label="Выбрать дату"
+                  >
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                      <line x1="16" y1="2" x2="16" y2="6" />
+                      <line x1="8" y1="2" x2="8" y2="6" />
+                      <line x1="3" y1="10" x2="21" y2="10" />
+                    </svg>
+                  </button>
+                  {/* Нативный date-picker (скрытый), синхронизируем с formDate/formDateInput */}
+                  <input
+                    id="tx-date-native-input"
+                    type="date"
+                    value={formDate}
+                    onChange={(e) => {
+                      const iso = e.target.value;
+                      setFormDate(iso);
+                      setFormDateInput(formatDateDDMMYY(iso));
+                    }}
+                    className="absolute inset-0 opacity-0 cursor-pointer"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
                   Сумма *
                 </label>
                 <input
@@ -947,7 +1035,7 @@ export function TransactionsScreen({ embedded }: TransactionsScreenProps) {
           </Button>
         </Card>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-2">
           {byMonthThenCategory.map(({ monthKey, monthLabel, byCategory }) => {
             const isExpanded = expandedMonths.has(monthKey);
             const monthTotal = Object.values(byCategory).flat().reduce((s, tx) => s + tx.amount, 0);
@@ -1010,7 +1098,13 @@ export function TransactionsScreen({ embedded }: TransactionsScreenProps) {
                             </button>
                             {isCatExpanded && (
                               <div className="mt-2 space-y-2 pl-2 border-l-2 border-slate-200">
-                                {items.map((tx) => (
+                                {[...items]
+                                  .sort((a, b) => {
+                                    const da = new Date(a.created_at).getTime();
+                                    const db = new Date(b.created_at).getTime();
+                                    return db - da;
+                                  })
+                                  .map((tx) => (
                                   <Card key={tx.id} className="p-3">
                                     <div className="flex items-center justify-between gap-3">
                                       <div className="flex-1 min-w-0">

@@ -8,8 +8,8 @@ interface BottomNavProps {
 }
 
 /** Упрощённые иконки таббара (stroke). Размер задаётся через width/height для масштабирования. */
-const iconSize = 20;
-const iconSizeMore = 20;
+const iconSize = 24;
+const iconSizeMore = 24;
 const strokeWidth = 2;
 
 function IconHome({ className, size = iconSize }: { className?: string; size?: number }) {
@@ -27,15 +27,6 @@ function IconWallet({ className, size = iconSize }: { className?: string; size?:
       <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
       <line x1="1" y1="10" x2="23" y2="10" />
       <path d="M17 14a1 1 0 1 0 0 2 1 1 0 0 0 0-2z" />
-    </svg>
-  );
-}
-
-function IconBriefcase({ className, size = iconSize }: { className?: string; size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
-      <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
-      <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
     </svg>
   );
 }
@@ -130,8 +121,6 @@ const moreItems: { id: NavScreen; label: string; Icon: React.ComponentType<{ cla
   { id: 'profile', label: 'Профиль', Icon: IconProfile },
   { id: 'help', label: 'Помощь', Icon: IconHelp },
   { id: 'feedback', label: 'Обратная связь', Icon: IconFeedback },
-  { id: 'terms', label: 'Пользовательское соглашение', Icon: IconDocument },
-  { id: 'privacy', label: 'Политика конфиденциальности', Icon: IconShield },
 ];
 
 /** Нижняя навигация в стиле Telegram: 5 вкладок в общем таббаре, кнопка «Ещё» отдельно. */
@@ -163,8 +152,8 @@ export function BottomNav({ active, onNavigate }: BottomNavProps) {
       aria-label="Навигация"
     >
       <div className="pointer-events-auto flex items-stretch gap-1.5 flex-1 max-w-[480px] min-w-0">
-        {/* Основной таббар: 5 вкладок в закруглённом блоке (уменьшен для iOS) */}
-        <div className="flex-1 flex items-center justify-around rounded-lg sm:rounded-xl bg-white/90 dark:bg-slate-800/90 border border-slate-200/80 dark:border-slate-700 min-h-[46px] px-0.5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+        {/* Основной таббар: 5 вкладок в сильно закруглённом «пилюлеобразном» блоке */}
+        <div className="flex-1 flex items-center justify-around rounded-full bg-white/90 dark:bg-slate-800/90 border border-slate-200/80 dark:border-slate-700 min-h-[50px] px-1 shadow-[0_4px_12px_rgba(15,23,42,0.18)]">
           {mainItems.map(({ id, label, Icon }) => {
             const isActive = active === id;
             return (
@@ -179,7 +168,7 @@ export function BottomNav({ active, onNavigate }: BottomNavProps) {
                 }`}
               >
                 <Icon />
-                <span className={`text-[9px] sm:text-[10px] font-medium leading-tight truncate w-full text-center mt-0.5 ${isActive ? 'text-savings dark:text-sky-400' : ''}`}>
+                <span className={`text-[11px] sm:text-[12px] font-medium leading-tight truncate w-full text-center mt-0.5 ${isActive ? 'text-savings dark:text-sky-400' : ''}`}>
                   {label}
                 </span>
               </button>
@@ -202,7 +191,7 @@ export function BottomNav({ active, onNavigate }: BottomNavProps) {
             aria-label="Ещё"
           >
             <IconMore />
-            <span className={`text-[9px] font-medium leading-tight mt-0.5 ${isMoreActive ? 'text-savings dark:text-sky-400' : ''}`}>
+            <span className={`text-[11px] font-medium leading-tight mt-0.5 ${isMoreActive ? 'text-savings dark:text-sky-400' : ''}`}>
               Ещё
             </span>
           </button>

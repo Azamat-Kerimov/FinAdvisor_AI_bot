@@ -4,6 +4,7 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiRequest } from '@/lib/api';
 import { useModalBack, useSwipeDown } from '@/hooks/useModalBack';
+import { formatDateDDMMYY } from '@/lib/date';
 import { usePullToRefresh } from '@/hooks/usePullToRefresh';
 
 interface Asset {
@@ -54,7 +55,7 @@ export function CapitalScreen({ embedded }: CapitalScreenProps) {
   const [liabilities, setLiabilities] = useState<Liability[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  /** Фильтр списка: all | assets | liabilities — по клику на карточку Активы/Пассивы */
+  /** Фильтр списка: all | assets | liabilities — по клику на карточку Активы/Долги */
   const [listFilter, setListFilter] = useState<'all' | 'assets' | 'liabilities'>('all');
   const [expandedTypes, setExpandedTypes] = useState<Set<string>>(new Set());
   
@@ -125,7 +126,7 @@ export function CapitalScreen({ embedded }: CapitalScreenProps) {
     return filtered;
   }, [allItems, searchQuery, listFilter]);
 
-  /** Группировка по типу (Актив/Пассив уже учтён в listFilter) для раскрывающихся блоков */
+  /** Группировка по типу (Актив/Долг уже учтён в listFilter) для раскрывающихся блоков */
   const itemsByType = useMemo(() => {
     const groups: Record<string, typeof filteredItems> = {};
     filteredItems.forEach(item => {
@@ -268,7 +269,7 @@ export function CapitalScreen({ embedded }: CapitalScreenProps) {
 
   function formatDate(updatedAt: string | null): string {
     if (!updatedAt) return '—';
-    return new Date(updatedAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
+    return formatDateDDMMYY(updatedAt);
   }
 
   const { handleOverlayClose: closeAddOverlay } = useModalBack(showAddModal, resetForm);
@@ -304,7 +305,7 @@ export function CapitalScreen({ embedded }: CapitalScreenProps) {
         </div>
       </div>
 
-      {/* Карточки Активы/Пассивы — подпись сверху, сумма слева, цветная полоса */}
+      {/* Карточки Активы/Долги — подпись сверху, сумма слева, цветная полоса */}
       <div className="mb-4 grid grid-cols-2 gap-3">
         <Card
           className={`cursor-pointer p-4 transition-shadow hover:shadow-lg ${listFilter === 'assets' ? 'ring-2 ring-green-500' : ''}`}
@@ -337,7 +338,7 @@ export function CapitalScreen({ embedded }: CapitalScreenProps) {
           className={`cursor-pointer p-4 transition-shadow hover:shadow-lg ${listFilter === 'liabilities' ? 'ring-2 ring-red-500' : ''}`}
           onClick={() => setListFilter(listFilter === 'liabilities' ? 'all' : 'liabilities')}
         >
-          <div className="text-sm text-slate-600">Пассивы</div>
+          <div className="text-sm text-slate-600">Долги</div>
           <div className="mt-1 text-2xl font-bold text-slate-900">{formatMoney(liabilitiesTotal)} ₽</div>
           <div className="mt-2 flex h-1.5 gap-0.5 overflow-hidden rounded">
             {Object.entries(liabilitiesByType)
@@ -387,7 +388,7 @@ export function CapitalScreen({ embedded }: CapitalScreenProps) {
             <Card className="p-6">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-sm font-bold text-slate-900">
-                {editingId ? 'Редактировать' : editingIsAsset ? 'Добавить актив' : 'Добавить пассив'}
+                {editingId ? 'Редактировать' : editingIsAsset ? 'Добавить актив' : 'Добавить долг'}
               </h2>
               <button
                 type="button"
@@ -431,7 +432,7 @@ export function CapitalScreen({ embedded }: CapitalScreenProps) {
                           : 'border-slate-300 bg-white text-slate-700'
                       }`}
                     >
-                      Пассив
+                      Долг
                     </button>
                   </div>
                 </div>
@@ -453,7 +454,7 @@ export function CapitalScreen({ embedded }: CapitalScreenProps) {
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Тип {editingIsAsset ? 'актива' : 'пассива'} *
+                  Тип {editingIsAsset ? 'актива' : 'долга'} *
                 </label>
                 <select
                   value={formType}
@@ -530,8 +531,21 @@ export function CapitalScreen({ embedded }: CapitalScreenProps) {
           </Button>
         </Card>
       ) : (
-        <div className="space-y-4">
-          {Object.entries(itemsByType).map(([typeName, items]) => {
+        <div className="space-y-2">
+          {Object.entries(itemsByType)
+            .sort(([typeA, itemsA], [typeB, itemsB]) => {
+              const isAssetA = itemsA[0]?.isAsset ?? true;
+              const isAssetB = itemsB[0]?.isAsset ?? true;
+              if (isAssetA !== isAssetB) {
+                // Активы (true) выше долгов (false)
+                return isAssetA ? -1 : 1;
+              }
+              const sumA = itemsA.reduce((s, i) => s + i.amount, 0);
+              const sumB = itemsB.reduce((s, i) => s + i.amount, 0);
+              // По модулю, от большего к меньшему
+              return Math.abs(sumB) - Math.abs(sumA);
+            })
+            .map(([typeName, items]) => {
             const isExpanded = expandedTypes.has(typeName);
             const typeTotal = items.reduce((s, i) => s + i.amount, 0);
             return (
@@ -557,8 +571,14 @@ export function CapitalScreen({ embedded }: CapitalScreenProps) {
                   </div>
                 </button>
                 {isExpanded && (
-                  <div className="mt-2 space-y-2 pl-2 border-l-2 border-slate-200">
-                    {items.map((item) => (
+                  <div className="mt-1 space-y-1 pl-2 border-l-2 border-slate-200">
+                    {[...items]
+                      .sort((a, b) => {
+                        const da = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+                        const db = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+                        return db - da;
+                      })
+                      .map((item) => (
                       <Card key={item.id} className="p-3">
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex-1 min-w-0">

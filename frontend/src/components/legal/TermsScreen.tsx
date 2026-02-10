@@ -1,10 +1,12 @@
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Card } from '@/components/ui/Card';
+import { Button } from '@/components/ui/Button';
+import type { NavScreen } from '@/components/layout/BottomNav';
 
 /** Экран «Пользовательское соглашение». Текст можно заменить на полную версию. */
 export function TermsScreen() {
   return (
-    <div className="min-h-full bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 pb-6">
+    <div className="min-h-full text-slate-900 dark:text-slate-100 pb-6">
       <PageHeader title="Пользовательское соглашение" />
 
       <Card className="p-4 mb-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-card">
@@ -18,6 +20,18 @@ export function TermsScreen() {
           <p className="mb-3 leading-relaxed">
             Используя приложение, вы подтверждаете, что ознакомились с условиями и принимаете их. Разместите здесь полный текст пользовательского соглашения.
           </p>
+        </div>
+        <div className="mt-4">
+          <Button
+            type="button"
+            variant="primary"
+            className="w-full py-3.5"
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent<NavScreen>('app:navigate', { detail: 'profile' }));
+            }}
+          >
+            Ознакомился
+          </Button>
         </div>
       </Card>
     </div>

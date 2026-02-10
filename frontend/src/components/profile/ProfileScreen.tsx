@@ -4,6 +4,7 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiRequest } from '@/lib/api';
 import { useTheme, type Theme as ThemeOption } from '@/contexts/ThemeContext';
+import type { NavScreen } from '@/components/layout/BottomNav';
 
 interface Profile {
   gender: string | null;
@@ -154,24 +155,6 @@ export function ProfileScreen() {
       <PageHeader title="Профиль" />
 
       <Card className="p-4 mb-4 dark:bg-slate-800 dark:border-slate-700">
-        <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-2">Тема оформления</h2>
-        <div className="flex flex-wrap gap-2 mb-4">
-          {THEME_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => setTheme(opt.value)}
-              className={`px-4 py-2 rounded-button text-sm font-medium transition-colors ${
-                theme === opt.value
-                  ? 'bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900'
-                  : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-600'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-        <hr className="border-slate-200 dark:border-slate-600 mb-4" />
         <div className="flex items-center gap-2 mb-3">
           <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">Данные профиля</h2>
           <button
@@ -191,17 +174,27 @@ export function ProfileScreen() {
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Пол</label>
-            <select
-              value={profile.gender ?? ''}
-              onChange={(e) => setProfile((p) => ({ ...p, gender: e.target.value || null }))}
-              className="w-full px-3 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400"
-            >
-              {GENDER_OPTIONS.map((o) => (
-                <option key={o.value || 'empty'} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
+            <div className="relative">
+              <select
+                value={profile.gender ?? ''}
+                onChange={(e) => setProfile((p) => ({ ...p, gender: e.target.value || null }))}
+                className="w-full px-3 pr-8 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400 appearance-none"
+              >
+                {GENDER_OPTIONS.map((o) => (
+                  <option key={o.value || 'empty'} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              <svg
+                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </div>
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Дата рождения</label>
@@ -221,11 +214,11 @@ export function ProfileScreen() {
                 onClick={() => setBirthDateModalOpen(false)}
               >
                 <div
-                  className="w-full max-h-[85vh] overflow-auto rounded-t-xl sm:rounded-xl bg-white dark:bg-slate-800 shadow-xl p-4 border-t border-slate-200 dark:border-slate-700"
+                  className="w-full max-w-[400px] mx-auto max-h-[85vh] overflow-auto rounded-t-xl sm:rounded-xl bg-white dark:bg-slate-800 shadow-xl p-4 border-t border-slate-200 dark:border-slate-700"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <p className="text-sm font-medium text-slate-900 dark:text-slate-100 mb-3">Дата рождения</p>
-                  <div className="grid grid-cols-3 gap-2 mb-4">
+                  <div className="flex flex-col gap-3 mb-4">
                     <div>
                       <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">День</label>
                       <select
@@ -307,17 +300,27 @@ export function ProfileScreen() {
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Семейное положение</label>
-            <select
-              value={profile.marital_status ?? ''}
-              onChange={(e) => setProfile((p) => ({ ...p, marital_status: e.target.value || null }))}
-              className="w-full px-3 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400"
-            >
-              {MARITAL_OPTIONS.map((o) => (
-                <option key={o.value || 'empty'} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
+            <div className="relative">
+              <select
+                value={profile.marital_status ?? ''}
+                onChange={(e) => setProfile((p) => ({ ...p, marital_status: e.target.value || null }))}
+                className="w-full px-3 pr-8 py-2 border border-border rounded-button focus:outline-none focus:ring-2 focus:ring-slate-400 appearance-none"
+              >
+                {MARITAL_OPTIONS.map((o) => (
+                  <option key={o.value || 'empty'} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              <svg
+                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </div>
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Количество детей</label>
@@ -348,6 +351,32 @@ export function ProfileScreen() {
             {saving ? 'Сохранение...' : 'Сохранить'}
           </Button>
         </form>
+      </Card>
+
+      <Card className="p-4 mb-4">
+        <h2 className="text-sm font-bold text-slate-900 mb-2">Юридическая информация</h2>
+        <div className="space-y-2">
+          <Button
+            type="button"
+            variant="secondary"
+            className="w-full py-3"
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent<NavScreen>('app:navigate', { detail: 'terms' }));
+            }}
+          >
+            Пользовательское соглашение
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            className="w-full py-3"
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent<NavScreen>('app:navigate', { detail: 'privacy' }));
+            }}
+          >
+            Политика конфиденциальности
+          </Button>
+        </div>
       </Card>
 
       <Card className="p-4 mb-4">

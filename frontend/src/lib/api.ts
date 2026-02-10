@@ -63,7 +63,9 @@ export async function apiRequest<T>(endpoint: string, options: RequestInit = {})
     }
   }
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10_000);
+  // Для /api/consultation нужен больший таймаут (до 60 секунд на бэкенде)
+  const timeoutMs = endpoint === '/api/consultation' ? 65_000 : 10_000;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${API_BASE}${endpoint}`, {
       ...options,
@@ -82,6 +84,10 @@ export async function apiRequest<T>(endpoint: string, options: RequestInit = {})
     return res.json() as Promise<T>;
   } catch (e) {
     clearTimeout(timeoutId);
+    // Улучшаем сообщение об ошибке при прерывании запроса
+    if (e instanceof Error && e.name === 'AbortError') {
+      throw new Error('Запрос был прерван по таймауту. Попробуйте ещё раз.');
+    }
     throw e;
   }
 }

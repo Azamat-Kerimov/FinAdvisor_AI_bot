@@ -19,6 +19,16 @@ function App() {
     logAction('screen_view', { screen });
   }, [screen]);
 
+  useEffect(() => {
+    function handleNavigate(e: Event) {
+      const detail = (e as CustomEvent<NavScreen>).detail;
+      if (!detail) return;
+      setScreen(detail);
+    }
+    window.addEventListener('app:navigate', handleNavigate as EventListener);
+    return () => window.removeEventListener('app:navigate', handleNavigate as EventListener);
+  }, []);
+
   return (
     <AppLayout activeScreen={screen} onNavigate={setScreen}>
       {screen === 'dashboard' && <DashboardScreen onNavigate={setScreen} />}

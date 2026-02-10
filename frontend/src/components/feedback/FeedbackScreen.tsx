@@ -16,7 +16,7 @@ function openFeedback() {
 /** Экран «Обратная связь» — переход в Telegram для связи с поддержкой. */
 export function FeedbackScreen() {
   return (
-    <div className="min-h-full bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 pb-6">
+    <div className="min-h-full text-slate-900 dark:text-slate-100 pb-6">
       <PageHeader title="Обратная связь" />
 
       <Card className="p-4 mb-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-card">

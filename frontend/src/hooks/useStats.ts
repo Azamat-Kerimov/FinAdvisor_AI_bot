@@ -85,7 +85,7 @@ export function useMonthlyBalance() {
   return { data, loading };
 }
 
-/** Текущие активы, пассивы и чистый капитал */
+/** Текущие активы, долги и чистый капитал */
 export function useCapitalSummary() {
   const [data, setData] = useState<CapitalSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -108,7 +108,7 @@ export function useCapitalSummary() {
   return { data, loading };
 }
 
-/** История активов/пассивов на конец каждого из последних 12 месяцев */
+/** История активов/долгов на конец каждого из последних 12 месяцев */
 export function useCapitalHistory() {
   const [data, setData] = useState<CapitalHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);

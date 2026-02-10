@@ -1,7 +1,8 @@
-/** Утилиты для управления онбордингом */
+/** Утилиты для управления онбордингом и вспомогательными блоками на дашборде */
 
 export const ONBOARDING_STORAGE_KEY = 'finadvisor_onboarding_seen';
 export const PROGRESS_CLOSED_KEY = 'finadvisor_progress_closed';
+export const FOCUS_GOAL_ACHIEVED_CLOSED_KEY = 'finadvisor_focus_goal_achieved_closed';
 
 /** Проверяет, был ли показан онбординг */
 export function isOnboardingSeen(): boolean {
@@ -13,6 +14,12 @@ export function isOnboardingSeen(): boolean {
 export function isProgressClosed(): boolean {
   if (typeof localStorage === 'undefined') return false;
   return localStorage.getItem(PROGRESS_CLOSED_KEY) === 'true';
+}
+
+/** Проверяет, был ли скрыт блок «Цель этого месяца» после достижения */
+export function isFocusGoalAchievedClosed(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  return localStorage.getItem(FOCUS_GOAL_ACHIEVED_CLOSED_KEY) === 'true';
 }
 
 /** Отмечает онбординг как просмотренный */
@@ -29,11 +36,19 @@ export function markProgressClosed(): void {
   }
 }
 
+/** Отмечает блок «Цель этого месяца» как скрытый после достижения */
+export function markFocusGoalAchievedClosed(): void {
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(FOCUS_GOAL_ACHIEVED_CLOSED_KEY, 'true');
+  }
+}
+
 /** Сбрасывает онбординг (показывает снова) */
 export function resetOnboarding(): void {
   if (typeof localStorage !== 'undefined') {
     localStorage.removeItem(ONBOARDING_STORAGE_KEY);
     localStorage.removeItem(PROGRESS_CLOSED_KEY);
+    localStorage.removeItem(FOCUS_GOAL_ACHIEVED_CLOSED_KEY);
   }
   // Перезагружаем страницу, чтобы применить изменения
   window.location.reload();
