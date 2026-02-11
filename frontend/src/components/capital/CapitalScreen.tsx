@@ -533,7 +533,7 @@ export function CapitalScreen({ embedded }: CapitalScreenProps) {
       ) : (
         <div className="space-y-2">
           {Object.entries(itemsByType)
-            .sort(([typeA, itemsA], [typeB, itemsB]) => {
+            .sort(([_typeA, itemsA], [_typeB, itemsB]) => {
               const isAssetA = itemsA[0]?.isAsset ?? true;
               const isAssetB = itemsB[0]?.isAsset ?? true;
               if (isAssetA !== isAssetB) {

@@ -89,6 +89,22 @@ export function ConsultationScreen() {
     loadConsultationLimit();
   }, []);
 
+  // Если консультация уже была сегодня, но страница перезагружена,
+  // подтягиваем последнюю консультацию из истории, чтобы показать блок уточнений.
+  useEffect(() => {
+    if (!canFollowupToday || consultation || history.length === 0) return;
+
+    try {
+      const todayIso = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+      const latest = history[0];
+      if (latest?.date?.startsWith(todayIso) && latest.content) {
+        setConsultation(latest.content);
+      }
+    } catch {
+      // В крайнем случае просто не показываем блок уточнений, чтобы не ломать страницу.
+    }
+  }, [canFollowupToday, history, consultation]);
+
   async function loadGoals() {
     try {
       const data = await apiRequest<Goal[]>('/api/goals');

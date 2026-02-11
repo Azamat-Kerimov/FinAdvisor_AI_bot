@@ -3,7 +3,6 @@ import { PageHeader } from '@/components/layout/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiRequest } from '@/lib/api';
-import { useTheme, type Theme as ThemeOption } from '@/contexts/ThemeContext';
 import type { NavScreen } from '@/components/layout/BottomNav';
 
 interface Profile {
@@ -28,11 +27,6 @@ const MARITAL_OPTIONS = [
   { value: 'widowed', label: 'Вдовец / вдова' },
 ];
 
-const THEME_OPTIONS: { value: ThemeOption; label: string }[] = [
-  { value: 'system', label: 'Как в системе' },
-  { value: 'light', label: 'Светлая' },
-  { value: 'dark', label: 'Тёмная' },
-];
 
 const MONTH_NAMES = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 
@@ -68,7 +62,6 @@ function buildBirthDate(day: number, month: number, year: number): string {
 }
 
 export function ProfileScreen() {
-  const { theme, setTheme } = useTheme();
   const [profile, setProfile] = useState<Profile>({
     gender: null,
     birth_date: null,
