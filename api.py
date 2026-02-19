@@ -20,7 +20,8 @@ import uuid
 import base64
 import asyncio
 import httpx
-from datetime import datetime, timedelta
+import re
+from datetime import datetime, timedelta, date
 from decimal import Decimal
 
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -114,9 +115,6 @@ def _row_to_dict(r: asyncpg.Record) -> dict:
     return {k: _json_serializable(r[k]) for k in r.keys()}
 
 
-# Кэш для bot_module, чтобы избежать повторного импорта
-_bot_module_cache = None
-
 async def get_db():
     global db_pool
     if db_pool is None:
@@ -167,7 +165,6 @@ def validate_telegram_webapp(init_data: str) -> dict:
         
         # Сравниваем хеши
         if calculated_hash != hash_value:
-            import logging
             logging.error(f"Hash mismatch. Expected: {hash_value}, Got: {calculated_hash}")
             logging.error(f"Data check string: {data_check_string[:100]}...")
             raise HTTPException(status_code=401, detail="Invalid hash")
@@ -185,7 +182,6 @@ def validate_telegram_webapp(init_data: str) -> dict:
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=401, detail=f"Invalid user JSON: {str(e)}")
     except Exception as e:
-        import logging
         logging.error(f"Validation error: {e}")
         import traceback
         logging.error(traceback.format_exc())
@@ -262,7 +258,6 @@ async def get_user_id(request: Request) -> int:
     except HTTPException:
         raise
     except Exception as e:
-        import logging
         logging.error(f"Error in get_user_id: {e}")
         raise HTTPException(status_code=401, detail=f"Authentication error: {str(e)}")
 
@@ -410,7 +405,6 @@ async def update_profile(body: ProfileUpdate, user_id: int = Depends(get_user_id
             birth_date_parsed = None
         else:
             try:
-                from datetime import date
                 parts = body.birth_date.strip().split("-")
                 if len(parts) == 3:
                     birth_date_parsed = date(int(parts[0]), int(parts[1]), int(parts[2]))
@@ -703,7 +697,6 @@ async def auth_telegram(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        import logging
         logging.error(f"Error in auth_telegram: {e}")
         raise HTTPException(status_code=401, detail=f"Authentication error: {str(e)}")
 
@@ -748,7 +741,6 @@ async def get_stats(
     user_id: int = Depends(get_user_id)
 ):
     """Получить статистику за выбранный месяц (по умолчанию — предыдущий)."""
-    from datetime import datetime, date
     now = datetime.now()
     if month is None or year is None:
         # Предыдущий месяц
@@ -810,7 +802,6 @@ async def get_stats(
 @app.get("/api/stats/monthly")
 async def get_stats_monthly(user_id: int = Depends(get_user_id)):
     """Доходы, расходы и разница по месяцам за последние 12 месяцев."""
-    from datetime import date
     now = datetime.now()
     result = []
     month_names_ru = (
@@ -864,7 +855,6 @@ async def get_transactions(
         params: List = [user_id]
         n = 2
         if period and len(period) > 0:
-            from datetime import date as date_type
             period_conds = []
             for p in period:
                 parts = p.strip().split("-")
@@ -882,7 +872,6 @@ async def get_transactions(
             if period_conds:
                 conditions.append("(" + " OR ".join(period_conds) + ")")
         elif month is not None and year is not None:
-            from datetime import date as date_type
             start = date_type(year, month, 1)
             end = date_type(year, month + 1, 1) if month < 12 else date_type(year + 1, 1, 1)
             conditions.append(f"t.created_at >= ${n}::timestamp")
@@ -931,7 +920,6 @@ async def get_transactions_summary(
         params: List = [user_id]
         n = 2
         if period and len(period) > 0:
-            from datetime import date as date_type
             period_conds = []
             for p in period:
                 parts = p.strip().split("-")
@@ -949,7 +937,6 @@ async def get_transactions_summary(
             if period_conds:
                 conditions.append("(" + " OR ".join(period_conds) + ")")
         elif month is not None and year is not None:
-            from datetime import date as date_type
             start = date_type(year, month, 1)
             end = date_type(year, month + 1, 1) if month < 12 else date_type(year + 1, 1, 1)
             conditions.append(f"t.created_at >= ${n}::timestamp")
@@ -1081,8 +1068,6 @@ async def delete_transaction(tx_id: int, user_id: int = Depends(get_user_id)):
 # Варианты: 1) Excel/PDF — структурированный парсинг без ИИ (экономия токенов, стабильность).
 #           2) PDF — regex по строкам выписки; категория через ключевые слова (_normalize_category_from_ai).
 #           3) Fallback — полный парсинг через ИИ (чанки по 20k символов).
-
-import re
 
 
 def _extract_text_from_file(file_path: str, content_type: str, filename: str) -> str:
@@ -1555,16 +1540,14 @@ async def import_transactions_apply(
             dates = [t.date[:10] for t in body.transactions if t.date and len(t.date) >= 10]
             if dates:
                 min_d, max_d = min(dates), max(dates)
-                from datetime import date as date_type
-                min_date = date_type.fromisoformat(min_d)
-                max_date = date_type.fromisoformat(max_d)
+                min_date = date.fromisoformat(min_d)
+                max_date = date.fromisoformat(max_d)
                 await conn.execute(
                     "DELETE FROM transactions WHERE user_id = $1 AND created_at::date >= $2 AND created_at::date <= $3",
                     user_id, min_date, max_date
                 )
         for t in body.transactions:
             try:
-                from datetime import datetime
                 dt = datetime.strptime(t.date[:10], "%Y-%m-%d")
             except (ValueError, TypeError):
                 dt = datetime.now()
@@ -2067,7 +2050,6 @@ async def get_capital_summary(user_id: int = Depends(get_user_id)):
 @app.get("/api/capital/history")
 async def get_capital_history(user_id: int = Depends(get_user_id)):
     """Активы и долги на последнее число каждого из последних 12 месяцев."""
-    from datetime import date
     now = datetime.now()
     month_names_ru = (
         "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
@@ -2616,7 +2598,6 @@ async def analyze_user_finances_text(user_id: int) -> str:
                 if profile_row.get("gender"):
                     profile_lines.append(f"Пол: {profile_row['gender']}")
                 if profile_row.get("birth_date"):
-                    from datetime import date
                     bd = profile_row["birth_date"]
                     age = (date.today() - bd).days // 365 if isinstance(bd, date) else None
                     if age is not None:
@@ -2810,8 +2791,9 @@ async def generate_consultation(user_id: int) -> str:
             "ОГРАНИЧЕНИЯ:\n"
             "- Не давай юридических или налоговых советов\n"
             "- Не гарантируй доходность\n"
-            "- Не используй фразы вроде «вам обязательно нужно», вместо этого — «рационально рассмотреть», «оптимальным шагом будет»\n\n"
-            "В конце консультации задай 1–2 уточняющих вопроса, которые помогут дать ещё более точные рекомендации в будущем.\n\n"
+            "- Не используй фразы вроде «вам обязательно нужно», вместо этого — «рационально рассмотреть», «оптимальным шагом будет»\n"
+            "- Не проси пользователя уточнять уже существующие в данных цифры (доход, расходы, платежи по кредитам и т.п.) — используй только те значения, которые есть в профиле и транзакциях.\n"
+            "- Если каких‑то ключевых цифр действительно нет в данных, не задавай вопрос, а явно напиши, каких данных не хватает и что стоит заполнить в приложении.\n\n"
             "ТРЕБОВАНИЯ К ФОРМАТУ:\n"
             "- Используй **текст** для заголовков разделов (двойные звездочки)\n"
             "- Используй *текст* для подзаголовков и выделения (одинарные звездочки)\n"
@@ -2867,7 +2849,6 @@ async def generate_consultation(user_id: int) -> str:
 
         # Парсим 📋 Задача: и 🎯 Фокус месяца: из ответа, сохраняем в БД
         # Также поддерживаем старый формат CHECK: и FOCUS_MONTH: для обратной совместимости
-        import re
         now = datetime.now()
         for line in answer.split("\n"):
             line = line.strip()
@@ -3332,7 +3313,6 @@ async def _extract_goals_from_message(user_message: str, user_id: int | None = N
         ]
         answer = await gigachat_request(messages)
         answer = (answer or "").strip()
-        import re
         json_match = re.search(r"\[[\s\S]*\]", answer)
         if not json_match:
             return []

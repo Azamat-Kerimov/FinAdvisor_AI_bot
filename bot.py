@@ -605,11 +605,12 @@ async def on_startup():
         msg = f"Ошибка подключения к БД: {e}. Проверьте DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD и что PostgreSQL запущен."
         print(msg, file=sys.stderr, flush=True)
         sys.exit(1)
-    scheduler.add_job(send_monthly_reports, "cron", day=1, hour=10, minute=0)
-    scheduler.add_job(send_weekly_reminder, "cron", day_of_week="thu", hour=12, minute=0)
-    scheduler.add_job(send_debt_reminder, "cron", day_of_week="sun", hour=18, minute=0)
+    # Уведомления отключены (месячный отчёт, еженедельное напоминание, напоминание о долгах)
+    # scheduler.add_job(send_monthly_reports, "cron", day=1, hour=10, minute=0)
+    # scheduler.add_job(send_weekly_reminder, "cron", day_of_week="thu", hour=12, minute=0)
+    # scheduler.add_job(send_debt_reminder, "cron", day_of_week="sun", hour=18, minute=0)
     scheduler.start()
-    print("DB connected. Scheduler started. Bot ready.")
+    print("DB connected. Scheduler started (notifications disabled). Bot ready.")
 
 
 async def on_shutdown():
