@@ -5,19 +5,21 @@ import { ThemeProvider } from '@/contexts/ThemeContext';
 import { setTelegramHeaderForTheme } from '@/lib/telegramTheme';
 import './index.css';
 
-type ThemeParams = Record<string, string> | undefined;
-
-function applyTelegramThemeParams(themeParams: ThemeParams) {
-  if (!themeParams || typeof document === 'undefined') return;
+/** Фиксированная светлая палитра: не подстраиваемся под тёмную тему Telegram. */
+function applyFixedLightTelegramColors() {
+  if (typeof document === 'undefined') return;
   const root = document.documentElement;
-  if (themeParams.bg_color) root.style.setProperty('--tg-bg', themeParams.bg_color);
-  if (themeParams.secondary_bg_color) root.style.setProperty('--tg-secondary-bg', themeParams.secondary_bg_color);
-  if (themeParams.text_color) root.style.setProperty('--tg-text', themeParams.text_color);
-  if (themeParams.hint_color) root.style.setProperty('--tg-hint', themeParams.hint_color);
-  if (themeParams.link_color) root.style.setProperty('--tg-link', themeParams.link_color);
+  root.style.setProperty('--tg-bg', '#f4f4f5');
+  root.style.setProperty('--tg-secondary-bg', '#ffffff');
+  root.style.setProperty('--tg-section-bg', 'rgba(255,255,255,0.9)');
+  root.style.setProperty('--tg-text', '#000000');
+  root.style.setProperty('--tg-hint', '#999999');
+  root.style.setProperty('--tg-link', '#2481cc');
+  root.style.setProperty('--tg-panel', '#ffffff');
+  root.style.setProperty('--tg-border', '#e5e5e5');
 }
 
-// Telegram Mini App: FullScreen, цвета из themeParams, шапка под статус-бар
+// Telegram Mini App: FullScreen, всегда светлые цвета и шапка
 function initTelegramFullScreen() {
   const tg = (window as unknown as {
     Telegram?: {
@@ -25,8 +27,6 @@ function initTelegramFullScreen() {
         ready?: () => void;
         expand?: () => void;
         requestFullscreen?: () => void;
-        colorScheme?: 'light' | 'dark';
-        themeParams?: ThemeParams;
         onEvent?: (e: string, fn: () => void) => void;
       };
     };
@@ -34,12 +34,11 @@ function initTelegramFullScreen() {
   if (!tg) return;
   tg.ready?.();
   tg.expand?.();
-  applyTelegramThemeParams(tg.themeParams);
+  applyFixedLightTelegramColors();
   if (typeof tg.onEvent === 'function') {
-    tg.onEvent('themeChanged', () => applyTelegramThemeParams(tg.themeParams));
+    tg.onEvent('themeChanged', applyFixedLightTelegramColors);
   }
-  const scheme = tg.colorScheme === 'dark' ? 'dark' : 'light';
-  setTelegramHeaderForTheme(scheme);
+  setTelegramHeaderForTheme('light');
   if (typeof tg.requestFullscreen === 'function') {
     tg.requestFullscreen();
   }

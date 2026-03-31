@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Telegram Mini App: при наличии themeParams можно задать --tg-* из Telegram.WebApp.themeParams */
+/* Светлая тема: --tg-* задаются в main.tsx (не из тёмного themeParams Telegram). */
 @layer base {
   html {
     @apply antialiased;
